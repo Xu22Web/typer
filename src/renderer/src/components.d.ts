@@ -35,6 +35,7 @@ declare module 'vue' {
     RunStatusPanel: typeof import('./components/RunStatusPanel.vue')['default']
     SideNav: typeof import('./components/SideNav.vue')['default']
     StatusBar: typeof import('./components/StatusBar.vue')['default']
+    TextPanel: typeof import('./components/TextPanel.vue')['default']
     ThemeToggle: typeof import('./components/ThemeToggle.vue')['default']
     TitleBar: typeof import('./components/TitleBar.vue')['default']
     UpdateCenter: typeof import('./components/UpdateCenter.vue')['default']

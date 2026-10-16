@@ -20,6 +20,8 @@ export const IPC = {
   transferResumeState: 'transfer:resume-state',
   transferExportTools: 'transfer:export-tools',
   transferRevealTools: 'transfer:reveal-tools',
+  /** 把打包后的接收端脚本全文交给渲染进程（界面里可直接查看 / 复制，不必去安装目录翻文件） */
+  transferToolScript: 'transfer:tool-script',
   transferStartFrames: 'transfer:start-frames',
   /** 自绘标题栏的窗口控制（frameless 窗口没有系统按钮，必须自己实现） */
   windowMinimize: 'window:minimize',

@@ -1,9 +1,9 @@
 import { createHash } from 'node:crypto'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { parseFrame } from '@tools/lib/frame.mjs'
+import { parseFrame } from '@main/util/frame'
 import { copyToolsTo, TransferSession } from '@main/transfer/session'
 import { resolveToolsDir, ToolsDirNotFoundError } from '@main/transfer/toolsLocator'
 import type { TransferPrepareProgress } from '@shared/transfer/transfer'
@@ -220,13 +220,26 @@ describe('TransferSession · 续传状态比对', () => {
 })
 
 describe('tools 定位与导出', () => {
-  it('能在开发模式下找到脚本目录，并以 typer-recv.mjs 为探针', () => {
+  it('开发模式下以构建产物 typer-recv.mjs 为探针定位 tools 目录', () => {
+    const root = join(work, 'dev')
     const dir = resolveToolsDir({
       isPackaged: false,
-      appPath: process.cwd(),
-      resourcesPath: join(process.cwd(), 'nope')
+      appPath: root,
+      resourcesPath: join(root, 'nope'),
+      exists: (path) => path === join(root, 'tools', 'typer-recv.mjs')
     })
-    expect(dir.endsWith('tools')).toBe(true)
+    expect(dir).toBe(join(root, 'tools'))
+  })
+
+  it('开发模式下缺构建产物时提示先运行 npm run build:tools', () => {
+    expect(() =>
+      resolveToolsDir({
+        isPackaged: false,
+        appPath: join(work, 'dev'),
+        resourcesPath: join(work, 'nope'),
+        exists: () => false
+      })
+    ).toThrow(/npm run build:tools/)
   })
 
   it('打包后优先在 resources 下查找；找不到时报出全部候选路径', () => {
@@ -243,13 +256,24 @@ describe('tools 定位与导出', () => {
     ).toThrow(ToolsDirNotFoundError)
   })
 
-  it('导出会把脚本与文档复制到目标目录（含 lib 子目录）', () => {
-    const destination = join(work, 'exported')
-    const copied = copyToolsTo(process.cwd() + '/tools', destination)
+  it('导出只复制构建产物与 README，不把 .ts 源码与类型声明带给用户', () => {
+    const toolsDir = join(work, 'tools-src')
+    mkdirSync(join(toolsDir, 'lib'), { recursive: true })
+    writeFileSync(join(toolsDir, 'typer-recv.mjs'), '// 接收端构建产物\n')
+    writeFileSync(join(toolsDir, 'typer-recv.ts'), 'export const dummy = 1\n')
+    writeFileSync(join(toolsDir, 'typer-recv.d.mts'), 'export declare const dummy: number\n')
+    writeFileSync(join(toolsDir, 'README.md'), '# 使用说明\n')
+    writeFileSync(join(toolsDir, 'lib', 'frame.mjs'), '// 旧的线格式实现\n')
 
-    expect(copied).toContain('typer-recv.mjs')
-    expect(copied).toContain('typer-chunk.mjs')
-    expect(copied).toContain('README.md')
-    expect(copied.some((path) => path.includes('lib'))).toBe(true)
+    const destination = join(work, 'exported')
+    const copied = copyToolsTo(toolsDir, destination)
+
+    expect(copied.sort()).toEqual(
+      [join('lib', 'frame.mjs'), 'README.md', 'typer-recv.mjs'].sort() as string[]
+    )
+    expect(readdirSync(destination)).not.toContain('typer-recv.ts')
+    expect(readdirSync(destination)).not.toContain('typer-recv.d.mts')
+    expect(existsSync(join(destination, 'typer-recv.mjs'))).toBe(true)
+    expect(existsSync(join(destination, 'README.md'))).toBe(true)
   })
 })

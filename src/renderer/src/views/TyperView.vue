@@ -1,13 +1,11 @@
 <script setup lang="ts" vapor>
-import { buildPlan } from '@main/typing/planner/plan'
-import { estimateTotalMs } from '@main/typing/scheduling/timing'
-
 /**
  * 输入页：只承载"准备内容 → 开始输入"这一条主线，日志在「日志」页、节奏与隐私在「设置」页。
  */
 const typing = useTyping()
 const transfer = useTransfer()
 const settingsStore = useSettings()
+const toolScript = useToolScript()
 
 /** 输入页有两种模式：逐字符输入文本，或把文件切成帧逐片发送 */
 const mode = ref<'text' | 'file'>('text')
@@ -21,40 +19,11 @@ onMounted(async () => {
   await typing.init()
 })
 
-/** 文本看起来像 Typer 帧文本时给出提示（错字会破坏帧，需要把错字率设为 0）。 */
-const looksLikeFrames = computed(
-  () => mode.value === 'text' && typing.text.value.trimStart().startsWith('@TYPER1/')
-)
-
-/** 实时预览：字符统计 + 预计耗时（与主进程使用同一套纯函数实现） */
-const preview = computed(() => {
-  if (!settings.value || typing.text.value.length === 0) return null
-  const stats = buildPlan(typing.text.value, {
-    layout: settings.value.keyboard.layout,
-    forceUnicodeForAll: settings.value.keyboard.forceUnicodeForAll
-  }).stats
-
-  return { stats, estimated: estimateTotalMs(stats.typed, settings.value.timing) }
-})
-
 /** 是否已识别到前台窗口（用于决定要不要提示"切到目标窗口"） */
 const detected = computed(() => typing.targetWindow.value !== '未检测')
 
 /** 最新一条日志，用于在输入页提示"刚刚发生了什么" */
 const latestLog = computed(() => typing.logs.value.at(-1) ?? null)
-
-/** 开始前的引导语：把"为什么现在不能开始"讲清楚 */
-const blocker = computed(() => {
-  if (typing.unsupported.value) return '当前系统不支持键盘注入（仅支持 Windows）'
-  if (mode.value === 'file') {
-    if (transfer.preparing.value) return '正在准备文件…'
-    if (transfer.error.value) return transfer.error.value
-    if (!transfer.hasJob.value) return '先选择一个要输入的文件'
-    return ''
-  }
-  if (typing.text.value.length === 0) return '先在内容区粘贴要输入的文本'
-  return ''
-})
 
 /** 开始按钮文案：文件模式显示要发多少片，倒计时非 0 时补上"几秒后" */
 const startLabel = computed(() => {
@@ -70,7 +39,7 @@ const startLabel = computed(() => {
 /** 是否正忙：文件模式看准备进度，文本模式看引擎请求是否在途 */
 const busy = computed(() => (mode.value === 'file' ? transfer.preparing.value : typing.busy.value))
 
-/** 当前是否允许开始；不允许时由 blocker 说明原因 */
+/** 当前是否允许开始 */
 const canStart = computed(() => {
   if (typing.isRunning.value || typing.unsupported.value || busy.value) return false
   if (mode.value === 'file') {
@@ -83,6 +52,12 @@ const canStart = computed(() => {
 function start(): void {
   if (!canStart.value) return
   void (mode.value === 'file' ? transfer.start() : typing.start())
+}
+
+/** @description 从文件面板插入接收脚本：先切回文本模式，再走与文本面板相同的确认与替换 */
+async function insertToolScriptFromFile(): Promise<void> {
+  mode.value = 'text'
+  await toolScript.insert()
 }
 </script>
 
@@ -138,53 +113,14 @@ function start(): void {
     />
 
     <div class="input-layout">
-      <!-- 主任务：文本模式是内容区，文件模式是文件面板 -->
-      <FilePanel v-if="mode === 'file'" />
-
-      <section v-else class="card editor">
-        <div class="card-head">
-          <h2 class="card-title"><span class="icon i-mdi-text-box-outline" /> 内容区</h2>
-          <div class="spacer" />
-          <template v-if="preview">
-            <span class="chip"
-              ><strong>{{ preview.stats.chars }}</strong> 字符</span
-            >
-            <span class="chip"
-              >中文 <strong>{{ preview.stats.cjk }}</strong></span
-            >
-            <span class="chip"
-              >动作 <strong>{{ preview.stats.typed }}</strong></span
-            >
-            <span v-if="preview.stats.layoutFallbacks > 0" class="chip warn">
-              布局回退 <strong>{{ preview.stats.layoutFallbacks }}</strong>
-            </span>
-          </template>
-        </div>
-
-        <ElInput
-          v-model="typing.text.value"
-          class="editor-input"
-          type="textarea"
-          :rows="13"
-          resize="none"
-          placeholder="把要输入的文本粘贴到这里（支持中文、emoji、需要 Shift 的符号）"
-          @keydown.ctrl.enter="typing.start()"
-        />
-
-        <p class="editor-foot muted">
-          <template v-if="preview">
-            按当前设置预计需要
-            <strong>{{ Math.round(preview.estimated / 1000) }} 秒</strong>输入完成。
-          </template>
-          <template v-else>{{ blocker || '等待输入内容…' }}</template>
-        </p>
-
-        <p v-if="looksLikeFrames" class="frame-hint">
-          <span class="i-mdi-information-outline" />
-          看起来是 Typer 帧文本：逐字符输入完全可行（接收端会逐片校验）， 但请把「错字概率」设为
-          0，否则错字会破坏该帧、需要重传那一片。
-        </p>
-      </section>
+      <!--
+        主任务：文本模式是内容区，文件模式是文件面板。
+        KeepAlive 让两者切换时保留各自的页内状态（文件面板的预览/续传展开与输入、文本面板的滚动）。
+      -->
+      <KeepAlive>
+        <FilePanel v-if="mode === 'file'" @insert-script="insertToolScriptFromFile" />
+        <TextPanel v-else />
+      </KeepAlive>
 
       <!-- 次要信息：目标窗口 + 运行状态 -->
       <aside class="side-column">
@@ -289,12 +225,6 @@ function start(): void {
   align-items: stretch;
 }
 
-.editor {
-  gap: 10px;
-  /* 内容区要够大（主任务），但也不能把操作条与提示挤出首屏 */
-  min-height: 340px;
-}
-
 .header-row {
   display: flex;
   align-items: center;
@@ -331,26 +261,6 @@ function start(): void {
     color: var(--text-1);
     font-weight: 600;
     box-shadow: var(--shadow-card);
-  }
-}
-
-.frame-hint {
-  display: flex;
-  align-items: flex-start;
-  gap: 6px;
-  font-size: 12px;
-  line-height: 1.7;
-  color: var(--text-2);
-}
-
-.editor-input {
-  flex: 1;
-}
-
-.editor-foot {
-  strong {
-    color: var(--text-1);
-    font-weight: 600;
   }
 }
 

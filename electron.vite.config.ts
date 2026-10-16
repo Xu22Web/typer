@@ -13,9 +13,7 @@ export default defineConfig({
       alias: {
         // 主进程内部也用别名，避免深层相对路径
         '@main': resolve('src/main'),
-        '@shared': resolve('src/shared'),
-        // 帧线格式的唯一实现（tools/ 下的脚本直接复用同一份文件）
-        '@tools': resolve('tools')
+        '@shared': resolve('src/shared')
       }
     }
   },

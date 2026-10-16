@@ -7,8 +7,7 @@ export default defineConfig({
       // 与 electron.vite.config.ts / tsconfig.*.json 保持一致
       '@main': resolve('src/main'),
       '@shared': resolve('src/shared'),
-      '@renderer': resolve('src/renderer/src'),
-      '@tools': resolve('tools')
+      '@renderer': resolve('src/renderer/src')
     }
   },
   test: {

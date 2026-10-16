@@ -70,6 +70,7 @@ const api = {
     start: (options: unknown) => invoke(IPC.transferStartFrames, options),
     exportTools: () => invoke(IPC.transferExportTools),
     revealTools: () => invoke(IPC.transferRevealTools),
+    toolScript: () => invoke(IPC.transferToolScript),
     onPrepareProgress: (listener: (payload: unknown) => void) =>
       subscribe(IPC.eventTransferPrepare, listener)
   },

@@ -5,7 +5,8 @@
     "uno.config.ts",
     "src/main/**/*",
     "src/shared/**/*",
-    "src/preload/**/*"
+    "src/preload/**/*",
+    "tools/**/*.ts"
   ],
   "compilerOptions": {
     "composite": true,
@@ -13,8 +14,7 @@
     "baseUrl": ".",
     "paths": {
       "@main/*": ["src/main/*"],
-      "@shared/*": ["src/shared/*"],
-      "@tools/*": ["tools/*"]
+      "@shared/*": ["src/shared/*"]
     }
   }
 }

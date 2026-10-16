@@ -50,6 +50,33 @@ export const PUNCTUATION_CHARS = new Set([
 export const MIN_DELAY_MS = 1
 
 /**
+ * 文件传输（帧模式）专用的确定性节奏。
+ *
+ * 帧模式把文件切成"每片一行"逐片送出，本质是**数据传输**而非演示打字，因此：
+ * - 抖动、突发停顿、标点 / 词 / 换行 / 段落停顿只会拖慢传输，且一旦掺入随机数，
+ *   "同样的输入得到同样的耗时"便不再成立，失败无法复现；
+ * - 任何随机化都不会提升数据完整性，反而拉长输入窗口、增加丢字符的机会。
+ *
+ * 所以这里把所有影响节奏的项统一置 0，帧内节奏完全确定、可复现；每个动作的最小间隔
+ * 由 `MIN_DELAY_MS` 兜底（`baseIntervalMs` 为 0 时仍至少等待 1ms，无法取 0）。
+ * 片与片之间的停顿不属于帧内节奏，仍由 `EngineSettings.interFrameDelayMs` 单独控制。
+ */
+export const FRAME_MODE_TIMING: TimingSettings = {
+  speedMode: 'interval',
+  cps: 0,
+  wpm: 0,
+  baseIntervalMs: 0,
+  jitterMs: 0,
+  distribution: 'uniform',
+  wordPauseMs: 0,
+  punctuationPauseMs: 0,
+  newlinePauseMs: 0,
+  paragraphPauseMs: 0,
+  burstSize: 0,
+  burstPauseMs: 0
+}
+
+/**
  * @description 把速度设置换算成"每个字符的基础间隔"
  * @param settings 节奏设置
  * @returns 基础间隔毫秒数

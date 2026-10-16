@@ -1,10 +1,14 @@
 import { describe, expect, it } from 'vitest'
+import { join } from 'node:path'
 import {
   createEngineEventBridge,
   registerIpcHandlers,
-  type ImportResult
+  type ImportResult,
+  type TransferControls
 } from '@main/ipc/registerIpc'
 import { IPC } from '@main/ipc/channels'
+import type { TransferToolScriptPayload } from '@main/ipc/contracts'
+import { readToolScript } from '@main/transfer/toolScript'
 import { SettingsStore } from '@main/settings/store'
 import { MockKeyboardDriver } from '@main/typing/drivers/MockKeyboardDriver'
 import { TypingEngine } from '@main/typing/engine/TypingEngine'
@@ -79,9 +83,58 @@ function createFakeUpdates(): FakeUpdates {
   }
 }
 
+/** 假 tools 目录所在的"应用根目录"（开发模式形态）。 */
+const APP_PATH = 'C:\\app'
+
 /**
- * @description 组装 IPC 夹具：假 ipcMain、引擎、设置存储与可选的窗口/更新服务
- * @param overrides 是否启用窗口控制与更新服务，以及导入失败、打开外链等注入点
+ * @description 用内存文件系统伪造 tools/ 目录，并接上真实的读取实现（不触碰磁盘）
+ * @param files 以 tools 目录为根的文件内容（键用 / 分隔子目录）
+ * @returns 可直接注入 TransferControls 的 toolScript
+ */
+function createToolScriptReader(files: Record<string, string>): TransferControls['toolScript'] {
+  const toolsDir = join(APP_PATH, 'tools')
+  const fs = createMemoryFs(
+    Object.fromEntries(
+      Object.entries(files).map(([name, text]) => [join(toolsDir, ...name.split('/')), text])
+    )
+  )
+
+  return () =>
+    readToolScript(
+      {
+        isPackaged: false,
+        appPath: APP_PATH,
+        resourcesPath: join(APP_PATH, 'resources'),
+        exists: (path) => fs.existsSync(path)
+      },
+      { readText: (path) => fs.readFileSync(path, 'utf8') }
+    )
+}
+
+/**
+ * @description 创建假传输 IPC 面：只实现"读取接收端脚本"，其余动作是占位（本文件只关心 IPC 转发）
+ * @param toolScript 读取接收端脚本的实现
+ * @returns 可注入 registerIpcHandlers 的传输 IPC 面
+ */
+function createFakeTransfer(toolScript: TransferControls['toolScript']): TransferControls {
+  return {
+    pickFile: async () => null,
+    prepare: async () => ({}),
+    cancelPrepare: () => {},
+    matchResume: () => ({}),
+    createRequest: () => {
+      throw new Error('测试未实现 createRequest')
+    },
+    plan: () => ({ indexes: [], ranges: '', sendBegin: false, sendEnd: false }),
+    exportTools: async () => null,
+    revealTools: async () => false,
+    toolScript
+  }
+}
+
+/**
+ * @description 组装 IPC 夹具：假 ipcMain、引擎、设置存储与可选的窗口/更新/传输服务
+ * @param overrides 是否启用窗口控制、更新与传输服务，以及导入失败、打开外链等注入点
  * @returns 测试用的 IPC 夹具
  */
 function createHarness(
@@ -89,6 +142,9 @@ function createHarness(
     importFileError?: Error
     withWindowControls?: boolean
     withUpdates?: boolean
+    /** 启用传输 IPC 面；toolsFiles 用来伪造 tools/ 目录内容 */
+    withTransfer?: boolean
+    toolsFiles?: Record<string, string>
     openExternal?: (url: string) => void
   } = {}
 ): {
@@ -124,6 +180,9 @@ function createHarness(
 
   const windowControls = overrides.withWindowControls ? createFakeWindowControls() : null
   const updates = overrides.withUpdates ? createFakeUpdates() : null
+  const transfer = overrides.withTransfer
+    ? createFakeTransfer(createToolScriptReader(overrides.toolsFiles ?? {}))
+    : null
 
   registerIpcHandlers({
     ipcMain,
@@ -138,6 +197,7 @@ function createHarness(
     },
     ...(windowControls ? { windowControls } : {}),
     ...(updates ? { updates } : {}),
+    ...(transfer ? { transfer } : {}),
     ...(overrides.openExternal ? { openExternal: overrides.openExternal } : {}),
     logger: {
       error: () => {},
@@ -319,6 +379,33 @@ describe('IPC 打开外链', () => {
       /地址格式不正确/
     )
     await expect(h.ipcMain.invoke(IPC.shellOpenExternal, 42)).rejects.toThrow(/缺少地址/)
+  })
+})
+
+describe('IPC 接收端脚本', () => {
+  it('把构建产物的路径与全文一起交给渲染进程', async () => {
+    const h = createHarness({
+      withTransfer: true,
+      toolsFiles: { 'typer-recv.mjs': 'export const version = 1\n' }
+    })
+
+    const payload = await h.ipcMain.invoke<TransferToolScriptPayload>(IPC.transferToolScript)
+
+    expect(payload.path).toBe(join(APP_PATH, 'tools', 'typer-recv.mjs'))
+    expect(payload.text).toBe('export const version = 1\n')
+  })
+
+  it('产物缺失时给出可读错误，并在开发模式下提示先构建', async () => {
+    const h = createHarness({ withTransfer: true, toolsFiles: {} })
+
+    await expect(h.ipcMain.invoke(IPC.transferToolScript)).rejects.toThrow(
+      /找不到文件传输脚本目录[\s\S]*npm run build:tools/
+    )
+  })
+
+  it('没有传输实现时不注册该频道', () => {
+    const h = createHarness()
+    expect(h.ipcMain.channels).not.toContain(IPC.transferToolScript)
   })
 })
 

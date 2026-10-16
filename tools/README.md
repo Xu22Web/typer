@@ -1,18 +1,31 @@
-# Typer 文件传输脚本
+# Typer 文件接收端脚本
 
-把**任意文件**从一台机器"打"到另一台机器（终端、串口、KVM、远程桌面里运行的接收端），
-逐片校验、断点续传、合并后校验整文件完整性。
+把**任意文件**从一台机器"打"到另一台机器（终端、串口、KVM、远程桌面里的接收端）：逐片校验、
+断点续传、合并后校验整文件完整性。
 
-脚本是**零依赖**的纯 Node ESM：只用 `node:` 内置模块，**不需要 `npm install`**，Node ≥ 18 即可运行。
+接收端是**零依赖**的单文件 Node ESM：只用 `node:` 内置模块，**不需要 `npm install`**，
+**Node ≥ 16** 即可运行（`node typer-recv.mjs --selftest` 可先自检环境）。
 
 ```bash
-node tools/typer-recv.mjs --help      # 接收端（在目标机运行）
-node tools/typer-chunk.mjs --help     # 分片端（离线生成帧文本）
+node typer-recv.mjs --help        # 查看全部选项
+node typer-recv.mjs --selftest    # 校验 CRC / 编码 / 转义 / 片号解析是否正常
 ```
+
+> 本目录里的 `.mjs` 是**构建产物**（源码 `typer-recv.ts`，由 `npm run build:tools` 用 esbuild 打成单文件）。
+> 发到目标机时请保留 `.mjs` 扩展名：Node 靠扩展名识别 ESM，改名成 `.js` 后需要同目录有
+> `{"type":"module"}` 的 `package.json` 才能运行。
 
 ---
 
-## 1. 为什么不是"直接输入二进制"
+## 1. 怎么把脚本弄到目标机
+
+| 方式                 | 做法                                                                                                               |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| **让 Typer 打进去**  | 文本输入页点「获取接收脚本」→ 内容区变成脚本全文 → 在目标机执行 `cat > typer-recv.mjs` 再开始输入，最后按 `Ctrl+D` |
+| **导出文件**         | 文件页/设置页的「导出脚本」把 `typer-recv.mjs` 复制到指定目录，再用 U 盘、共享目录或 Typer 的文件模式传过去        |
+| **从安装目录直接取** | 安装后的 `<安装目录>\resources\tools\typer-recv.mjs`（「打开脚本目录」按钮可直接定位）                             |
+
+## 2. 为什么不是"直接输入二进制"
 
 | 问题     | 说明                                                                                     |
 | -------- | ---------------------------------------------------------------------------------------- |
@@ -23,7 +36,7 @@ node tools/typer-chunk.mjs --help     # 分片端（离线生成帧文本）
 所以数据先编码成**纯 ASCII 的安全字符集**，切成**每片一行**的帧；每片自带 CRC32 + SHA-256 前缀，
 接收端逐片校验、失败只重传该片，最后合并并校验整文件哈希。
 
-## 2. 编码怎么选
+## 3. 编码怎么选
 
 | 编码          | 体积    | 适用                                                                               |
 | ------------- | ------- | ---------------------------------------------------------------------------------- |
@@ -35,7 +48,10 @@ node tools/typer-chunk.mjs --help     # 分片端（离线生成帧文本）
 与编码、locale、终端代码页都无关。`txt` 仅接受合法 UTF-8（带 BOM 会被拒绝），
 因为只有"文件字节 == 该文本的 UTF-8 编码"时，两端的整文件哈希才一致。
 
-## 3. 线格式 v1（收发双方唯一契约）
+在 Typer 里编码、片大小、帧长上限都在「设置 → 文件传输」中调整；文件模式**不受节奏与随机性设置影响**
+（数据传输需要可复现的确定性节奏，只保留传输组自己的「片间断顿」作为接收端落盘余量）。
+
+## 4. 线格式 v1（收发双方唯一契约）
 
 每帧**一行、纯 ASCII、无空白**：
 
@@ -64,7 +80,10 @@ node tools/typer-chunk.mjs --help     # 分片端（离线生成帧文本）
 
 **退出码**：`0` 成功且校验通过；`2` 数据不全；`3` 完整性校验失败；`4` 参数或 IO 错误。
 
-## 4. 接收端 `typer-recv.mjs`
+线格式的**唯一实现**在 `src/main/util/frame.ts`：Typer 主进程（生成帧、算续传计划）与接收端脚本
+（解析帧、逐片校验、合并）引用同一份代码，收发两端不会出现实现漂移。
+
+## 5. 选项
 
 ```
 node typer-recv.mjs [选项]
@@ -88,10 +107,10 @@ node typer-recv.mjs [选项]
 ### 典型流程
 
 ```bash
-# ① 目标机：启动接收端，等待输入（raw 模式，粘贴/注入的内容不会回显）
+# ① 目标机：启动接收端，等待输入（raw 模式，被"打"进来的内容不会回显）
 node typer-recv.mjs -o received.bin --token
 
-# ② 发送端：Typer 的「文件」页选择文件 → 开始输入（或把 typer-chunk 生成的 frames.txt 粘到文本页）
+# ② 发送端：Typer 的「文件」页选择文件 → 开始输入
 
 # ③ 中途失败 / 被打断：目标机会打印
 #    #MISS 12-20
@@ -106,63 +125,15 @@ node typer-recv.mjs -o received.bin --token
 - **终端（Windows Terminal / conhost / bash）**：直接运行即可，TTY 下自动进 raw 模式（无回显、无行宽限制）。
 - **串口 / 环回链路**：回执会顺着链路回到发送端，可能被对端当成键盘输入 →
   用 `--ack none`（或 `stderr`）关闭回执，靠退出码与 `--report` 判断结果；同时建议减小片、放慢节奏。
-- **目标端没有 Node**：改用 `--in frames.txt` 在别处接收，或把 `tools/` 整个目录拷过去（只依赖 Node）。
-- **只想离线验证**：`typer-chunk.mjs --verify` 会按接收端规则重新解析、逐片校验并合并比对，不发一个字节。
+- **目标端没有 Node**：用 `--in frames.txt` 从文件读帧，或把帧文本打进任意文件后拷到有 Node 的机器上离线合并。
 
-## 5. 分片端 `typer-chunk.mjs`
-
-```
-node typer-chunk.mjs <文件> [选项]
-  -o, --out <dir>        输出目录（默认 ./.typer-chunks-<job>）
-      --chunk <bytes>    每片原始字节数（默认 1024）
-      --enc <enc>        hex | b64 | txt（默认 hex）
-      --name <name>      接收端使用的文件名（默认源文件名）
-      --job <id>         任务 id（默认随机）
-      --single <path>    额外输出合并后的帧文本（可直接粘到 Typer 文本页）
-      --no-frames        只输出 manifest.json
-      --no-frame-list    manifest 里不记录每片校验和
-      --max-frame-chars  帧长上限校验（默认 4096）
-      --verify           生成后按接收端规则自检
-  -q, --quiet  -h, --help
-```
-
-产物：`begin.txt`、`<seq>.txt`、`end.txt`、`manifest.json`、可选的 `frames.txt`。
-
-`manifest.json` 记录任务规模、整文件哈希与**每片**的 `crc32`/`sha16`，接收端可以据此在
-收到开始帧之前就知道所有期望值（也更便于事后审计）。
-
-## 6. 片大小与帧宽的取舍
-
-帧长 ≈ `45 + 数字位数 + 载荷字符数`。默认 `--chunk 1024` 时，`hex` 帧约 2.1 K 字符。
-
-| 预设   | `--chunk` | `hex` 帧长 | 适用                                                        |
-| ------ | --------- | ---------- | ----------------------------------------------------------- |
-| 窄终端 | 256       | ≈ 560      | 串口、老式控制台、限宽终端                                  |
-| 默认   | 1024      | ≈ 2.1 K    | 终端 raw 模式 / 剪贴板粘贴                                  |
-| 宽松   | 4096      | ≈ 8.2 K    | Windows Terminal + 可靠剪贴板（需放宽 `--max-frame-chars`） |
-
-超过 `--max-frame-chars` 时脚本会**在生成之前**失败并给出建议片大小，避免打到一半才发现终端吞内容。
-
-## 7. 故障排查
-
-| 现象                                | 原因与处理                                                                      |
-| ----------------------------------- | ------------------------------------------------------------------------------- |
-| 大量 `#FAIL <seq> field` / `marker` | 行被截断或混入回显/提示符。减小 `--chunk`、降低输入速率、确认输入流里只有帧     |
-| 个别 `#FAIL <seq> crc`              | 链路丢/改字符。直接用 `--MISS`/续传令牌补传该片                                 |
-| `#FAIL <seq> enc`                   | 载荷编码不合法，通常是粘贴时被输入法/终端改了字符（含大小写转换）→ 优先用 `hex` |
-| `overlong`                          | 该帧超过长度上限（终端/剪贴板截断）→ 用更小的片                                 |
-| `#BAD`                              | 合并后哈希不符。加 `--keep-parts` 保留分片后重跑排查（多为磁盘/权限问题）       |
+## 6. 开发
 
 ```bash
-# 环境自检（CRC / 编码 / 转义 / 片号解析）
-node tools/typer-recv.mjs --selftest
-
-# 不起进程、直接验证一批帧文本是否无损
-node tools/typer-recv.mjs --in frames.txt -o out.bin -d /tmp/work --quiet
+npm run build:tools    # tools/typer-recv.ts → tools/typer-recv.mjs（esbuild，target node16）
+npm run test:system    # 先构建，再用真实子进程跑接收端做端到端验证
 ```
 
-## 8. 与应用的关系
-
-- `tools/lib/frame.mjs` 是线格式的**唯一实现**：Typer 主进程直接 import 同一份文件，
-  所以"应用发出的帧"与"脚本解析的帧"永远一致（`tests/system/transferTool.spec.ts` 里也有跨进程交叉校验）。
-- `tools/lib/frame.d.mts` 是给 TypeScript 用的类型声明；改动 `frame.mjs` 时必须同步更新它。
+改动 `src/main/util/frame.ts`（线格式）或 `tools/typer-recv.ts`（接收端）后都要重新构建。
+接收端代码必须留在 **Node 16 可用的 API 范围**内：`scripts/build-tools.mjs` 在构建后会扫描
+`structuredClone`、`Array#at` 等不可用 API，命中即构建失败。

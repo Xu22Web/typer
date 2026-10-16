@@ -10,6 +10,7 @@ export {}
 declare global {
   const EffectScope: typeof import('vue').EffectScope
   const ElMessage: typeof import('element-plus/es').ElMessage
+  const ElMessageBox: typeof import('element-plus/es').ElMessageBox
   const acceptHMRUpdate: typeof import('pinia').acceptHMRUpdate
   const computed: typeof import('vue').computed
   const createApp: typeof import('vue').createApp
@@ -83,6 +84,7 @@ declare global {
   const useSlots: typeof import('vue').useSlots
   const useTemplateRef: typeof import('vue').useTemplateRef
   const useTheme: typeof import('./composables/useTheme').useTheme
+  const useToolScript: typeof import('./composables/useToolScript').useToolScript
   const useTransfer: typeof import('./composables/useTransfer').useTransfer
   const useTyping: typeof import('./composables/useTyping').useTyping
   const useUpdate: typeof import('./composables/useUpdate').useUpdate

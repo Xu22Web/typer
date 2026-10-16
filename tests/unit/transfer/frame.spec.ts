@@ -30,7 +30,7 @@ import {
   unescapeText,
   verifyDataFrame,
   verifyIntegrity
-} from '@tools/lib/frame.mjs'
+} from '@main/util/frame'
 
 /**
  * @description 生成确定性随机字节，避免测试依赖 Math.random

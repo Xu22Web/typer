@@ -5,7 +5,7 @@ import {
   parseFrame,
   parseIndexList,
   resolveIndexes
-} from '@tools/lib/frame.mjs'
+} from '@main/util/frame'
 
 import { TransferError } from './prepare'
 import type { ResumeMatch, ResumeState, TransferJobSummary } from '@shared/transfer/transfer'

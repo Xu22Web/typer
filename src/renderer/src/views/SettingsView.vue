@@ -229,6 +229,10 @@ async function restoreDefaults(): Promise<void> {
 
       <section class="card group">
         <h2 class="group-title"><span class="icon i-mdi-speedometer" /> 速度与随机性</h2>
+        <p class="group-desc">
+          只作用于<strong>文本输入</strong>；文件传输是数据传输，为可复现与速度使用固定节奏
+          （只有「文件传输」里的片间断顿生效）。
+        </p>
 
         <div class="row">
           <div class="label">
@@ -286,7 +290,9 @@ async function restoreDefaults(): Promise<void> {
 
       <section class="card group">
         <h2 class="group-title"><span class="icon i-mdi-timer-sand" /> 停顿节奏</h2>
-        <p class="group-desc">让输入在标点、换行处自然停顿，避免"一口气打完"的机械感。</p>
+        <p class="group-desc">
+          让输入在标点、换行处自然停顿，避免"一口气打完"的机械感；文件模式下不生效。
+        </p>
 
         <div class="row">
           <div class="label"><span>标点后</span></div>
@@ -322,7 +328,10 @@ async function restoreDefaults(): Promise<void> {
 
       <section class="card group">
         <h2 class="group-title"><span class="icon i-mdi-backspace-outline" /> 错字与纠正</h2>
-        <p class="group-desc">按概率打错再退格纠正，让输入过程更像真人；设为 0 即完全无误。</p>
+        <p class="group-desc">
+          按概率打错再退格纠正，让输入过程更像真人；设为 0 即完全无误。文件模式下始终不打错字
+          （错字会破坏帧数据，只能靠重传补救）。
+        </p>
 
         <div class="row">
           <div class="label"><span>错字概率</span></div>
@@ -445,7 +454,8 @@ async function restoreDefaults(): Promise<void> {
         <h2 class="group-title"><span class="icon i-mdi-file-arrow-up-down-outline" /> 文件传输</h2>
         <p class="group-desc">
           把文件切成"每片一行"的帧逐片输入。接收端逐片校验、支持断点续传，合并后再校验整文件哈希；
-          编码与片大小决定"能不能顺利穿过目标终端"。
+          编码与片大小决定"能不能顺利穿过目标终端"。"导出脚本"取走接收端脚本，或在文本页用它把脚本
+          直接"打"到目标机。
         </p>
 
         <div class="row">
@@ -521,7 +531,7 @@ async function restoreDefaults(): Promise<void> {
         <div class="row">
           <div class="label">
             <span>接收脚本</span>
-            <small>零依赖（Node ≥ 18），导出到目标机直接运行</small>
+            <small>零依赖（Node ≥ 16），导出到目标机直接运行</small>
           </div>
           <div class="tools-actions">
             <ElButton size="small" @click="exportTools">

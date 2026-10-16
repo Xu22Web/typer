@@ -10,10 +10,8 @@ export interface TransferEstimateConfig {
   autoPasteThreshold: number
   /** 片间额外停顿 */
   interFrameDelayMs: number
-  /** 每个字符的基础间隔（由节奏设置换算） */
-  baseIntervalMs: number
-  /** 每帧行尾换行带来的额外停顿（按键模式下才有） */
-  newlinePauseMs: number
+  /** 帧内每个动作的间隔；文件传输用确定性节奏，默认即引擎的最小动作间隔 */
+  keystrokeIntervalMs?: number
   /** 一次粘贴的固定开销（写剪贴板 + Ctrl+V + 目标端消化） */
   pasteOverheadMs?: number
 }
@@ -30,9 +28,15 @@ export interface TransferEstimate {
 export const PASTE_OVERHEAD_MS = 140
 
 /**
+ * 帧模式每个动作的间隔。文件传输**不受节奏与随机性设置影响**（见主进程的确定性节奏），
+ * 帧内一律取引擎的最小动作间隔，因此这里也用同一取值，二者不会漂移。
+ */
+export const FRAME_KEYSTROKE_INTERVAL_MS = 1
+
+/**
  * @description 按实际注入方式估算一次传输的耗时
  * @param summary 任务摘要
- * @param config 节奏与注入方式配置
+ * @param config 注入方式与间隔配置
  * @returns 预计耗时与本次实际会用的注入方式
  */
 export function estimateTransferMs(
@@ -40,6 +44,7 @@ export function estimateTransferMs(
   config: TransferEstimateConfig
 ): TransferEstimate {
   const overhead = config.pasteOverheadMs ?? PASTE_OVERHEAD_MS
+  const interval = config.keystrokeIntervalMs ?? FRAME_KEYSTROKE_INTERVAL_MS
   // 帧数 = 数据片 + 开始帧 + 结束帧
   const frames = summary.total + 2
   if (frames <= 0 || summary.frameChars <= 0) {
@@ -62,9 +67,11 @@ export function estimateTransferMs(
   const pasteFrames = paste ? frames : 0
   const keystrokeChars = paste ? 0 : summary.frameChars
 
+  // 片间断顿只发生在两片之间（首片之前与末片之后都不等），因此是 total-1 次
+  const pauses = Math.max(0, summary.total - 1)
   const ms = paste
-    ? frames * (overhead + config.interFrameDelayMs)
-    : keystrokeChars * config.baseIntervalMs + frames * config.newlinePauseMs
+    ? frames * overhead + pauses * config.interFrameDelayMs
+    : (keystrokeChars + frames) * interval + pauses * config.interFrameDelayMs
 
   return {
     ms: Math.round(ms),

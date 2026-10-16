@@ -4,7 +4,12 @@ import type { KeyboardDriver } from '../drivers/KeyboardDriver'
 import type { HostForegroundData, ScheduledAction } from '../drivers/protocol'
 import { toHostItems } from '../drivers/protocol'
 import { createRng, resolveSeed, type Rng } from '../scheduling/rng'
-import { baseIntervalMsFor, TimingScheduler, type TimingSettings } from '../scheduling/timing'
+import {
+  baseIntervalMsFor,
+  FRAME_MODE_TIMING,
+  TimingScheduler,
+  type TimingSettings
+} from '../scheduling/timing'
 import type { TypoCorrection, TypoOptions, TypoStyle } from '../scheduling/typo'
 import { FocusGuard, type FocusGuardMode, type FocusSnapshot } from '../focus/focusGuard'
 import { computeProgress, type ProgressFrames, type ProgressSnapshot } from './progress'
@@ -387,11 +392,14 @@ export class TypingEngine {
   /**
    * @description 文件传输任务：逐帧发送（每片一行）；不打错字（错字会直接破坏数据），
    * 一片下发完毕再发下一片且片间可加停顿（让接收端总在完整的一行上做校验），
-   * 每帧按长度选择粘贴或真实按键（沿用 `insertMode` 的自动策略）
+   * 每帧按长度选择粘贴或真实按键（沿用 `insertMode` 的自动策略）。
+   * 帧内节奏使用确定性节奏 {@link FRAME_MODE_TIMING}，因此帧模式不读取 `settings.timing`、
+   * 不读取 `settings.typo`，也不使用随机源（随机化只会拖慢传输并让失败不可复现）；
+   * 片间断顿只发生在片与片之间，由 `settings.interFrameDelayMs` 控制。
    * @param task 文件传输任务
    * @param settings 引擎设置子集
    * @param seed 本次使用的随机种子
-   * @param rngFactory 随机源工厂
+   * @param rngFactory 随机源工厂；帧模式不使用随机性，仅为保持签名一致而接收
    * @param guard 焦点守护
    * @param expectedFocus 倒计时前记录的目标窗口
    * @returns 本次运行的终态
@@ -425,7 +433,7 @@ export class TypingEngine {
 
     await this.driver.start()
 
-    const scheduler = new TimingScheduler(settings.timing, rngFactory(seed))
+    const scheduler = new TimingScheduler(FRAME_MODE_TIMING, rngFactory(seed))
     const interFrameDelay = Math.max(0, Math.round(settings.interFrameDelayMs ?? 0))
     const pastePerFrame = settings.insertMode === 'paste'
     const pasteThreshold = Math.max(1, settings.autoPasteThreshold)

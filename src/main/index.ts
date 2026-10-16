@@ -25,6 +25,7 @@ import {
 import { SettingsStore } from './settings/store'
 import type { ImportCharset } from './settings/types'
 import { copyToolsTo, TransferSession } from './transfer/session'
+import { readToolScript } from './transfer/toolScript'
 import { resolveToolsDir } from './transfer/toolsLocator'
 import { createDriver, type KeyboardDriver } from './typing/drivers'
 import { resolveHostScriptPath } from './typing/drivers/hostLocator'
@@ -173,7 +174,7 @@ function toolsLocatorContext(): { isPackaged: boolean; appPath: string; resource
 }
 
 /**
- * @description 把接收/分片脚本复制到用户选择的目录（目标机没有 npm，需要的正是这些可直接运行的文件）
+ * @description 把接收端脚本（构建产物）复制到用户选择的目录（目标机没有 npm，需要的正是这些可直接运行的文件）
  * @returns 导出后的目标目录；用户取消时返回 null
  */
 async function exportTools(): Promise<string | null> {
@@ -382,7 +383,8 @@ async function bootstrap(): Promise<void> {
       createRequest: (options, hooks) => transferSession.createRequest(options, hooks),
       plan: (options) => transferSession.plan(options),
       exportTools: () => exportTools(),
-      revealTools: () => revealTools()
+      revealTools: () => revealTools(),
+      toolScript: () => readToolScript(toolsLocatorContext())
     },
     openExternal: async (url) => {
       await shell.openExternal(url)

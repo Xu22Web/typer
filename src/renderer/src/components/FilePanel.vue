@@ -8,7 +8,6 @@ import {
   type TransferEncoding
 } from '@shared/transfer/transfer'
 import { estimateTransferMs } from '@shared/transfer/estimate'
-import { baseIntervalMsFor, estimateTotalMs } from '@main/typing/scheduling/timing'
 
 /**
  * 文件输入面板：把选中的文件切成"每片一行"的帧并按需补发/续传。
@@ -17,6 +16,10 @@ import { baseIntervalMsFor, estimateTotalMs } from '@main/typing/scheduling/timi
 const transfer = useTransfer()
 const typing = useTyping()
 const settingsStore = useSettings()
+const toolScript = useToolScript()
+
+/** 请求父组件把接收脚本插入文本输入；切换模式由 TyperView 负责 */
+const emit = defineEmits<{ insertScript: [] }>()
 
 /** 当前生效的设置（编码、片大小、帧长上限都从这里读） */
 const settings = settingsStore.settings
@@ -41,22 +44,12 @@ const estimate = computed(() => {
   return estimateTransferMs(job, {
     insertMode: current.insertMode,
     autoPasteThreshold: current.autoPasteThreshold,
-    interFrameDelayMs: current.transfer.interFrameDelayMs,
-    baseIntervalMs: baseIntervalMsFor(current.timing),
-    newlinePauseMs: current.timing.newlinePauseMs
+    interFrameDelayMs: current.transfer.interFrameDelayMs
   })
 })
 
 /** 预计耗时（毫秒） */
 const estimatedMs = computed(() => estimate.value?.ms ?? 0)
-
-/** 纯按键模式下的耗时，用于"改用剪贴板"建议里做数字对比 */
-const keystrokeMs = computed(() => {
-  const job = summary.value
-  const timing = settings.value?.timing
-  if (!job || !timing) return 0
-  return estimateTotalMs(job.typedActions, timing)
-})
 
 /** 耗时长短对应的提示色 */
 const tone = computed(() => durationTone(estimatedMs.value))
@@ -150,7 +143,9 @@ const previewRows = computed(() => summary.value?.preview ?? [])
       <p class="empty-title">选择一个文件，Typer 会把它逐片"打"到目标窗口</p>
       <p class="empty-desc">
         文件会被切成每片一行的纯文本帧，接收端逐片校验、支持断点续传，合并后再校验整文件哈希。
-        目标端运行 <code class="mono">tools/typer-recv.mjs</code> 接收即可（见「脚本」）。
+        目标端运行
+        <code class="mono">typer-recv.mjs</code>
+        接收即可（脚本还没拿过去时，先在下面「脚本」里取走）。
       </p>
       <ElButton type="primary" :loading="preparing" @click="pick">
         <span class="i-mdi-file-search-outline" /> 选择文件
@@ -197,8 +192,10 @@ const previewRows = computed(() => summary.value?.preview ?? [])
       <p v-if="tone !== 'ok'" class="notice-line" :class="`tone-${tone}`">
         <span class="i-mdi-alert-outline" />
         <template v-if="tone === 'danger'">
-          按当前节奏预计需要 {{ formatDuration(estimatedMs) }}（逐字符按键约
-          {{ formatDuration(keystrokeMs) }}）。建议改用剪贴板粘贴、把片大小调大，或降低输入速率。
+          预计需要 {{ formatDuration(estimatedMs) }}（{{
+            estimate?.mode === 'paste' ? '剪贴板粘贴' : '逐字符按键'
+          }}）。文件传输使用固定节奏，提速手段只有：把「片大小」调小、把「输入方式」设为「自动」让长帧走剪贴板，
+          或分几次发送。
         </template>
         <template v-else>
           预计需要 {{ formatDuration(estimatedMs) }}，请确认目标窗口在倒计时结束前处于就绪状态。
@@ -344,23 +341,26 @@ const previewRows = computed(() => summary.value?.preview ?? [])
           </p>
         </div>
       </div>
-
-      <!-- 脚本：目标机需要的东西，一键取走 -->
-      <div class="tools">
-        <span class="icon i-mdi-console-line" />
-        <span class="tools-text muted">
-          目标端运行
-          <code class="mono">node typer-recv.mjs -o 输出文件</code> 接收；脚本零依赖（Node ≥ 18）
-        </span>
-        <div class="spacer" />
-        <ElButton size="small" text @click="transfer.exportTools()">
-          <span class="i-mdi-export-variant" /> 导出脚本
-        </ElButton>
-        <ElButton size="small" text @click="transfer.revealTools()">
-          <span class="i-mdi-folder-open-outline" /> 打开目录
-        </ElButton>
-      </div>
     </template>
+
+    <!-- 脚本：目标机需要的东西，一键取走（未选文件时也要能取，目标机往往先缺脚本） -->
+    <div class="tools">
+      <span class="icon i-mdi-console-line" />
+      <span class="tools-text muted">
+        目标端运行
+        <code class="mono">node typer-recv.mjs -o 输出文件</code> 接收；脚本零依赖（Node ≥ 16）
+      </span>
+      <div class="spacer" />
+      <ElButton size="small" text :loading="toolScript.loading.value" @click="emit('insertScript')">
+        <span class="i-mdi-content-paste" /> 插入接收脚本到文本输入
+      </ElButton>
+      <ElButton size="small" text @click="transfer.exportTools()">
+        <span class="i-mdi-export-variant" /> 导出脚本
+      </ElButton>
+      <ElButton size="small" text @click="transfer.revealTools()">
+        <span class="i-mdi-folder-open-outline" /> 打开目录
+      </ElButton>
+    </div>
 
     <ElProgress
       v-if="preparing"

@@ -11,7 +11,10 @@ const autoImportConfig = JSON.parse(
 )
 
 export default defineConfig(
-  { ignores: ['**/node_modules', '**/dist', '**/out'] },
+  {
+    // tools/*.mjs 是 scripts/build-tools.mjs 打包出来的接收端产物（机器生成，不参与 lint）
+    ignores: ['**/node_modules', '**/dist', '**/out', 'tools/*.mjs']
+  },
   tseslint.configs.recommended,
   eslintPluginVue.configs['flat/recommended'],
   {
@@ -56,9 +59,10 @@ export default defineConfig(
     }
   },
   {
-    // tools/ 下的接收/分片脚本要能直接 `node xxx.mjs` 运行（目标机不一定有构建环境），
-    // 因此同样是纯 JS：不做类型标注要求，并且允许脚本里用 process / console 这类全局。
-    files: ['tools/**/*.mjs'],
+    // tools/ 下是接收端源码（tools/**/*.ts；它的构建产物 tools/*.mjs 已在上面被忽略）：
+    // 它要能直接 `node typer-recv.mjs` 运行，因此会用 node: 内置模块与 process / console / Buffer
+    // 这类全局，这里显式声明可用全局；类型标注已由 tsc 收敛，不再额外强制
+    files: ['tools/**/*.ts'],
     languageOptions: {
       globals: {
         process: 'readonly',

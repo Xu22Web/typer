@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-// Typer 接收端：从标准输入逐行读取帧 → 逐片校验 → 原子落盘 → 断点续传 → 合并 → 校验整文件。
-// 目标机只要有 Node >= 18 就能跑，不需要 npm install（只依赖 node: 内置模块）；用法见 tools/README.md。
-// 关键约束：输入是键盘 / 剪贴板"打"进来的，可能丢字符或被行缓冲截断，因此每片必须自校验、TTY 下默认切 raw 模式。
-// 大文件不一次读进内存：逐片落盘，合并时流式哈希。
+// Typer 接收端：在**目标机**上运行（零依赖、Node >= 16，只用 node: 内置模块）：逐行读帧 → 逐片校验 → 原子落盘 → 断点续传 → 合并并校验整文件。
+// 输入是键盘 / 剪贴板"打"进来的，可能丢字符或被行缓冲截断，因此每片必须自校验、TTY 下默认切 raw 模式；大文件逐片落盘、合并时流式哈希。
+// 线格式实现引用主进程的 src/main/util/frame.ts，收发两端共用同一份代码；本文件由 esbuild 打成单文件 tools/typer-recv.mjs 后分发。
+// 用法见 tools/README.md（`--help` 查看全部选项，`--selftest` 先自检环境）。
 
 import { createHash } from 'node:crypto'
 import { once } from 'node:events'
@@ -38,7 +38,14 @@ import {
   sha256Hex,
   unescapeText,
   verifyDataFrame
-} from './lib/frame.mjs'
+} from '../src/main/util/frame'
+import type {
+  FrameEncoding,
+  ParsedBeginFrame,
+  ParsedDataFrame,
+  ParsedEndFrame,
+  ParsedResumeFrame
+} from '../src/main/util/frame'
 
 const EXIT = { OK: 0, INCOMPLETE: 2, BAD: 3, USAGE: 4, INTERRUPTED: 130 }
 const REPORT_VERSION = 1
@@ -72,10 +79,9 @@ const HELP = `Typer 文件接收端（逐片校验 + 断点续传 + 合并校验
  * @param argv 参数数组
  * @returns 选项表
  */
-function parseArgs(argv) {
-  /** @type {Record<string, string | boolean>} */
-  const options = {}
-  const aliases = {
+function parseArgs(argv: string[]): Record<string, string | boolean> {
+  const options: Record<string, string | boolean> = {}
+  const aliases: Record<string, string> = {
     o: 'out',
     d: 'dir',
     q: 'quiet',
@@ -129,14 +135,14 @@ if (options.selftest) {
  * 目标机环境不可控（老版本 Node、异常 locale），先跑一遍能省掉大量无谓排查
  * @returns 退出码（0 全部通过，3 有失败项）
  */
-function runSelfTest() {
-  const checks = []
+function runSelfTest(): number {
+  const checks: Array<{ name: string; ok: boolean }> = []
   /**
    * @description 记录一项自检结果
    * @param name 检查项名称
    * @param condition 是否通过
    */
-  const check = (name, condition) => {
+  const check = (name: string, condition: unknown): void => {
     checks.push({ name, ok: Boolean(condition) })
   }
 
@@ -151,7 +157,10 @@ function runSelfTest() {
     check('base64 往返', [...decodeBytes(encodeB64(bytes), 'b64')].join() === [...bytes].join())
     check('文本转义往返', unescapeText(escapeText('a\r\n\t\\b\u0000中')) === 'a\r\n\t\\b\u0000中')
     check('片号解析', parseIndexList('1,3-5', 10).join() === '1,3,4,5')
-    check('帧解析', parseFrame('@TYPER1/R a1b2c3d4 10 3-5').missing.join() === '3,4,5')
+    check(
+      '帧解析',
+      (parseFrame('@TYPER1/R a1b2c3d4 10 3-5') as ParsedResumeFrame).missing.join() === '3,4,5'
+    )
     check('帧版本', FRAME_VERSION === 1)
   } catch (error) {
     check(`自检异常：${error instanceof Error ? error.message : String(error)}`, false)
@@ -174,7 +183,7 @@ function runSelfTest() {
  * @param bytes 字节序列
  * @returns 大写十六进制文本
  */
-function crc32SafeEncode(bytes) {
+function crc32SafeEncode(bytes: Uint8Array): string {
   let out = ''
   for (const byte of bytes) out += byte.toString(16).padStart(2, '0').toUpperCase()
   return out
@@ -185,7 +194,7 @@ function crc32SafeEncode(bytes) {
  * @param bytes 字节序列
  * @returns base64 文本
  */
-function encodeB64(bytes) {
+function encodeB64(bytes: Uint8Array): string {
   return Buffer.from(bytes).toString('base64')
 }
 
@@ -200,7 +209,7 @@ const ackTarget =
  * @description 按 --ack 设置输出一行回执
  * @param line 回执内容
  */
-function ack(line) {
+function ack(line: string): void {
   if (ackTarget) ackTarget.write(`${line}\n`)
 }
 
@@ -208,7 +217,7 @@ function ack(line) {
  * @description 输出一行诊断信息到标准错误
  * @param line 信息内容
  */
-function info(line) {
+function info(line: string): void {
   process.stderr.write(`${line}\n`)
 }
 
@@ -222,17 +231,28 @@ const resume = options['no-resume'] !== true
 const progressEvery = Number(options['progress-every'] ?? 1)
 const charset = String(options.charset ?? 'utf-8')
 
-/** @type {{ job: string, total: number, size: number, sha256: string, enc: string, chunk: number, name: string | null } | null} */
-let meta = null
-let dir = options.dir ? resolve(String(options.dir)) : null
-let outPath = options.out ? resolve(String(options.out)) : null
+/** 当前任务的元信息（来自开始帧，或断点续传时从工作目录的 meta.json 恢复）。 */
+interface TaskMeta {
+  job: string
+  total: number
+  size: number
+  sha256: string
+  enc: FrameEncoding
+  chunk: number
+  name: string | null
+  charset?: string
+}
+
+let meta: TaskMeta | null = null
+let dir: string | null = options.dir ? resolve(String(options.dir)) : null
+let outPath: string | null = options.out ? resolve(String(options.out)) : null
 const reportDisabled = options.report === '-'
 let reportPath = options.report && !reportDisabled ? resolve(String(options.report)) : null
 let seqWidth = 6
 
-const done = new Set()
-const missing = new Set()
-const failures = new Map()
+const done = new Set<number>()
+const missing = new Set<number>()
+const failures = new Map<number, string>()
 let noiseLines = 0
 let receivedFrames = 0
 let lastReportAt = 0
@@ -243,7 +263,7 @@ let lastReportAt = 0
  * @param crc 该片 crc32 文本
  * @returns 分片文件名
  */
-function partName(seq, crc) {
+function partName(seq: number, crc: string): string {
   return `part-${String(seq).padStart(seqWidth, '0')}-${crc}.bin`
 }
 
@@ -253,8 +273,8 @@ function partName(seq, crc) {
  * @param crc 该片 crc32 文本
  * @returns 分片文件路径
  */
-function partPath(seq, crc) {
-  return join(dir, partName(seq, crc))
+function partPath(seq: number, crc: string): string {
+  return join(dir as string, partName(seq, crc))
 }
 
 /**
@@ -262,21 +282,21 @@ function partPath(seq, crc) {
  * @param seq 片号
  * @returns 字节数；txt 模式片长由字符决定、无法反推，返回 null
  */
-function expectedBytes(seq) {
+function expectedBytes(seq: number): number | null {
   // txt 模式按字符边界切片，片长由字符决定，无法用字节数反推（只能校验上界）
-  if (meta.enc === 'txt') return null
-  return chunkSlice(meta.size, meta.chunk, seq).bytes
+  if (meta!.enc === 'txt') return null
+  return chunkSlice(meta!.size, meta!.chunk, seq).bytes
 }
 
 /**
  * @description 校验数据帧声明的片长度是否符合预期
  * @param frame 已解析的数据帧
  */
-function assertChunkLength(frame) {
+function assertChunkLength(frame: ParsedDataFrame): void {
   const expected = expectedBytes(frame.seq)
   if (expected === null) {
-    if (frame.bytes < 1 || frame.bytes > meta.chunk) {
-      throw new FrameError('len', `片 ${frame.seq} 长度 ${frame.bytes} 超出 1 ~ ${meta.chunk}`)
+    if (frame.bytes < 1 || frame.bytes > meta!.chunk) {
+      throw new FrameError('len', `片 ${frame.seq} 长度 ${frame.bytes} 超出 1 ~ ${meta!.chunk}`)
     }
     return
   }
@@ -289,8 +309,8 @@ function assertChunkLength(frame) {
  * @description 读取工作目录里的 meta.json
  * @returns 元信息对象；不存在或损坏时返回 null
  */
-function loadMeta() {
-  const metaPath = join(dir, 'meta.json')
+function loadMeta(): TaskMeta | null {
+  const metaPath = join(dir as string, 'meta.json')
   if (!existsSync(metaPath)) return null
   try {
     const parsed = JSON.parse(readFileSync(metaPath, 'utf8'))
@@ -302,21 +322,21 @@ function loadMeta() {
 }
 
 /** @description 把当前任务元信息写入工作目录的 meta.json */
-function saveMeta() {
-  mkdirSync(dir, { recursive: true })
+function saveMeta(): void {
+  mkdirSync(dir as string, { recursive: true })
   writeFileSync(
-    join(dir, 'meta.json'),
+    join(dir as string, 'meta.json'),
     JSON.stringify(
       {
         reportVersion: REPORT_VERSION,
         version: FRAME_VERSION,
-        job: meta.job,
-        total: meta.total,
-        size: meta.size,
-        sha256: meta.sha256,
-        enc: meta.enc,
-        chunk: meta.chunk,
-        name: meta.name,
+        job: meta!.job,
+        total: meta!.total,
+        size: meta!.size,
+        sha256: meta!.sha256,
+        enc: meta!.enc,
+        chunk: meta!.chunk,
+        name: meta!.name,
         charset,
         updatedAt: new Date().toISOString()
       },
@@ -330,7 +350,7 @@ function saveMeta() {
  * @description 写续传报告（默认节流，避免每片都落盘）
  * @param force 是否忽略节流立即写入
  */
-function writeReport(force = false) {
+function writeReport(force = false): void {
   if (!reportPath || !meta) return
   const now = Date.now()
   if (!force && now - lastReportAt < 150) return
@@ -352,7 +372,7 @@ function writeReport(force = false) {
     missing: formatIndexList(missingList, meta.total)
   }
   try {
-    mkdirSync(dir, { recursive: true })
+    mkdirSync(dir as string, { recursive: true })
     const tmp = `${reportPath}.tmp`
     writeFileSync(tmp, JSON.stringify(payload, null, 2))
     renameSync(tmp, reportPath)
@@ -367,7 +387,7 @@ function writeReport(force = false) {
  * @param fromDisk 是否来自磁盘恢复（false 时回写 meta.json）
  * @returns 是否首次建立任务
  */
-function applyMeta(next, { fromDisk }) {
+function applyMeta(next: TaskMeta, { fromDisk }: { fromDisk: boolean }): boolean {
   if (meta) {
     if (meta.job !== next.job) {
       throw new FrameError('job', `任务 id 不一致：当前 ${meta.job}，收到 ${next.job}`)
@@ -388,22 +408,22 @@ function applyMeta(next, { fromDisk }) {
  * 校验不通过的旧分片会被删除，避免把坏数据当成已完成
  * @returns 保留的已完成片数
  */
-function scanExistingParts() {
-  if (!resume || !existsSync(dir)) return 0
+function scanExistingParts(): number {
+  if (!resume || !existsSync(dir as string)) return 0
   let kept = 0
-  for (const entry of readdirSync(dir)) {
+  for (const entry of readdirSync(dir as string)) {
     const match = /^part-(\d+)-([0-9a-f]{8})\.bin$/.exec(entry)
     if (!match) continue
     const seq = Number(match[1])
     const crc = match[2]
-    const full = join(dir, entry)
-    if (seq >= meta.total) {
+    const full = join(dir as string, entry)
+    if (seq >= meta!.total) {
       rmSync(full, { force: true })
       continue
     }
     const size = statSync(full).size
     const expected = expectedBytes(seq)
-    const usable = expected === null ? size >= 1 && size <= meta.chunk : size === expected
+    const usable = expected === null ? size >= 1 && size <= meta!.chunk : size === expected
     if (!usable || crc32Hex(readFileSync(full)) !== crc) {
       if (verbose) info(`丢弃不可用的分片：${entry}`)
       rmSync(full, { force: true })
@@ -423,7 +443,7 @@ function scanExistingParts() {
  * @description 处理开始帧：建立任务并列出缺失片
  * @param frame 已解析的开始帧
  */
-function handleBegin(frame) {
+function handleBegin(frame: ParsedBeginFrame): void {
   const fresh = applyMeta(
     {
       job: frame.job,
@@ -440,12 +460,12 @@ function handleBegin(frame) {
   if (fresh) {
     const kept = scanExistingParts()
     ack(
-      `#BEGIN ${meta.job} ${meta.total} ${meta.size} enc=${meta.enc} chunk=${meta.chunk} name=${
-        meta.name ?? '-'
+      `#BEGIN ${meta!.job} ${meta!.total} ${meta!.size} enc=${meta!.enc} chunk=${meta!.chunk} name=${
+        meta!.name ?? '-'
       }`
     )
-    if (kept > 0) ack(`#RESUME ${meta.job} 已完成 ${kept}/${meta.total}`)
-    for (let seq = 0; seq < meta.total; seq++) {
+    if (kept > 0) ack(`#RESUME ${meta!.job} 已完成 ${kept}/${meta!.total}`)
+    for (let seq = 0; seq < meta!.total; seq++) {
       if (!done.has(seq)) missing.add(seq)
     }
   }
@@ -456,7 +476,7 @@ function handleBegin(frame) {
  * @description 处理数据帧：校验后原子落盘
  * @param frame 已解析的数据帧
  */
-function handleData(frame) {
+function handleData(frame: ParsedDataFrame): void {
   receivedFrames += 1
 
   if (!meta) {
@@ -468,22 +488,22 @@ function handleData(frame) {
     }
     applyMeta(disk, { fromDisk: true })
     scanExistingParts()
-    for (let seq = 0; seq < meta.total; seq++) {
+    for (let seq = 0; seq < meta!.total; seq++) {
       if (!done.has(seq)) missing.add(seq)
     }
   }
 
-  if (frame.job !== meta.job) {
-    throw new FrameError('job', `帧属于任务 ${frame.job}，当前任务是 ${meta.job}`)
+  if (frame.job !== meta!.job) {
+    throw new FrameError('job', `帧属于任务 ${frame.job}，当前任务是 ${meta!.job}`)
   }
-  if (frame.total !== meta.total) {
-    throw new FrameError('job', `片总数不一致：期望 ${meta.total}，帧里是 ${frame.total}`)
+  if (frame.total !== meta!.total) {
+    throw new FrameError('job', `片总数不一致：期望 ${meta!.total}，帧里是 ${frame.total}`)
   }
-  if (frame.seq >= meta.total) {
-    throw new FrameError('range', `片号超出总数：${frame.seq}/${meta.total}`)
+  if (frame.seq >= meta!.total) {
+    throw new FrameError('range', `片号超出总数：${frame.seq}/${meta!.total}`)
   }
-  if (frame.enc !== meta.enc) {
-    throw new FrameError('enc', `编码不一致：期望 ${meta.enc}，帧里是 ${frame.enc}`)
+  if (frame.enc !== meta!.enc) {
+    throw new FrameError('enc', `编码不一致：期望 ${meta!.enc}，帧里是 ${frame.enc}`)
   }
 
   assertChunkLength(frame)
@@ -499,7 +519,7 @@ function handleData(frame) {
     return
   }
 
-  mkdirSync(dir, { recursive: true })
+  mkdirSync(dir as string, { recursive: true })
   const tmp = `${target}.tmp`
   writeFileSync(tmp, bytes)
   renameSync(tmp, target)
@@ -508,7 +528,7 @@ function handleData(frame) {
   missing.delete(frame.seq)
 
   if (!quiet && (progressEvery === 0 ? false : receivedFrames % Math.max(1, progressEvery) === 0)) {
-    ack(`#OK ${frame.seq} ${done.size}/${meta.total} ${bytes.length}`)
+    ack(`#OK ${frame.seq} ${done.size}/${meta!.total} ${bytes.length}`)
   }
   writeReport()
 }
@@ -518,8 +538,9 @@ function handleData(frame) {
  * @param frame 已解析的数据帧
  * @returns 解码后的字节
  */
-function decodeDataPayload(frame) {
-  if (frame.enc === 'txt') return Buffer.from(unescapeText(frame.payload), charset)
+function decodeDataPayload(frame: ParsedDataFrame): Uint8Array {
+  if (frame.enc === 'txt')
+    return Buffer.from(unescapeText(frame.payload), charset as BufferEncoding)
   return decodeBytes(frame.payload, frame.enc)
 }
 
@@ -531,22 +552,22 @@ function decodeDataPayload(frame) {
  * @description 合并分片并做整文件校验
  * @returns 退出码
  */
-async function mergeAndVerify() {
-  const missingList = missingIndexes(meta.total, [...done])
+async function mergeAndVerify(): Promise<number> {
+  const missingList = missingIndexes(meta!.total, [...done])
   if (missingList.length > 0) {
-    const ranges = formatIndexList(missingList, meta.total)
+    const ranges = formatIndexList(missingList, meta!.total)
     ack(`#MISS ${ranges}`)
     if (options.token)
-      ack(buildResumeToken({ job: meta.job, total: meta.total, missing: missingList }))
+      ack(buildResumeToken({ job: meta!.job, total: meta!.total, missing: missingList }))
     writeReport(true)
     info(
-      `数据不全：还缺 ${missingList.length}/${meta.total} 片（${ranges}）。\n` +
+      `数据不全：还缺 ${missingList.length}/${meta!.total} 片（${ranges}）。\n` +
         '把上面的片号填回 Typer 的「只发指定片」，或直接重跑一遍（已通过的片会自动跳过）。'
     )
     return EXIT.INCOMPLETE
   }
 
-  if (existsSync(outPath) && options.force !== true) {
+  if (existsSync(outPath as string) && options.force !== true) {
     info(
       `输出文件已存在：${outPath}\n` +
         '如需覆盖请加 --force（校验通过的结果不会被半成品覆盖，因此这里必须显式确认）。'
@@ -559,33 +580,33 @@ async function mergeAndVerify() {
   let size = 0
 
   // 目录只扫一次：片数上万时逐片 readdir 会变成 O(n²)
-  const parts = new Map()
-  for (const entry of readdirSync(dir)) {
+  const parts = new Map<number, string>()
+  for (const entry of readdirSync(dir as string)) {
     const match = /^part-(\d+)-([0-9a-f]{8})\.bin$/.exec(entry)
     if (match) parts.set(Number(match[1]), entry)
   }
 
   try {
     const out = createWriteStream(tmpOut)
-    for (let seq = 0; seq < meta.total; seq++) {
+    for (let seq = 0; seq < meta!.total; seq++) {
       const entry = parts.get(seq)
       if (!entry) throw new Error(`分片缺失：${seq}`)
-      for await (const chunk of createReadStream(join(dir, entry))) {
+      for await (const chunk of createReadStream(join(dir as string, entry))) {
         hash.update(chunk)
         size += chunk.length
         if (!out.write(chunk)) await once(out, 'drain')
       }
     }
-    await new Promise((ok, bad) => out.end((error) => (error ? bad(error) : ok())))
+    await new Promise<void>((ok, bad) => out.end((error) => (error ? bad(error) : ok())))
   } catch (error) {
     info(`合并失败：${error instanceof Error ? error.message : String(error)}`)
     return EXIT.USAGE
   }
 
   const digest = hash.digest('hex')
-  if (size !== meta.size || digest !== meta.sha256) {
+  if (size !== meta!.size || digest !== meta!.sha256) {
     rmSync(tmpOut, { force: true })
-    ack(`#BAD 合并后校验失败（大小 ${size}/${meta.size}，sha256 ${digest.slice(0, 16)}…）`)
+    ack(`#BAD 合并后校验失败（大小 ${size}/${meta!.size}，sha256 ${digest.slice(0, 16)}…）`)
     info(
       '完整性校验未通过。请重跑一次（分片已通过逐片校验，通常是合并阶段磁盘或权限问题），' +
         '或用 --keep-parts 保留分片以便进一步排查。'
@@ -593,13 +614,13 @@ async function mergeAndVerify() {
     return EXIT.BAD
   }
 
-  renameSync(tmpOut, outPath)
+  renameSync(tmpOut, outPath as string)
   ack(`#DONE ${outPath} ${size} ${digest}`)
   if (!quiet) {
-    info(`完成：${meta.total} 片 → ${outPath}（${size} 字节），整文件 SHA-256 校验通过。`)
+    info(`完成：${meta!.total} 片 → ${outPath}（${size} 字节），整文件 SHA-256 校验通过。`)
   }
   if (options['keep-parts'] !== true) {
-    rmSync(dir, { recursive: true, force: true })
+    rmSync(dir as string, { recursive: true, force: true })
     reportPath = null
   } else {
     writeReport(true)
@@ -615,7 +636,7 @@ async function mergeAndVerify() {
  * @description 处理一行输入：解析成帧并按类型分发，无法解析的行按噪声忽略
  * @param rawLine 原始行
  */
-function handleLine(rawLine) {
+function handleLine(rawLine: string): void {
   const line = sanitizeLine(rawLine)
   if (line.length === 0) return
 
@@ -660,13 +681,13 @@ function handleLine(rawLine) {
   }
 }
 
-let pendingEnd = null
+let pendingEnd: ParsedEndFrame | null = null
 
 /**
  * @description 主循环：先挂监听再读输入、分发帧，最后合并校验
  * @returns 退出码
  */
-async function run() {
+async function run(): Promise<number> {
   const splitter = createLineSplitter()
 
   /**
@@ -674,7 +695,7 @@ async function run() {
    * @param lines 待处理的行
    * @returns 是否应停止读取
    */
-  const consume = (lines) => {
+  const consume = (lines: string[]): boolean => {
     for (const line of lines) {
       handleLine(line)
       if (pendingEnd) return true
@@ -699,7 +720,7 @@ async function run() {
    * @description 输入流回调：处理 Ctrl+C / Ctrl+D 与普通数据
    * @param chunk 输入数据块
    */
-  const onData = (chunk) => {
+  const onData = (chunk: string | Buffer): void => {
     const text = typeof chunk === 'string' ? chunk : chunk.toString('utf8')
     if (text.includes('\u0003')) {
       interrupted = true
@@ -719,9 +740,9 @@ async function run() {
   source.on('data', onData)
   source.resume()
 
-  await new Promise((resolvePromise) => {
+  await new Promise<void>((resolvePromise) => {
     /** @description 结束等待 */
-    const finish = () => resolvePromise()
+    const finish = (): void => resolvePromise()
     source.on('end', finish)
     source.on('close', finish)
     source.on('error', (error) => {

@@ -18,7 +18,7 @@ import {
   randomJobId,
   sha16Hex,
   verifyDataFrame
-} from '@tools/lib/frame.mjs'
+} from '@main/util/frame'
 
 import { isValidUtf8 } from '@main/util/textFile'
 import {

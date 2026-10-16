@@ -18,7 +18,8 @@ import {
   parseTransferFramesRequest,
   parseTransferPrepareRequest,
   parseTransferResumeRequest,
-  type AppInfo
+  type AppInfo,
+  type TransferToolScriptPayload
 } from './contracts'
 
 /** `ipcMain` 的最小接口（便于测试注入）。 */
@@ -83,6 +84,8 @@ export interface TransferControls {
   exportTools: () => Promise<string | null>
   /** 打开脚本所在目录（找不到时返回 false） */
   revealTools: () => Promise<boolean> | boolean
+  /** 读取接收端脚本（构建产物）的路径与全文，交给渲染进程展示 / 复制 */
+  toolScript: () => Promise<TransferToolScriptPayload> | TransferToolScriptPayload
 }
 
 /** 更新服务的 IPC 面（只暴露界面需要的那几个动作）。 */
@@ -255,6 +258,9 @@ export function registerIpcHandlers(options: RegisterIpcOptions): string[] {
     })
 
     register(IPC.transferRevealTools, () => transfer.revealTools())
+
+    // 接收端脚本是构建产物：渲染进程拿到全文就能直接展示 / 复制，用户不必去安装目录翻文件
+    register(IPC.transferToolScript, () => transfer.toolScript())
 
     register(IPC.transferStartFrames, async (_event, payload) => {
       const options = parseTransferFramesRequest(payload)

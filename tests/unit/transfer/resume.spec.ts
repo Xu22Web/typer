@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { buildResumeToken } from '@tools/lib/frame.mjs'
+import { buildResumeToken } from '@main/util/frame'
 import { prepareTransfer, type PreparedTransfer } from '@main/transfer/prepare'
 import {
   describeIndexes,

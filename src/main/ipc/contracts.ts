@@ -164,6 +164,12 @@ export function parseTransferFramesRequest(payload: unknown): TransferFramesRequ
   return { only, from, resumeMissing }
 }
 
+/** 接收端脚本的位置与全文（渲染进程据此展示 / 复制，用户可直接存到目标机）。 */
+export interface TransferToolScriptPayload {
+  path: string
+  text: string
+}
+
 /**
  * @description 校验续传输入：非空且体积受限（应是一行令牌或一份小报告）
  * @param payload 候选续传内容

@@ -6,3 +6,5 @@ tsconfig.json
 tsconfig.*.json
 src/renderer/src/auto-imports.d.ts
 src/renderer/src/components.d.ts
+# 构建产物，由 pnpm build:tools 生成
+tools/*.mjs

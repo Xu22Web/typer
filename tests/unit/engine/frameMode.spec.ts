@@ -193,6 +193,66 @@ describe('引擎 · 文件传输模式', () => {
     expect(clock.sleeps.filter((ms) => ms === 25)).toHaveLength(2)
   })
 
+  it('节奏设置对帧模式完全没有影响：极端设置与全 0 的指令序列、总耗时一致', async () => {
+    const neutral = createHarness()
+    await neutral.engine.start(
+      frameJob(),
+      engineSettings({ insertMode: 'keystroke', autoPasteThreshold: 1 })
+    )
+
+    // 抖动 / 突发停顿 / 标点 / 换行 / 段落停顿全部拉到极端，错字概率拉满
+    const extreme: TimingSettings = {
+      speedMode: 'interval',
+      cps: 1,
+      wpm: 1,
+      baseIntervalMs: 500,
+      jitterMs: 5000,
+      distribution: 'uniform',
+      wordPauseMs: 9999,
+      punctuationPauseMs: 9999,
+      newlinePauseMs: 9999,
+      paragraphPauseMs: 9999,
+      burstSize: 2,
+      burstPauseMs: 20000
+    }
+    const noisy = createHarness()
+    await noisy.engine.start(
+      frameJob(),
+      engineSettings({
+        insertMode: 'keystroke',
+        autoPasteThreshold: 1,
+        timing: extreme,
+        typo: { rate: 1, style: 'adjacent', correction: 'auto' }
+      })
+    )
+
+    // 帧模式使用确定性节奏：每条宿主指令（含其 delay）都必须与"全 0"逐字节相同
+    expect(noisy.driver.items).toEqual(neutral.driver.items)
+    // 帧内容耗时 = 所有指令 delay 之和，两轮必须一致且非 0（排除"假一致"）
+    const sumDelay = (items: HostItem[]): number =>
+      items.reduce((sum, item) => sum + (item.t === 'wait' ? item.ms : item.delay), 0)
+    expect(sumDelay(noisy.driver.items)).toBe(sumDelay(neutral.driver.items))
+    expect(sumDelay(neutral.driver.items)).toBeGreaterThan(0)
+  })
+
+  it('片间断顿仍按 interFrameDelayMs 生效：总时长 = 帧内容 + 2×片间断顿', async () => {
+    const zero = createHarness()
+    await zero.engine.start(
+      frameJob(),
+      engineSettings({ insertMode: 'keystroke', autoPasteThreshold: 1, interFrameDelayMs: 0 })
+    )
+
+    const spaced = createHarness()
+    await spaced.engine.start(
+      frameJob(),
+      engineSettings({ insertMode: 'keystroke', autoPasteThreshold: 1, interFrameDelayMs: 25 })
+    )
+
+    // 3 片 → 2 次片间停顿；帧内容耗时确定性不变，差值正好是 2×片间断顿
+    expect(spaced.clock.sleeps.filter((ms) => ms === 25)).toHaveLength(2)
+    expect(spaced.clock.now() - zero.clock.now()).toBe(2 * 25)
+  })
+
   it('只发指定片时严格只发这些片，且不发结束帧', async () => {
     const { engine, driver } = createHarness()
     const seen: number[] = []

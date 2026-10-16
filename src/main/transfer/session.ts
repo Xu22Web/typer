@@ -206,7 +206,16 @@ export class TransferSession {
 }
 
 /**
- * @description 把 tools/ 里的接收脚本与线格式文档逐个复制到目标目录（目标机没有包管理器，需要的是能直接拷过去跑的文件，所以不打包成 zip）
+ * @description 判断文件是否属于"要发给用户的构建产物 / 说明文档"（.ts 源码与 .d.mts 类型声明留在仓库里，用户拿到也没用）
+ * @param name 文件名（不含目录）
+ * @returns 是否应复制
+ */
+function shouldExport(name: string): boolean {
+  return name.endsWith('.mjs') || name === 'README.md'
+}
+
+/**
+ * @description 把 tools/ 里随包分发的接收端构建产物与说明文档复制到目标目录（目标机没有包管理器，需要的是能直接拷过去跑的文件，所以只挑产物、不打包成 zip）
  * @param toolsDir 源目录
  * @param destination 目标目录
  * @returns 已复制的相对路径列表
@@ -216,7 +225,7 @@ export function copyToolsTo(toolsDir: string, destination: string): string[] {
   const copied: string[] = []
 
   /**
-   * @description 递归复制一个子目录（相对路径为空串表示源根目录）
+   * @description 递归遍历一个子目录（相对路径为空串表示源根目录），只复制产物与文档
    * @param relative 相对源目录的路径
    */
   const walk = (relative: string): void => {
@@ -228,6 +237,7 @@ export function copyToolsTo(toolsDir: string, destination: string): string[] {
         walk(child)
         continue
       }
+      if (!shouldExport(entry)) continue
       const target = join(destination, child)
       mkdirSync(dirname(target), { recursive: true })
       copyFileSync(full, target)

@@ -1,18 +1,49 @@
 import { execFile } from 'node:child_process'
 import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { basename, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { crc32Hex, parseFrame, sha256Hex } from '@tools/lib/frame.mjs'
+import {
+  buildBeginFrame,
+  buildDataFrame,
+  buildEndFrame,
+  chunkCount,
+  chunkSlice,
+  crc32Hex,
+  encodeBytes,
+  escapeText,
+  parseFrame,
+  planTextChunks,
+  randomJobId,
+  sha16Hex,
+  sha256Hex,
+  type FrameEncoding
+} from '@main/util/frame'
 import { prepareTransfer, type PreparedTransfer } from '@main/transfer/prepare'
 import { matchResume, parseResumeState } from '@main/transfer/resume'
 
 const run = promisify(execFile)
 const root = resolve(fileURLToPath(new URL('.', import.meta.url)), '..', '..')
-const RECV = join(root, 'tools', 'typer-recv.mjs')
-const CHUNK = join(root, 'tools', 'typer-chunk.mjs')
+
+/**
+ * @description 定位接收端构建产物；产物由 `npm run build:tools`（源码 tools/typer-recv.ts）打包生成，
+ * 缺失时必须明确报错——静默跳过会让"接收端坏了"看起来像"测试通过"
+ * @param name 产物文件名
+ * @returns 产物绝对路径
+ */
+function toolPath(name: string): string {
+  const path = join(root, 'tools', name)
+  if (!existsSync(path)) {
+    throw new Error(
+      `缺少接收端构建产物 ${path}：请先运行 npm run build:tools（由 tools/typer-recv.ts 打包生成）`
+    )
+  }
+  return path
+}
+
+const RECV = toolPath('typer-recv.mjs')
 
 interface ToolResult {
   code: number
@@ -68,54 +99,76 @@ function makeSource(size: number, seed = 5): Buffer {
   return buffer
 }
 
-interface ChunkResult {
+interface FrameSet {
   job: string
   sha256: string
   total: number
-  framesPath: string
-  chunksDir: string
   lines: string[]
 }
 
 /**
- * @description 用分片脚本生成帧文本，同时验证它在应用之外也能独立工作
+ * @description 在测试进程内用线格式实现生成整套帧文本（开始帧 + 每片数据帧 + 结束帧）并写到 work/frames.txt；
+ * 口径与发送端一致：hex 大写、txt 按字符边界切分、文件名 base64url、sha256 为整文件哈希
  * @param sourcePath 源文件路径（相对 work 目录）
- * @param options 片大小、编码与输出目录
- * @returns 任务 id、哈希、片数与帧行
+ * @param options 片大小与编码
+ * @returns 任务 id、整文件哈希、片数与帧行
  */
-async function chunkFile(
+function buildFrames(
   sourcePath: string,
-  options: { chunk?: number; enc?: string; out?: string } = {}
-): Promise<ChunkResult> {
-  const args = [
-    sourcePath,
-    '--chunk',
-    String(options.chunk ?? 1024),
-    '--single',
-    'frames.txt',
-    '--verify'
+  options: { chunk?: number; enc?: FrameEncoding } = {}
+): FrameSet {
+  const enc = options.enc ?? 'hex'
+  const chunk = options.chunk ?? 1024
+  const source = readFileSync(join(work, sourcePath))
+  const job = randomJobId()
+  const size = source.length
+  const sha256 = sha256Hex(source)
+
+  const textChunks = enc === 'txt' ? planTextChunks(source.toString('utf8'), chunk) : null
+  const total = textChunks === null ? chunkCount(size, chunk) : textChunks.length
+
+  const lines = [
+    buildBeginFrame({ job, total, size, enc, chunk, name: basename(sourcePath), sha256 })
   ]
-  if (options.enc) args.push('--enc', options.enc)
-  if (options.out) args.push('--out', options.out)
 
-  const result = await runTool(CHUNK, args, work)
-  expect(result.stderr, `分片脚本失败：${result.stderr}`).toBe('')
-  expect(result.code).toBe(0)
-
-  const framesPath = join(work, 'frames.txt')
-  const text = readFileSync(framesPath, 'utf8')
-  const lines = text.split('\n').filter((line) => line.length > 0)
-  const begin = parseFrame(lines[0] as string)
-  if (begin.kind !== 'begin') throw new Error('第一行应为开始帧')
-
-  return {
-    job: begin.job,
-    sha256: begin.sha256,
-    total: begin.total,
-    framesPath,
-    chunksDir: join(work, options.out ?? `.typer-chunks-${begin.job}`),
-    lines
+  /**
+   * @description 构造并记录一片数据帧
+   * @param seq 片号
+   * @param part 本片字节
+   * @param payload 已编码的单行载荷
+   */
+  const pushDataFrame = (seq: number, part: Uint8Array, payload: string): void => {
+    lines.push(
+      buildDataFrame({
+        job,
+        seq,
+        total,
+        bytes: part.length,
+        crc32: crc32Hex(part),
+        sha16: sha16Hex(part),
+        enc,
+        payload
+      })
+    )
   }
+
+  if (textChunks === null) {
+    for (let seq = 0; seq < total; seq++) {
+      const slice = chunkSlice(size, chunk, seq)
+      const part = source.subarray(slice.offset, slice.offset + slice.bytes)
+      pushDataFrame(seq, part, encodeBytes(part, enc))
+    }
+  } else {
+    textChunks.forEach((entry, seq) => {
+      const part = Buffer.from(entry.text, 'utf8')
+      pushDataFrame(seq, part, escapeText(entry.text))
+    })
+  }
+
+  lines.push(buildEndFrame({ job, total, size, sha256 }))
+  writeFileSync(join(work, 'frames.txt'), `${lines.join('\n')}\n`)
+
+  return { job, sha256, total, lines }
 }
 
 /**
@@ -140,7 +193,7 @@ describe('typer-recv.mjs：端到端接收与完整性校验', () => {
   it('hex 编码的二进制文件逐字节还原，退出码 0', async () => {
     const source = makeSource(70000)
     writeFileSync(join(work, 'src.bin'), source)
-    const job = await chunkFile('src.bin')
+    const job = buildFrames('src.bin')
 
     const result = await runTool(
       RECV,
@@ -157,7 +210,7 @@ describe('typer-recv.mjs：端到端接收与完整性校验', () => {
 
   it('空文件也能完成（0 片，产出空文件）', async () => {
     writeFileSync(join(work, 'empty.bin'), Buffer.alloc(0))
-    await chunkFile('empty.bin')
+    buildFrames('empty.bin')
 
     const result = await runTool(
       RECV,
@@ -171,7 +224,7 @@ describe('typer-recv.mjs：端到端接收与完整性校验', () => {
   it('b64 与 txt 编码同样逐字节还原', async () => {
     const binary = makeSource(4000)
     writeFileSync(join(work, 'src2.bin'), binary)
-    await chunkFile('src2.bin', { chunk: 333, enc: 'b64' })
+    buildFrames('src2.bin', { chunk: 333, enc: 'b64' })
     let result = await runTool(
       RECV,
       ['--in', 'frames.txt', '-o', 'b64.out', '-d', 'work-b64', '--quiet'],
@@ -184,7 +237,7 @@ describe('typer-recv.mjs：端到端接收与完整性校验', () => {
     const text = `第一行\r\n第二行\tTab\r\n中文与 emoji 😀\r\n`
     const textBuffer = Buffer.from(text, 'utf8')
     writeFileSync(join(work, 'note.txt'), textBuffer)
-    await chunkFile('note.txt', { chunk: 16, enc: 'txt' })
+    buildFrames('note.txt', { chunk: 16, enc: 'txt' })
     result = await runTool(
       RECV,
       ['--in', 'frames.txt', '-o', 'txt.out', '-d', 'work-txt', '--quiet'],
@@ -200,7 +253,7 @@ describe('typer-recv.mjs：坏数据与断点续传', () => {
   it('篡改一帧 → 只有该片失败，退出码 2 并给出缺失片号；补传该片后完成', async () => {
     const source = makeSource(20000)
     writeFileSync(join(work, 'src.bin'), source)
-    const job = await chunkFile('src.bin')
+    const job = buildFrames('src.bin')
 
     // 破坏第 5 片载荷里的一个字符（长度不变，只是内容变了）
     const broken = [...job.lines]
@@ -240,7 +293,7 @@ describe('typer-recv.mjs：坏数据与断点续传', () => {
   it('中断后续传：只发前一半 → 报告缺失片；再发剩下的（无开始帧）→ 完成且逐字节一致', async () => {
     const source = makeSource(30000)
     writeFileSync(join(work, 'src.bin'), source)
-    const job = await chunkFile('src.bin')
+    const job = buildFrames('src.bin')
     const half = Math.floor(job.total / 2)
 
     writeSubset('part1.txt', job.lines.slice(0, half + 1))
@@ -269,7 +322,7 @@ describe('typer-recv.mjs：坏数据与断点续传', () => {
   it('幂等：重复收同一批帧不会破坏结果（已通过的分片会被跳过）', async () => {
     const source = makeSource(8000)
     writeFileSync(join(work, 'src.bin'), source)
-    await chunkFile('src.bin')
+    buildFrames('src.bin')
 
     const first = await runTool(
       RECV,
@@ -293,7 +346,7 @@ describe('typer-recv.mjs：坏数据与断点续传', () => {
   it('--no-resume 时忽略已有分片并全部重收', async () => {
     const source = makeSource(4000)
     writeFileSync(join(work, 'src.bin'), source)
-    await chunkFile('src.bin')
+    buildFrames('src.bin')
 
     await runTool(RECV, ['--in', 'frames.txt', '-d', 'work', '-o', 'first.bin'], work)
     const forced = await runTool(
@@ -309,7 +362,7 @@ describe('typer-recv.mjs：坏数据与断点续传', () => {
   it('缺少开始帧且没有工作目录时明确失败，不会产出半成品', async () => {
     const source = makeSource(3000)
     writeFileSync(join(work, 'src.bin'), source)
-    const job = await chunkFile('src.bin')
+    const job = buildFrames('src.bin')
     writeSubset('data-only.txt', job.lines.slice(1, 3))
 
     const result = await runTool(RECV, ['--in', 'data-only.txt', '-d', 'nowhere'], work)
@@ -323,7 +376,7 @@ describe('typer-recv.mjs：真实终端噪声的容忍', () => {
   it('bracketed paste 标记、CRLF、裸 CR、噪声行混合也不影响结果', async () => {
     const source = makeSource(5000)
     writeFileSync(join(work, 'src.bin'), source)
-    const job = await chunkFile('src.bin')
+    const job = buildFrames('src.bin')
 
     // 模拟：粘贴被包在 bracketed paste 里、混入 shell 提示符/回显等噪声行、行尾混杂 CRLF 与裸 CR
     const pieces: string[] = []
@@ -348,7 +401,7 @@ describe('typer-recv.mjs：真实终端噪声的容忍', () => {
   it('--ack none 时不产生任何回执输出', async () => {
     const source = makeSource(2000)
     writeFileSync(join(work, 'src.bin'), source)
-    await chunkFile('src.bin')
+    buildFrames('src.bin')
 
     const result = await runTool(
       RECV,
@@ -362,7 +415,7 @@ describe('typer-recv.mjs：真实终端噪声的容忍', () => {
   it('--cooked 与默认行为一致（同一批帧得到同一结果）', async () => {
     const source = makeSource(3000)
     writeFileSync(join(work, 'src.bin'), source)
-    await chunkFile('src.bin')
+    buildFrames('src.bin')
 
     const result = await runTool(
       RECV,
@@ -374,7 +427,7 @@ describe('typer-recv.mjs：真实终端噪声的容忍', () => {
   })
 })
 
-describe('应用与脚本的一致性（同一文件、同一参数）', () => {
+describe('应用与接收端的一致性（同一文件、同一参数）', () => {
   /**
    * @description 用应用侧模块（主进程用的那套）生成整套帧文本
    * @param path 源文件路径
@@ -395,7 +448,7 @@ describe('应用与脚本的一致性（同一文件、同一参数）', () => {
     return { job, lines }
   }
 
-  it('应用生成的帧能被接收脚本逐字节还原，且与分片脚本的产物逐字段一致', async () => {
+  it('应用生成的帧能被接收脚本逐字节还原', async () => {
     const source = makeSource(20000)
     writeFileSync(join(work, 'src.bin'), source)
 
@@ -405,34 +458,6 @@ describe('应用与脚本的一致性（同一文件、同一参数）', () => {
       maxFrameChars: 4096
     })
 
-    // ① 与分片脚本的产物逐字段比对：两条独立实现的编码/校验路径必须完全一致
-    const tool = await chunkFile('src.bin', { chunk: 1024 })
-    const appFrames = app.lines.map((line) => parseFrame(line))
-    const toolFrames = tool.lines.map((line) => parseFrame(line))
-    expect(appFrames).toHaveLength(toolFrames.length)
-
-    const appBegin = appFrames[0]
-    const toolBegin = toolFrames[0]
-    if (appBegin.kind !== 'begin' || toolBegin.kind !== 'begin') throw new Error('应为开始帧')
-    expect(appBegin.total).toBe(toolBegin.total)
-    expect(appBegin.size).toBe(toolBegin.size)
-    expect(appBegin.chunk).toBe(toolBegin.chunk)
-    expect(appBegin.sha256).toBe(toolBegin.sha256)
-    expect(appBegin.name).toBe(toolBegin.name)
-
-    for (let index = 0; index < appFrames.length; index++) {
-      const left = appFrames[index]
-      const right = toolFrames[index]
-      expect(left.kind).toBe(right.kind)
-      if (left.kind !== 'data' || right.kind !== 'data') continue
-      expect(left.seq).toBe(right.seq)
-      expect(left.bytes).toBe(right.bytes)
-      expect(left.crc32).toBe(right.crc32)
-      expect(left.sha16).toBe(right.sha16)
-      expect(left.payload).toBe(right.payload)
-    }
-
-    // ② 应用产出的帧直接喂给接收脚本
     writeSubset('app-frames.txt', app.lines)
     const result = await runTool(
       RECV,
@@ -501,49 +526,5 @@ describe('应用与脚本的一致性（同一文件、同一参数）', () => {
     expect(retried.code).toBe(0)
     expect(readFileSync(join(work, 'out.bin')).equals(source)).toBe(true)
     await app.job.dispose()
-  })
-})
-
-describe('typer-chunk.mjs：分片端的独立可用性', () => {
-  it('manifest.json 记录任务规模、整文件哈希与每片校验和', async () => {
-    const source = makeSource(2500)
-    writeFileSync(join(work, 'src.bin'), source)
-    const job = await chunkFile('src.bin', { chunk: 1024 })
-
-    const manifest = JSON.parse(readFileSync(join(job.chunksDir, 'manifest.json'), 'utf8'))
-    expect(manifest.job).toBe(job.job)
-    expect(manifest.size).toBe(source.length)
-    expect(manifest.sha256).toBe(sha256Hex(source))
-    expect(manifest.chunk).toBe(1024)
-    expect(manifest.total).toBe(3)
-    expect(manifest.frames).toHaveLength(3)
-    expect(manifest.frames[0].bytes).toBe(1024)
-    expect(manifest.frames[2].bytes).toBe(452)
-
-    // 每片的 crc 与源文件对应区间一致
-    const first = source.subarray(0, 1024)
-    expect(manifest.frames[0].crc32).toBe(crc32Hex(first))
-  })
-
-  it('片大小超出帧长上限时立即失败并给出建议', async () => {
-    writeFileSync(join(work, 'src.bin'), makeSource(4096))
-    const result = await runTool(CHUNK, ['src.bin', '--chunk', '4096', '--single', 'f.txt'], work)
-    expect(result.code).toBe(4)
-    expect(result.stderr).toContain('超过上限')
-    expect(result.stderr).toContain('--chunk 降到')
-  })
-
-  it('txt 编码拒绝非 UTF-8 文件（保证整文件哈希两端一致）', async () => {
-    // GBK 的 "中文" = D6 D0 CE C4
-    writeFileSync(join(work, 'gbk.txt'), Buffer.from([0xd6, 0xd0, 0xce, 0xc4]))
-    const result = await runTool(CHUNK, ['gbk.txt', '--enc', 'txt', '--single', 'f.txt'], work)
-    expect(result.code).toBe(4)
-    expect(result.stderr).toContain('UTF-8')
-  })
-
-  it('--no-frames 只产出 manifest，不与 --verify 组合', async () => {
-    writeFileSync(join(work, 'src.bin'), makeSource(1500))
-    const result = await runTool(CHUNK, ['src.bin', '--no-frames', '--verify'], work)
-    expect(result.code).toBe(4)
   })
 })

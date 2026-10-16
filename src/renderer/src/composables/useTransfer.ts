@@ -1,5 +1,6 @@
 import { computed, ref } from 'vue'
 import type { ComputedRef, Ref } from 'vue'
+import type { TransferToolScriptPayload } from '@main/ipc/contracts'
 import type {
   ResumeMatch,
   TransferJobSummary,
@@ -239,6 +240,22 @@ async function revealTools(): Promise<void> {
 }
 
 /**
+ * @description 取回随包分发的接收端脚本的路径与全文，失败写入错误日志
+ * @returns 脚本路径与全文；调用失败或内容为空时返回 null
+ */
+async function loadToolScript(): Promise<TransferToolScriptPayload | null> {
+  try {
+    const script = await window.api.transfer.toolScript()
+    if (script.text.length === 0) throw new Error('接收脚本内容为空')
+    return script
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    useTyping().log('error', `读取接收脚本失败：${message}`)
+    return null
+  }
+}
+
+/**
  * @description 找出与给定字节数匹配的片大小预设
  * @param chunkBytes 片大小（字节）
  * @returns 预设 id；没有匹配项时返回 `custom`
@@ -273,6 +290,7 @@ export function useTransfer(): {
   start: () => Promise<void>
   exportTools: () => Promise<void>
   revealTools: () => Promise<void>
+  loadToolScript: () => Promise<TransferToolScriptPayload | null>
   presetIdFor: (chunkBytes: number) => string
   limits: typeof TRANSFER_LIMITS
 } {
@@ -298,6 +316,7 @@ export function useTransfer(): {
     start,
     exportTools,
     revealTools,
+    loadToolScript,
     presetIdFor,
     limits: TRANSFER_LIMITS
   }

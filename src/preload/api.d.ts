@@ -1,5 +1,10 @@
 import type { ElectronAPI } from '@electron-toolkit/preload'
-import type { AppInfo, ImportResult, WindowStatePayload } from '@main/ipc/contracts'
+import type {
+  AppInfo,
+  ImportResult,
+  TransferToolScriptPayload,
+  WindowStatePayload
+} from '@main/ipc/contracts'
 import type { UpdateCheckResult, UpdateProgress, UpdateState } from '@main/update/types'
 import type { Settings } from '@main/settings/types'
 import type { ProgressSnapshot } from '@main/typing/engine/progress'
@@ -79,10 +84,12 @@ export interface TyperApi {
     plan: (options: FramePlanRequest) => Promise<FramePlan>
     /** 开始输入：`only`/`from` 决定这次发哪些片 */
     start: (options: FramePlanRequest) => Promise<RunSummary & { plan?: FramePlan }>
-    /** 把接收/分片脚本复制到用户选择的目录（返回目标目录或 null） */
+    /** 把接收端脚本复制到用户选择的目录（返回目标目录或 null） */
     exportTools: () => Promise<string | null>
     /** 在资源管理器里定位脚本目录 */
     revealTools: () => Promise<boolean>
+    /** 读取接收端脚本（构建产物）的路径与全文，界面里直接展示 / 复制 */
+    toolScript: () => Promise<TransferToolScriptPayload>
     onPrepareProgress: (listener: (payload: TransferPrepareProgress) => void) => () => void
   }
   /** 自绘标题栏的窗口控制。 */

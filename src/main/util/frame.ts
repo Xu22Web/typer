@@ -1,11 +1,15 @@
 // Typer 文件传输「线格式」v1 的唯一实现。
-// 用纯 JS 写在 tools/lib 下：主进程直接 import（rollup 会打包进 out/main），tools/ 下的脚本也必须能直接 `node xxx.mjs` 运行，不能依赖构建产物。
-// 只用 node: 内置模块、零第三方依赖，Node >= 18 可运行；双方共用同一份编码 / 校验 / 分片实现，从根上避免收发两端实现漂移。
+// 主进程（生成帧、算续传计划）与接收端脚本（tools/typer-recv.ts）共用同一份实现，收发两端不可能出现实现漂移。
+// 只用 node: 内置模块、零第三方依赖，Node >= 16 可运行。
 // 帧一定是单行、纯 ASCII、无空白：目标是终端或串口，回车即提交，任何控制字符都会把数据搅乱，所以二进制必须先编码。
-//
-// @typedef {'hex' | 'b64' | 'txt'} FrameEncoding
 
 import { createHash } from 'node:crypto'
+
+/** 载荷编码：hex（最抗终端干扰，默认）/ base64（紧凑）/ 转义文本（按字符切分）。 */
+export type FrameEncoding = 'hex' | 'b64' | 'txt'
+
+/** 可当字节序列使用的输入。 */
+export type BytesLike = Uint8Array | string | ArrayBuffer | ArrayBufferView
 
 /** 线格式版本。字段含义变化时必须递增，接收端据此拒绝不认识的帧。 */
 export const FRAME_VERSION = 1
@@ -16,9 +20,10 @@ export const MARKERS = {
   data: '@TYPER1/D',
   end: '@TYPER1/E',
   resume: '@TYPER1/R'
-}
+} as const
 
-export const ENCODINGS = ['hex', 'b64', 'txt']
+/** 全部受支持的载荷编码。 */
+export const ENCODINGS: readonly FrameEncoding[] = ['hex', 'b64', 'txt']
 export const DEFAULT_CHUNK_BYTES = 1024
 export const DEFAULT_MAX_FRAME_CHARS = 4096
 /** 硬上限：单片字节数（更大的片在终端/剪贴板上几乎必然失败）。 */
@@ -26,15 +31,23 @@ export const MAX_CHUNK_BYTES = 1024 * 1024
 /** 硬上限：单帧字符数（接收端要先把整行读进内存）。 */
 export const MAX_FRAME_CHARS = 1024 * 1024
 
+/** 协议层错误码。 */
+export type FrameErrorCode =
+  'marker' | 'field' | 'crc' | 'len' | 'enc' | 'overlong' | 'job' | 'range' | 'empty'
+
 /** 协议层错误：带稳定的 `code`，便于上层分类与给出可操作建议。 */
 export class FrameError extends Error {
+  declare readonly name: 'FrameError'
+  declare readonly code: FrameErrorCode
+  declare readonly detail?: string
+
   /**
    * @description 构造协议层错误
    * @param code 机器可读错误码（marker / field / crc / len / enc / overlong / job / range / empty）
    * @param message 面向用户的中文说明
    * @param detail 附加细节（不包含数据原文，避免把内容写进日志）
    */
-  constructor(code, message, detail) {
+  constructor(code: FrameErrorCode, message: string, detail?: string) {
     super(message)
     this.name = 'FrameError'
     this.code = code
@@ -43,7 +56,7 @@ export class FrameError extends Error {
 }
 
 /** 错误码 → 可操作建议（脚本与界面共用）。 */
-export const ERROR_HINTS = {
+export const ERROR_HINTS: Readonly<Record<string, string>> = {
   marker: '该行不是 Typer 帧，可能被终端回显、提示符或其它输出混入；确认输入流里只有帧',
   field: '帧字段数量或格式不对，通常是传输过程中被截断或插入字符；请重传该片',
   crc: '片校验失败（数据与校验和不一致），该片需重传',
@@ -60,7 +73,7 @@ export const ERROR_HINTS = {
  * @param input 字节序列
  * @returns 等价的 Uint8Array
  */
-export function toBytes(input) {
+export function toBytes(input: BytesLike): Uint8Array {
   if (input instanceof Uint8Array) return input
   if (typeof input === 'string') return new TextEncoder().encode(input)
   if (input instanceof ArrayBuffer) return new Uint8Array(input)
@@ -74,13 +87,13 @@ export function toBytes(input) {
 // 校验与编码：CRC32 / SHA-256
 // ---------------------------------------------------------------------------
 
-let crcTable = null
+let crcTable: Uint32Array | null = null
 
 /**
  * @description 惰性构建并缓存 CRC32 查表
  * @returns 256 项查表
  */
-function getCrcTable() {
+function getCrcTable(): Uint32Array {
   if (crcTable) return crcTable
   const table = new Uint32Array(256)
   for (let index = 0; index < 256; index++) {
@@ -96,11 +109,11 @@ function getCrcTable() {
 
 /**
  * @description 标准 CRC32（IEEE 802.3，与 `zlib.crc32` 同值）；自带实现是因为 `zlib.crc32` 需要
- * Node 20.15+，而脚本要能在 Node 18 上跑
+ * Node 20.15+，而接收端脚本要能在 Node 16 上跑
  * @param input 字节序列
  * @returns 无符号 32 位整数
  */
-export function crc32(input) {
+export function crc32(input: BytesLike): number {
   const bytes = toBytes(input)
   const table = getCrcTable()
   let value = 0xffffffff
@@ -115,7 +128,7 @@ export function crc32(input) {
  * @param input 字节序列
  * @returns 8 位小写 hex
  */
-export function crc32Hex(input) {
+export function crc32Hex(input: BytesLike): string {
   return crc32(input).toString(16).padStart(8, '0')
 }
 
@@ -124,7 +137,7 @@ export function crc32Hex(input) {
  * @param input 字节序列
  * @returns 64 位小写 hex
  */
-export function sha256Hex(input) {
+export function sha256Hex(input: BytesLike): string {
   return createHash('sha256').update(toBytes(input)).digest('hex')
 }
 
@@ -133,7 +146,7 @@ export function sha256Hex(input) {
  * @param input 字节序列
  * @returns 16 位小写 hex
  */
-export function sha16Hex(input) {
+export function sha16Hex(input: BytesLike): string {
   return createHash('sha256').update(toBytes(input)).digest('hex').slice(0, 16)
 }
 
@@ -142,7 +155,7 @@ export function sha16Hex(input) {
  * @param random 随机源（可注入以便测试得到确定值）
  * @returns 8 位小写 hex
  */
-export function randomJobId(random = Math.random) {
+export function randomJobId(random: () => number = Math.random): string {
   let out = ''
   for (let index = 0; index < 8; index++) out += Math.floor(random() * 16).toString(16)
   return out
@@ -157,8 +170,8 @@ export function randomJobId(random = Math.random) {
  * @param value 待判断的值
  * @returns 是否为 FrameEncoding
  */
-export function isEncoding(value) {
-  return typeof value === 'string' && ENCODINGS.includes(value)
+export function isEncoding(value: unknown): value is FrameEncoding {
+  return typeof value === 'string' && (ENCODINGS as readonly string[]).includes(value)
 }
 
 /**
@@ -167,7 +180,7 @@ export function isEncoding(value) {
  * @param enc 目标编码（txt 请改用 escapeText）
  * @returns 编码后的载荷
  */
-export function encodeBytes(bytes, enc) {
+export function encodeBytes(bytes: BytesLike, enc: FrameEncoding): string {
   const input = toBytes(bytes)
   if (enc === 'hex') {
     let out = ''
@@ -188,7 +201,7 @@ export function encodeBytes(bytes, enc) {
  * @param enc 载荷编码
  * @returns 解码后的字节
  */
-export function decodeBytes(payload, enc) {
+export function decodeBytes(payload: string, enc: FrameEncoding): Uint8Array {
   if (enc === 'hex') {
     if (payload.length % 2 !== 0) {
       throw new FrameError('enc', 'hex 载荷长度为奇数', `长度 ${payload.length}`)
@@ -219,7 +232,7 @@ export function decodeBytes(payload, enc) {
   throw new FrameError('enc', `不支持的编码 ${String(enc)}`)
 }
 
-const TEXT_ESCAPES = { '\\': '\\\\', '\r': '\\r', '\n': '\\n', '\t': '\\t' }
+const TEXT_ESCAPES: Record<string, string> = { '\\': '\\\\', '\r': '\\r', '\n': '\\n', '\t': '\\t' }
 
 /**
  * @description 文本 → 单行转义载荷（`txt` 编码），按字符边界切分，CJK / emoji 原样保留；
@@ -228,7 +241,7 @@ const TEXT_ESCAPES = { '\\': '\\\\', '\r': '\\r', '\n': '\\n', '\t': '\\t' }
  * @param text 原文
  * @returns 单行转义载荷
  */
-export function escapeText(text) {
+export function escapeText(text: string): string {
   let out = ''
   for (const char of String(text)) {
     const simple = TEXT_ESCAPES[char]
@@ -236,7 +249,8 @@ export function escapeText(text) {
       out += simple
       continue
     }
-    const code = char.codePointAt(0)
+    // 逐个码点迭代，codePointAt 必然有值
+    const code = char.codePointAt(0) as number
     if (code <= 0x20 || code === 0x7f) {
       out += `\\x${code.toString(16).padStart(2, '0')}`
       continue
@@ -256,7 +270,7 @@ export function escapeText(text) {
  * @param payload 单行转义载荷
  * @returns 还原后的文本
  */
-export function unescapeText(payload) {
+export function unescapeText(payload: string): string {
   let out = ''
   for (let index = 0; index < payload.length; index++) {
     const char = payload[index]
@@ -320,7 +334,7 @@ export function unescapeText(payload) {
  * @description 校验 job 标识是否为合法任务 id
  * @param job 任务 id
  */
-function assertJobPart(job) {
+function assertJobPart(job: string): void {
   if (typeof job !== 'string' || !/^[0-9a-f]{4,16}$/.test(job)) {
     throw new FrameError('job', `job 标识不合法：${String(job)}`)
   }
@@ -332,10 +346,23 @@ function assertJobPart(job) {
  * @param name 字段名（用于报错）
  * @param max 允许的最大值
  */
-function assertUint(value, name, max) {
+function assertUint(value: number, name: string, max: number): void {
   if (!Number.isInteger(value) || value < 0 || value > max) {
     throw new FrameError('range', `${name} 不合法：${String(value)}`)
   }
+}
+
+/** 开始帧字段。 */
+export interface BeginFrameMeta {
+  job: string
+  total: number
+  size: number
+  enc: FrameEncoding
+  chunk: number
+  /** 原名（可省略；接收端也可用 `-o` 覆盖） */
+  name?: string | null
+  /** 整文件 SHA-256（64 位小写 hex） */
+  sha256: string
 }
 
 /**
@@ -343,7 +370,7 @@ function assertUint(value, name, max) {
  * @param meta 开始帧字段
  * @returns 单行帧文本
  */
-export function buildBeginFrame(meta) {
+export function buildBeginFrame(meta: BeginFrameMeta): string {
   assertJobPart(meta.job)
   assertUint(meta.total, 'total', 0xffffffff)
   assertUint(meta.size, 'size', Number.MAX_SAFE_INTEGER)
@@ -365,12 +392,26 @@ export function buildBeginFrame(meta) {
   ].join(' ')
 }
 
+/** 数据帧字段。 */
+export interface DataFrameMeta {
+  job: string
+  seq: number
+  total: number
+  /** 本片原始字节数（txt 编码为目标编码下的字节数） */
+  bytes: number
+  crc32: string
+  sha16: string
+  enc: FrameEncoding
+  /** 已编码的单行载荷 */
+  payload: string
+}
+
 /**
  * @description 构造数据帧
  * @param meta 数据帧字段（payload 必须是已经编码好的单行字符串）
  * @returns 单行帧文本
  */
-export function buildDataFrame(meta) {
+export function buildDataFrame(meta: DataFrameMeta): string {
   assertJobPart(meta.job)
   assertUint(meta.seq, 'seq', 0xffffffff)
   assertUint(meta.total, 'total', 0xffffffff)
@@ -392,12 +433,20 @@ export function buildDataFrame(meta) {
   ].join(' ')
 }
 
+/** 结束帧字段。 */
+export interface EndFrameMeta {
+  job: string
+  total: number
+  size: number
+  sha256: string
+}
+
 /**
  * @description 构造结束帧：携带整文件哈希与大小，接收端只有在全部片都通过后才会用它做最终校验
  * @param meta 结束帧字段
  * @returns 单行帧文本
  */
-export function buildEndFrame(meta) {
+export function buildEndFrame(meta: EndFrameMeta): string {
   assertJobPart(meta.job)
   assertUint(meta.total, 'total', 0xffffffff)
   assertUint(meta.size, 'size', Number.MAX_SAFE_INTEGER)
@@ -407,12 +456,20 @@ export function buildEndFrame(meta) {
   return [MARKERS.end, meta.job, String(meta.total), String(meta.size), meta.sha256].join(' ')
 }
 
+/** 续传令牌字段。 */
+export interface ResumeTokenMeta {
+  job: string
+  total: number
+  /** 缺失片号：数组会被压成区间文本，字符串原样使用 */
+  missing: number[] | string | null
+}
+
 /**
  * @description 构造续传令牌：由接收端打印，操作者回填给 Typer（或脚本 `--only`）
  * @param meta 续传字段
  * @returns 单行令牌文本
  */
-export function buildResumeToken(meta) {
+export function buildResumeToken(meta: ResumeTokenMeta): string {
   assertJobPart(meta.job)
   assertUint(meta.total, 'total', 0xffffffff)
   const missing = Array.isArray(meta.missing)
@@ -426,10 +483,59 @@ export function buildResumeToken(meta) {
  * @param line 待判断的行
  * @returns 是否为帧行
  */
-export function isFrameLine(line) {
+export function isFrameLine(line: string): boolean {
   const text = typeof line === 'string' ? line.trim() : ''
   return Object.values(MARKERS).some((marker) => text.startsWith(`${marker} `))
 }
+
+/** 解析后的开始帧。 */
+export interface ParsedBeginFrame {
+  kind: 'begin'
+  version: number
+  job: string
+  total: number
+  size: number
+  enc: FrameEncoding
+  chunk: number
+  name: string | null
+  sha256: string
+}
+
+/** 解析后的数据帧。 */
+export interface ParsedDataFrame {
+  kind: 'data'
+  version: number
+  job: string
+  seq: number
+  total: number
+  bytes: number
+  crc32: string
+  sha16: string
+  enc: FrameEncoding
+  payload: string
+}
+
+/** 解析后的结束帧。 */
+export interface ParsedEndFrame {
+  kind: 'end'
+  version: number
+  job: string
+  total: number
+  size: number
+  sha256: string
+}
+
+/** 解析后的续传帧。 */
+export interface ParsedResumeFrame {
+  kind: 'resume'
+  version: number
+  job: string
+  total: number
+  missing: number[]
+}
+
+/** 解析后的帧（四种类型之一）。 */
+export type ParsedFrame = ParsedBeginFrame | ParsedDataFrame | ParsedEndFrame | ParsedResumeFrame
 
 /**
  * @description 解析一行帧，严格校验字段数量与取值；任何不符都抛 `FrameError`，
@@ -437,7 +543,7 @@ export function isFrameLine(line) {
  * @param line 单行帧文本
  * @returns 解析结果（begin / data / end / resume 四种之一）
  */
-export function parseFrame(line) {
+export function parseFrame(line: string): ParsedFrame {
   const text = typeof line === 'string' ? line.replace(/[\r\n]+$/, '').trim() : ''
   if (text.length === 0) throw new FrameError('empty', '空行不是帧')
   if (text.length > MAX_FRAME_CHARS) {
@@ -539,7 +645,7 @@ export function parseFrame(line) {
  * @param name 字段名（用于报错）
  * @returns 解析出的整数
  */
-function readUint(text, name) {
+function readUint(text: string, name: string): number {
   if (!/^\d{1,16}$/.test(text)) throw new FrameError('field', `${name} 字段不是十进制整数`)
   const value = Number(text)
   if (!Number.isSafeInteger(value)) throw new FrameError('range', `${name} 超出安全范围`)
@@ -551,7 +657,7 @@ function readUint(text, name) {
  * @param encoded 编码后的文件名
  * @returns 还原后的文件名（无名字时为 null）
  */
-function decodeName(encoded) {
+function decodeName(encoded: string): string | null {
   try {
     const name = Buffer.from(encoded, 'base64url').toString('utf8')
     return name.length > 0 ? name : null
@@ -566,7 +672,7 @@ function decodeName(encoded) {
  * @param bytes 载荷解码后的字节
  * @returns 通过校验的字节
  */
-export function verifyDataFrame(frame, bytes) {
+export function verifyDataFrame(frame: ParsedDataFrame, bytes: BytesLike): Uint8Array {
   const data = toBytes(bytes)
   if (data.length !== frame.bytes) {
     throw new FrameError('len', `片长度不符：声明 ${frame.bytes}，实际 ${data.length}`)
@@ -589,7 +695,11 @@ export function verifyDataFrame(frame, bytes) {
  * @param expectedSize 期望的字节数（省略则不校验大小）
  * @returns 通过校验的字节
  */
-export function verifyIntegrity(bytes, expectedSha256, expectedSize) {
+export function verifyIntegrity(
+  bytes: BytesLike,
+  expectedSha256: string,
+  expectedSize?: number
+): Uint8Array {
   const data = toBytes(bytes)
   if (expectedSize !== undefined && data.length !== expectedSize) {
     throw new FrameError('len', `整文件大小不符：期望 ${expectedSize}，实际 ${data.length}`)
@@ -611,7 +721,7 @@ export function verifyIntegrity(bytes, expectedSha256, expectedSize) {
  * @param chunkBytes 每片字节数
  * @returns 总片数
  */
-export function chunkCount(size, chunkBytes) {
+export function chunkCount(size: number, chunkBytes: number): number {
   if (!Number.isInteger(size) || size < 0) throw new FrameError('range', '文件大小不合法')
   if (!Number.isInteger(chunkBytes) || chunkBytes < 1 || chunkBytes > MAX_CHUNK_BYTES) {
     throw new FrameError('range', `片大小不合法（1 ~ ${MAX_CHUNK_BYTES}）`)
@@ -626,7 +736,11 @@ export function chunkCount(size, chunkBytes) {
  * @param seq 片号
  * @returns 该片的偏移与字节数
  */
-export function chunkSlice(size, chunkBytes, seq) {
+export function chunkSlice(
+  size: number,
+  chunkBytes: number,
+  seq: number
+): { offset: number; bytes: number } {
   const total = chunkCount(size, chunkBytes)
   if (!Number.isInteger(seq) || seq < 0 || seq >= total) {
     throw new FrameError('range', `片号超出范围：${seq}（共 ${total} 片）`)
@@ -643,11 +757,11 @@ export function chunkSlice(size, chunkBytes, seq) {
  * @returns 分片列表（含每片文本、字节数与字符数）
  */
 export function planTextChunks(
-  text,
-  maxBytes,
-  byteLength = (chunk) => Buffer.byteLength(chunk, 'utf8')
-) {
-  const chunks = []
+  text: string,
+  maxBytes: number,
+  byteLength: (chunk: string) => number = (chunk) => Buffer.byteLength(chunk, 'utf8')
+): Array<{ text: string; bytes: number; chars: number }> {
+  const chunks: Array<{ text: string; bytes: number; chars: number }> = []
   let current = ''
 
   for (const char of String(text)) {
@@ -674,7 +788,14 @@ export function planTextChunks(
  * @param meta 帧字段（可给出 payloadChars，因为 txt 编码转义后的长度无法只靠字节数推出）
  * @returns 估算的字符数
  */
-export function estimateDataFrameChars(meta) {
+export function estimateDataFrameChars(meta: {
+  job?: string
+  seq: number
+  total: number
+  bytes: number
+  enc: FrameEncoding
+  payloadChars?: number
+}): number {
   const header =
     MARKERS.data.length +
     1 +
@@ -709,12 +830,12 @@ export function estimateDataFrameChars(meta) {
 
 /**
  * @description 把片号集合文本解析成升序去重的数组
- * @param text 形如 `3,5,12-20` 的文本
+ * @param text 形如 `3,5,12-20` 的文本（片号数组会被转成同形文本）
  * @param total 片总数（给出时校验越界）
  * @returns 升序去重的片号数组
  */
-export function parseIndexList(text, total) {
-  const indexes = new Set()
+export function parseIndexList(text: string | number[], total?: number): number[] {
+  const indexes = new Set<number>()
   const parts = String(text)
     .split(/[,;、\s]+/)
     .filter((part) => part.length > 0)
@@ -741,11 +862,11 @@ export function parseIndexList(text, total) {
  * @param total 片总数（给出时校验越界）
  * @returns 形如 `3,5,12-13` 的紧凑文本
  */
-export function formatIndexList(indexes, total) {
+export function formatIndexList(indexes: readonly number[], total?: number): string {
   const sorted = [...new Set(indexes)].sort((a, b) => a - b)
-  const parts = []
-  let start = null
-  let previous = null
+  const parts: string[] = []
+  let start: number | null = null
+  let previous: number | null = null
 
   for (const index of sorted) {
     if (total !== undefined && (index < 0 || index >= total)) {
@@ -756,7 +877,8 @@ export function formatIndexList(indexes, total) {
       previous = index
       continue
     }
-    if (index === previous + 1) {
+    // start 与 previous 同生命周期，走到这里两者都已有值
+    if (index === (previous as number) + 1) {
       previous = index
       continue
     }
@@ -775,9 +897,9 @@ export function formatIndexList(indexes, total) {
  * @param done 已完成的片号
  * @returns 升序的缺失片号
  */
-export function missingIndexes(total, done) {
+export function missingIndexes(total: number, done: readonly number[]): number[] {
   const finished = new Set(done)
-  const missing = []
+  const missing: number[] = []
   for (let index = 0; index < total; index++) {
     if (!finished.has(index)) missing.push(index)
   }
@@ -790,7 +912,10 @@ export function missingIndexes(total, done) {
  * @param options 起始片号与"只发指定片"设置
  * @returns 升序的片号数组
  */
-export function resolveIndexes(total, options = {}) {
+export function resolveIndexes(
+  total: number,
+  options: { from?: number | null; only?: string | number[] | null } = {}
+): number[] {
   if (!Number.isInteger(total) || total < 0) throw new FrameError('range', 'total 不合法')
   if (options.only !== undefined && options.only !== null && String(options.only).length > 0) {
     return parseIndexList(options.only, total)
@@ -799,7 +924,7 @@ export function resolveIndexes(total, options = {}) {
   if (!Number.isInteger(from) || from < 0 || from > total) {
     throw new FrameError('range', `起始片号不合法：${String(options.from)}`)
   }
-  const indexes = []
+  const indexes: number[] = []
   for (let index = from; index < total; index++) indexes.push(index)
   return indexes
 }
@@ -817,7 +942,7 @@ export const MAX_LINE_CHARS = MAX_FRAME_CHARS + 4096
  * @param line 原始行
  * @returns 清理后的行
  */
-export function sanitizeLine(line) {
+export function sanitizeLine(line: string): string {
   return (
     String(line)
       // eslint-disable-next-line no-control-regex -- 这里就是要匹配控制字符：清理 bracketed-paste 标记
@@ -832,7 +957,10 @@ export function sanitizeLine(line) {
  * @description 行切分器：`\n`、`\r\n`、裸 `\r` 都当行尾（raw 模式下回车只产生 `\r`）
  * @returns 带 push / flush 的切分器
  */
-export function createLineSplitter() {
+export function createLineSplitter(): {
+  push: (chunk: string | Uint8Array) => string[]
+  flush: () => string[]
+} {
   let buffer = ''
   let overflow = false
   const decoder = new TextDecoder('utf-8')
@@ -842,8 +970,8 @@ export function createLineSplitter() {
    * @param text 待切分的文本
    * @returns 完整行与未闭合的尾巴
    */
-  const drain = (text) => {
-    const lines = []
+  const drain = (text: string): { lines: string[]; rest: string } => {
+    const lines: string[] = []
     let start = 0
     for (let index = 0; index < text.length; index++) {
       const char = text[index]
@@ -858,7 +986,12 @@ export function createLineSplitter() {
   }
 
   return {
-    push(chunk) {
+    /**
+     * @description 把一段输入喂进切分器，返回这次切出的完整行
+     * @param chunk 文本或字节
+     * @returns 完整行
+     */
+    push(chunk: string | Uint8Array): string[] {
       const text =
         typeof chunk === 'string' ? chunk : decoder.decode(toBytes(chunk), { stream: true })
       const { lines, rest } = drain(buffer + text)
@@ -870,8 +1003,12 @@ export function createLineSplitter() {
       }
       return lines
     },
-    flush() {
-      const lines = []
+    /**
+     * @description 收尾：吐出未闭合的尾巴，行宽异常时明确报错
+     * @returns 剩余行
+     */
+    flush(): string[] {
+      const lines: string[] = []
       if (buffer.length > 0) {
         lines.push(buffer)
         buffer = ''
