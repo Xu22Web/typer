@@ -1,5 +1,5 @@
-import { execFile } from 'node:child_process'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs'
+import { execFile, spawn } from 'node:child_process'
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -47,23 +47,28 @@ const RECV = toolPath('typer-recv.mjs')
 
 /**
  * @description 通过 cmd 运行 tools/run.bat：验证"目标机双击这个文件"真的能启动接收端。
- * stdin 关闭 —— 接收端在没给 `--in` 时会一直等标准输入，测试里必须立刻给它 EOF
+ * 用 spawn 显式把 stdin 设成 ignore —— 接收端在没给 `--in` 时会一直等标准输入，测试里必须立刻给它 EOF
  * @param args 传给 run.bat 的参数
  * @returns 退出码与 stdout/stderr
  */
-async function runBat(args: string[]): Promise<ToolResult> {
-  const command = process.env.ComSpec ?? 'cmd.exe'
-  try {
-    const { stdout, stderr } = await run(command, ['/d', '/c', toolPath('run.bat'), ...args], {
-      cwd: work,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      maxBuffer: 32 * 1024 * 1024
+function runBat(args: string[]): Promise<ToolResult> {
+  return new Promise((resolve) => {
+    const child = spawn(
+      process.env.ComSpec ?? 'cmd.exe',
+      ['/d', '/c', toolPath('run.bat'), ...args],
+      { cwd: work, stdio: ['ignore', 'pipe', 'pipe'] }
+    )
+    let stdout = ''
+    let stderr = ''
+    child.stdout.on('data', (chunk: Buffer) => {
+      stdout += String(chunk)
     })
-    return { code: 0, stdout, stderr }
-  } catch (error) {
-    const failure = error as { code?: number; stdout?: string; stderr?: string }
-    return { code: failure.code ?? -1, stdout: failure.stdout ?? '', stderr: failure.stderr ?? '' }
-  }
+    child.stderr.on('data', (chunk: Buffer) => {
+      stderr += String(chunk)
+    })
+    child.on('close', (code) => resolve({ code: code ?? -1, stdout, stderr }))
+    child.on('error', () => resolve({ code: -1, stdout, stderr }))
+  })
 }
 
 interface ToolResult {
@@ -128,15 +133,14 @@ interface FrameSet {
 }
 
 /**
- * @description 在测试进程内用线格式实现生成整套帧文本（开始帧 + 每片数据帧 + 结束帧）并写到 work/frames.txt；
- * 口径与发送端一致：hex 大写、txt 按字符边界切分、文件名 base64url、sha256 为整文件哈希
- * @param sourcePath 源文件路径（相对 work 目录）
- * @param options 片大小与编码
- * @returns 任务 id、整文件哈希、片数与帧行
+ * @description 用应用侧的线格式实现生成一份帧文本（模拟 Typer 发送端）
+ * @param sourcePath 相对于 work 的源文件路径
+ * @param options 片大小、编码与写进开始帧的文件名
+ * @returns 帧集合（开始帧、数据帧、结束帧与任务摘要）
  */
 function buildFrames(
   sourcePath: string,
-  options: { chunk?: number; enc?: FrameEncoding } = {}
+  options: { chunk?: number; enc?: FrameEncoding; name?: string } = {}
 ): FrameSet {
   const enc = options.enc ?? 'hex'
   const chunk = options.chunk ?? 1024
@@ -149,7 +153,15 @@ function buildFrames(
   const total = textChunks === null ? chunkCount(size, chunk) : textChunks.length
 
   const lines = [
-    buildBeginFrame({ job, total, size, enc, chunk, name: basename(sourcePath), sha256 })
+    buildBeginFrame({
+      job,
+      total,
+      size,
+      enc,
+      chunk,
+      name: options.name ?? basename(sourcePath),
+      sha256
+    })
   ]
 
   /**
@@ -304,7 +316,7 @@ describe('typer-recv.mjs：坏数据与断点续传', () => {
     writeSubset('retry.txt', [job.lines[6] as string])
     const second = await runTool(
       RECV,
-      ['--in', 'retry.txt', '-o', 'out.bin', '-d', 'work', '--quiet', '--force'],
+      ['--in', 'retry.txt', '-o', 'out.bin', '-d', 'work', '--quiet'],
       work
     )
     expect(second.code).toBe(0)
@@ -355,7 +367,7 @@ describe('typer-recv.mjs：坏数据与断点续传', () => {
     // 保留分片：再收一遍时应当全部命中已校验通过的分片（#RESUME + 不重写）
     const second = await runTool(
       RECV,
-      ['--in', 'frames.txt', '-d', 'work', '-o', 'out.bin', '--keep-parts', '--force'],
+      ['--in', 'frames.txt', '-d', 'work', '-o', 'out.bin', '--keep-parts'],
       work
     )
     expect(second.code).toBe(0)
@@ -372,12 +384,54 @@ describe('typer-recv.mjs：坏数据与断点续传', () => {
     await runTool(RECV, ['--in', 'frames.txt', '-d', 'work', '-o', 'first.bin'], work)
     const forced = await runTool(
       RECV,
-      ['--in', 'frames.txt', '-d', 'work', '-o', 'out.bin', '--no-resume', '--force'],
+      ['--in', 'frames.txt', '-d', 'work', '-o', 'out.bin', '--no-resume'],
       work
     )
     expect(forced.stdout).toContain('#OK')
     expect(forced.code).toBe(0)
     expect(readFileSync(join(work, 'out.bin')).equals(source)).toBe(true)
+  })
+
+  it('不给 -o 时把结果写成"分片目录/原始文件名"，且成功后目录里只剩结果', async () => {
+    const source = makeSource(5000)
+    writeFileSync(join(work, 'src.bin'), source)
+    const job = buildFrames('src.bin', { name: '原文 报告.txt' })
+
+    const result = await runTool(RECV, ['--in', 'frames.txt', '-d', 'parts', '--quiet'], work)
+    expect(result.code).toBe(0)
+
+    const produced = join(work, 'parts', '原文 报告.txt')
+    expect(existsSync(produced)).toBe(true)
+    expect(readFileSync(produced).equals(source)).toBe(true)
+    expect(result.stdout).toContain(produced)
+    // 分片、meta 与 resume.json 都清掉，目录本身保留（结果就在里面）
+    expect(readdirSync(join(work, 'parts'))).toEqual(['原文 报告.txt'])
+    expect(job.total).toBeGreaterThan(0)
+  })
+
+  it('结果同名时默认直接覆盖，--no-overwrite 才拒绝且不动已有文件', async () => {
+    const source = makeSource(3000)
+    writeFileSync(join(work, 'src.bin'), source)
+    buildFrames('src.bin', { name: 'report.bin' })
+
+    const first = await runTool(RECV, ['--in', 'frames.txt', '-d', 'parts', '--quiet'], work)
+    expect(first.code).toBe(0)
+    const produced = join(work, 'parts', 'report.bin')
+    expect(readFileSync(produced).equals(source)).toBe(true)
+
+    // 默认覆盖：把结果改坏后再收一遍应当被修回原样
+    writeFileSync(produced, 'corrupted')
+    const again = await runTool(RECV, ['--in', 'frames.txt', '-d', 'parts', '--quiet'], work)
+    expect(again.code).toBe(0)
+    expect(readFileSync(produced).equals(source)).toBe(true)
+
+    const guarded = await runTool(
+      RECV,
+      ['--in', 'frames.txt', '-d', 'parts', '--quiet', '--no-overwrite'],
+      work
+    )
+    expect(guarded.code).toBe(4)
+    expect(readFileSync(produced).equals(source)).toBe(true)
   })
 
   it('缺少开始帧且没有工作目录时明确失败，不会产出半成品', async () => {

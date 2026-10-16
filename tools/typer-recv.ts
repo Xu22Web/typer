@@ -18,7 +18,7 @@ import {
   statSync,
   writeFileSync
 } from 'node:fs'
-import { basename, join, resolve } from 'node:path'
+import { basename, isAbsolute, join, relative, resolve } from 'node:path'
 
 import {
   ERROR_HINTS,
@@ -54,17 +54,17 @@ const HELP = `Typer 文件接收端（逐片校验 + 断点续传 + 合并校验
 
 用法：node typer-recv.mjs [选项]
 
-  -o, --out <path>        输出文件（默认用开始帧里的文件名，否则 job-<id>.bin）
+  -o, --out <path>        输出文件（默认 <分片目录>/<开始帧里的文件名>，无名字则 job-<id>.bin）
   -d, --dir <path>        分片工作目录（默认 ./.typer-<job>）
       --in <file>         从文件读取帧（默认读标准输入）
       --cooked            强制行缓冲读入（TTY 下默认是 raw：不回显、无行宽限制）
       --no-resume         忽略已有分片，全部重收（默认：校验通过即跳过）
-      --force             允许覆盖已存在的输出文件
+      --no-overwrite      输出文件已存在时拒绝覆盖（默认直接覆盖）
       --report <path>     续传报告 JSON 路径（默认 <dir>/resume.json；写 "-" 关闭）
       --token             结束时（数据不全）额外打印可回填 Typer 的续传令牌
       --ack <target>      回执输出到 stdout | stderr | none（默认 stdout）
       --progress-every <n> 每 n 片打印一次 #OK（默认 1；0 表示只打印失败）
-      --keep-parts        合并成功后保留分片目录
+      --keep-parts        合并成功后保留分片（默认只留结果文件）
       --charset <cs>      txt 编码的写盘编码（默认 utf-8）
   -q, --quiet             只在失败 / 续传摘要 / 最终结果时输出
   -v, --verbose           输出额外诊断信息
@@ -91,7 +91,7 @@ function parseArgs(argv: string[]): Record<string, string | boolean> {
   const flags = new Set([
     'cooked',
     'no-resume',
-    'force',
+    'no-overwrite',
     'token',
     'keep-parts',
     'quiet',
@@ -396,7 +396,8 @@ function applyMeta(next: TaskMeta, { fromDisk }: { fromDisk: boolean }): boolean
   }
   meta = next
   dir = dir ?? resolve(`.typer-${meta.job}`)
-  outPath = outPath ?? resolve(meta.name ? basename(meta.name) : `job-${meta.job}.bin`)
+  // 默认把结果放回分片目录：接收目录因此只留一个"原始文件名"的结果文件，不污染运行目录
+  outPath = outPath ?? join(dir, meta.name ? basename(meta.name) : `job-${meta.job}.bin`)
   if (!reportDisabled) reportPath = reportPath ?? join(dir, 'resume.json')
   seqWidth = Math.max(6, String(Math.max(0, meta.total - 1)).length)
   if (!fromDisk) saveMeta()
@@ -567,10 +568,9 @@ async function mergeAndVerify(): Promise<number> {
     return EXIT.INCOMPLETE
   }
 
-  if (existsSync(outPath as string) && options.force !== true) {
+  if (existsSync(outPath as string) && options['no-overwrite'] === true) {
     info(
-      `输出文件已存在：${outPath}\n` +
-        '如需覆盖请加 --force（校验通过的结果不会被半成品覆盖，因此这里必须显式确认）。'
+      `输出文件已存在：${outPath}\n` + '去掉 --no-overwrite 即可覆盖，或用 --out 指定别的输出路径。'
     )
     return EXIT.USAGE
   }
@@ -619,13 +619,37 @@ async function mergeAndVerify(): Promise<number> {
   if (!quiet) {
     info(`完成：${meta!.total} 片 → ${outPath}（${size} 字节），整文件 SHA-256 校验通过。`)
   }
-  if (options['keep-parts'] !== true) {
-    rmSync(dir as string, { recursive: true, force: true })
-    reportPath = null
-  } else {
-    writeReport(true)
-  }
+  if (options['keep-parts'] !== true) cleanupParts()
+  else writeReport(true)
   return EXIT.OK
+}
+
+/**
+ * @description 成功后清理分片目录里的分片与续传状态。
+ * 默认的输出路径就在分片目录内，因此不能整目录删除——只清中间产物，结果文件留下
+ */
+function cleanupParts(): void {
+  reportPath = null
+  const partsDir = dir as string
+  if (!isInside(partsDir, outPath as string)) {
+    rmSync(partsDir, { recursive: true, force: true })
+    return
+  }
+  for (const entry of readdirSync(partsDir)) {
+    if (entry === basename(outPath as string)) continue
+    rmSync(join(partsDir, entry), { recursive: true, force: true })
+  }
+}
+
+/**
+ * @description 判断某个路径是否位于给定目录内（用于区分"结果在分片目录里"与"结果在别处"）
+ * @param parent 目录
+ * @param child 待判断的路径
+ * @returns 是否位于该目录内
+ */
+function isInside(parent: string, child: string): boolean {
+  const rel = relative(parent, child)
+  return rel.length > 0 && !rel.startsWith('..') && !isAbsolute(rel)
 }
 
 // ---------------------------------------------------------------------------

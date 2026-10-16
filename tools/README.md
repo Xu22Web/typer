@@ -91,22 +91,26 @@ node typer-recv.mjs --selftest    # 校验 CRC / 编码 / 转义 / 片号解析�
 
 ```
 node typer-recv.mjs [选项]
-  -o, --out <path>        输出文件（默认用开始帧里的文件名，否则 job-<id>.bin）
+  -o, --out <path>        输出文件（默认 <分片目录>/<开始帧里的文件名>，无名字则 job-<id>.bin）
   -d, --dir <path>        分片工作目录（默认 ./.typer-<job>）
       --in <file>         从文件读取帧（默认读标准输入）
       --cooked            强制行缓冲读入（TTY 下默认 raw：不回显、无行宽限制）
       --no-resume         忽略已有分片全部重收（默认：校验通过即跳过）
-      --force             允许覆盖已存在的输出文件
+      --no-overwrite      输出文件已存在时拒绝覆盖（默认直接覆盖）
       --report <path>     续传报告 JSON（默认 <dir>/resume.json；`-` 表示关闭）
       --token             数据不全时额外打印可回填 Typer 的续传令牌
       --ack <target>      回执输出到 stdout | stderr | none（默认 stdout）
       --progress-every <n> 每 n 片打印一次 #OK（0 = 只打印失败）
-      --keep-parts        合并成功后保留分片目录
+      --keep-parts        合并成功后保留分片（默认只留结果文件）
       --charset <cs>      txt 编码的写盘编码（默认 utf-8）
   -q, --quiet             只在失败 / 摘要 / 结果时输出
   -v, --verbose           额外诊断信息
       --selftest          环境自检后退出
 ```
+
+不指定 `-o` 时，结果按**开始帧里的原始文件名**写进分片目录（`-d`，默认 `./.typer-<job>`）：
+校验通过后先原子替换成结果文件，再清掉分片与续传报告，所以该目录最后只剩一个结果文件。
+同名已存在时默认直接覆盖，加 `--no-overwrite` 可以改成拒绝覆盖。
 
 ### 典型流程
 
@@ -123,6 +127,7 @@ node typer-recv.mjs -o received.bin --token
 #    把片号或续传令牌填回 Typer 的「只发指定片」/「续传状态」，只补这几片
 
 # ④ 全部通过时：#DONE <路径> <字节数> <sha256>，退出码 0
+#    结果就写在分片目录里，用开始帧带过来的原始文件名（见上）
 ```
 
 ### 场景要点
