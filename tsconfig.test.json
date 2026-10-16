@@ -4,6 +4,7 @@
     "electron.vite.config.ts",
     "vitest.config.ts",
     "src/main/**/*",
+    "src/shared/**/*",
     "src/preload/**/*",
     "tests/**/*"
   ],
@@ -14,7 +15,9 @@
     "baseUrl": ".",
     "paths": {
       "@main/*": ["src/main/*"],
-      "@renderer/*": ["src/renderer/src/*"]
+      "@shared/*": ["src/shared/*"],
+      "@renderer/*": ["src/renderer/src/*"],
+      "@tools/*": ["tools/*"]
     }
   }
 }

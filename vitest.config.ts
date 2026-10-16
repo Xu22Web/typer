@@ -6,7 +6,9 @@ export default defineConfig({
     alias: {
       // 与 electron.vite.config.ts / tsconfig.*.json 保持一致
       '@main': resolve('src/main'),
-      '@renderer': resolve('src/renderer/src')
+      '@shared': resolve('src/shared'),
+      '@renderer': resolve('src/renderer/src'),
+      '@tools': resolve('tools')
     }
   },
   test: {

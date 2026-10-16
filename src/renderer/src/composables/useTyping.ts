@@ -152,6 +152,8 @@ export function useTyping(): {
   stop: () => Promise<void>
   importFile: () => Promise<void>
   refreshForeground: () => Promise<void>
+  /** 往运行日志里写一条（供文件传输等其它流程复用同一份日志） */
+  log: (level: LogEntry['level'], message: string) => void
   clearLogs: () => void
 } {
   return {
@@ -172,6 +174,7 @@ export function useTyping(): {
     stop,
     importFile,
     refreshForeground,
+    log: pushLog,
     clearLogs: () => {
       logs.value = []
     }

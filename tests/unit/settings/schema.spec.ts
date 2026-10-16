@@ -6,6 +6,7 @@ import {
   NUMERIC_BOUNDS,
   toEngineSettings
 } from '@main/settings/schema'
+import { TRANSFER_LIMITS } from '@shared/transfer/transfer'
 
 describe('normalizeSettings', () => {
   it('空输入得到完整默认值', () => {
@@ -173,8 +174,33 @@ describe('toEngineSettings', () => {
       focusGuard: 'strict',
       seed: 99,
       verifyStuckKeys: settings.verifyStuckKeys,
+      interFrameDelayMs: settings.transfer.interFrameDelayMs,
+      pasteFrameIncludesNewline: settings.transfer.pasteFrameIncludesNewline,
       timing: settings.timing,
       typo: { rate: 0.1, style: 'transpose', correction: 'none' }
     })
+  })
+
+  it('文件传输设置：默认值、夹取与非法枚举回退', () => {
+    expect(DEFAULT_SETTINGS.transfer).toEqual({
+      encoding: 'hex',
+      chunkBytes: 1024,
+      maxFrameChars: 4096,
+      interFrameDelayMs: 400,
+      pasteFrameIncludesNewline: true
+    })
+
+    const clamped = normalizeSettings({
+      transfer: { chunkBytes: 99999999, maxFrameChars: 1, interFrameDelayMs: 99999 }
+    })
+    expect(clamped.transfer.chunkBytes).toBe(NUMERIC_BOUNDS.chunkBytes[1])
+    expect(clamped.transfer.maxFrameChars).toBe(NUMERIC_BOUNDS.maxFrameChars[0])
+    expect(clamped.transfer.interFrameDelayMs).toBe(TRANSFER_LIMITS.interFrameDelayMs[1])
+
+    const fallback = normalizeSettings({
+      transfer: { encoding: 'rot13', pasteFrameIncludesNewline: 'yes' }
+    })
+    expect(fallback.transfer.encoding).toBe('hex')
+    expect(fallback.transfer.pasteFrameIncludesNewline).toBe(true)
   })
 })

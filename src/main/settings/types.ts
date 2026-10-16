@@ -10,6 +10,7 @@ import type { FocusGuardMode } from '../typing/focus/focusGuard'
 import type { LayoutId } from '../typing/planner/keymap'
 import type { TimingSettings } from '../typing/scheduling/timing'
 import type { TypoCorrection, TypoStyle } from '../typing/scheduling/typo'
+import type { TransferEncoding } from '@shared/transfer/transfer'
 
 export type LogLevel = 'silent' | 'error' | 'warn' | 'info' | 'debug'
 export type ImportCharset = 'auto' | 'utf8' | 'utf16le' | 'gbk'
@@ -48,6 +49,19 @@ export interface Settings {
   clipboard: {
     restore: boolean
     importCharset: ImportCharset
+  }
+  /** 文件传输（把文件逐片"打"到目标窗口） */
+  transfer: {
+    /** 载荷编码：hex / b64 / txt（默认 hex：最抗终端与输入法干扰） */
+    encoding: TransferEncoding
+    /** 每片原始字节数 */
+    chunkBytes: number
+    /** 单帧字符上限（终端/剪贴板对单行长度都有限制） */
+    maxFrameChars: number
+    /** 片与片之间的额外停顿：给接收端落盘/回显留时间 */
+    interFrameDelayMs: number
+    /** 粘贴整帧时是否把行尾换行一起粘贴（少一次按键） */
+    pasteFrameIncludesNewline: boolean
   }
   update: {
     /** 启动后自动检查 GitHub 是否有新版本 */

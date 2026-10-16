@@ -12,6 +12,15 @@ export const IPC = {
   typingForeground: 'typing:foreground',
   filesImport: 'files:import',
   filesPick: 'files:pick',
+  /** 文件传输（把文件逐片"打"到目标窗口） */
+  transferPick: 'transfer:pick',
+  transferPrepare: 'transfer:prepare',
+  transferCancelPrepare: 'transfer:cancel-prepare',
+  transferPlan: 'transfer:plan',
+  transferResumeState: 'transfer:resume-state',
+  transferExportTools: 'transfer:export-tools',
+  transferRevealTools: 'transfer:reveal-tools',
+  transferStartFrames: 'transfer:start-frames',
   /** 自绘标题栏的窗口控制（frameless 窗口没有系统按钮，必须自己实现） */
   windowMinimize: 'window:minimize',
   windowToggleMaximize: 'window:toggle-maximize',
@@ -31,7 +40,8 @@ export const IPC = {
   eventLog: 'typing:log',
   eventWindowState: 'window:state',
   eventUpdateState: 'update:state',
-  eventUpdateProgress: 'update:progress'
+  eventUpdateProgress: 'update:progress',
+  eventTransferPrepare: 'transfer:prepare-progress'
 } as const
 
 export type IpcChannel = (typeof IPC)[keyof typeof IPC]
@@ -43,5 +53,6 @@ export const EVENT_CHANNELS: readonly string[] = [
   IPC.eventLog,
   IPC.eventWindowState,
   IPC.eventUpdateState,
-  IPC.eventUpdateProgress
+  IPC.eventUpdateProgress,
+  IPC.eventTransferPrepare
 ]

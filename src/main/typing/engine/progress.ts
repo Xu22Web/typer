@@ -1,3 +1,15 @@
+/** 帧模式（文件传输）的进度：多一个"片"维度，便于用户看到"第几片 / 共几片"。 */
+export interface ProgressFrames {
+  /** 本次运行已发送的片数 */
+  done: number
+  /** 本次运行计划发送的片数 */
+  total: number
+  /** 最近一片的片号（任务的 0 基序号） */
+  lastIndex: number
+  /** 发送失败的片数 */
+  failed: number
+}
+
 export interface ProgressInput {
   typed: number
   total: number
@@ -6,6 +18,8 @@ export interface ProgressInput {
   baseIntervalMs: number
   stage: 'countdown' | 'typing'
   countdownRemainingMs?: number
+  /** 仅文件传输任务提供 */
+  frames?: ProgressFrames
 }
 
 export interface ProgressSnapshot {
@@ -19,6 +33,8 @@ export interface ProgressSnapshot {
   aps: number
   stage: 'countdown' | 'typing'
   countdownRemainingMs: number
+  /** 仅文件传输任务提供 */
+  frames?: ProgressFrames
 }
 
 /** 进度与 ETA 计算：把手上的计数变成 UI 需要的指标。 */
@@ -42,6 +58,14 @@ export function computeProgress(input: ProgressInput): ProgressSnapshot {
     remainingMs,
     aps,
     stage,
-    countdownRemainingMs: Math.max(0, Math.round(input.countdownRemainingMs ?? 0))
+    countdownRemainingMs: Math.max(0, Math.round(input.countdownRemainingMs ?? 0)),
+    frames: input.frames
+      ? {
+          done: Math.max(0, input.frames.done),
+          total: Math.max(0, input.frames.total),
+          lastIndex: input.frames.lastIndex,
+          failed: Math.max(0, input.frames.failed)
+        }
+      : undefined
   }
 }

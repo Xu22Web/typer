@@ -1,6 +1,12 @@
 <script setup lang="ts" vapor>
 import { toPlainPayload } from '@main/ipc/plainPayload'
 import type { Settings } from '@main/settings/types'
+import {
+  CHUNK_PRESETS,
+  TRANSFER_ENCODING_OPTIONS,
+  TRANSFER_LIMITS,
+  formatBytes
+} from '@shared/transfer/transfer'
 
 /**
  * 设置页。
@@ -19,6 +25,46 @@ const draft = ref<Settings | null>(null)
 const saving = ref(false)
 const saveError = ref('')
 const restoring = ref(false)
+
+const limits = TRANSFER_LIMITS
+const typing = useTyping()
+
+/** 当前片大小对应的预设（不在预设里则归为"自定义"）。 */
+const presetId = computed(() => {
+  const bytes = draft.value?.transfer.chunkBytes ?? 0
+  return CHUNK_PRESETS.find((preset) => preset.chunkBytes === bytes)?.id ?? ''
+})
+
+const encodingHint = computed(() => {
+  const value = draft.value?.transfer.encoding ?? 'hex'
+  return TRANSFER_ENCODING_OPTIONS.find((option) => option.value === value)?.description ?? ''
+})
+
+/** 预设同时决定片大小与帧长上限（两者必须配套，否则会互相打架）。 */
+function applyChunkPreset(id: string): void {
+  const preset = CHUNK_PRESETS.find((item) => item.id === id)
+  if (!preset || !draft.value) return
+  draft.value.transfer.chunkBytes = preset.chunkBytes
+  draft.value.transfer.maxFrameChars = preset.maxFrameChars
+}
+
+async function exportTools(): Promise<void> {
+  try {
+    const destination = await window.api.transfer.exportTools()
+    if (destination) ElMessage.success(`已导出到 ${destination}`)
+  } catch (err) {
+    ElMessage.error(err instanceof Error ? err.message : String(err))
+  }
+}
+
+async function revealTools(): Promise<void> {
+  try {
+    await window.api.transfer.revealTools()
+  } catch (err) {
+    typing.log('error', err instanceof Error ? err.message : String(err))
+    ElMessage.error('找不到脚本目录：可能是安装包缺少 resources/tools')
+  }
+}
 
 const dirty = computed(() => {
   if (!draft.value || !settings.value) return false
@@ -363,6 +409,99 @@ async function restoreDefaults(): Promise<void> {
       </section>
 
       <section class="card group">
+        <h2 class="group-title"><span class="icon i-mdi-file-arrow-up-down-outline" /> 文件传输</h2>
+        <p class="group-desc">
+          把文件切成"每片一行"的帧逐片输入。接收端逐片校验、支持断点续传，合并后再校验整文件哈希；
+          编码与片大小决定"能不能顺利穿过目标终端"。
+        </p>
+
+        <div class="row">
+          <div class="label">
+            <span>默认编码</span>
+            <small>{{ encodingHint }}</small>
+          </div>
+          <ElSelect v-model="draft.transfer.encoding" class="control">
+            <ElOption
+              v-for="option in TRANSFER_ENCODING_OPTIONS"
+              :key="option.value"
+              :label="option.label"
+              :value="option.value"
+            />
+          </ElSelect>
+        </div>
+
+        <div class="row">
+          <div class="label">
+            <span>片大小</span>
+            <small>每片原始字节数；hex 编码下帧长约 2 倍字节数</small>
+          </div>
+          <ElSelect
+            :model-value="presetId"
+            class="control"
+            @change="applyChunkPreset($event as string)"
+          >
+            <ElOption
+              v-for="preset in CHUNK_PRESETS"
+              :key="preset.id"
+              :label="`${preset.label} · ${formatBytes(preset.chunkBytes)}`"
+              :value="preset.id"
+            />
+          </ElSelect>
+        </div>
+
+        <div class="row">
+          <div class="label">
+            <span>单帧字符上限</span>
+            <small>超出会拒绝开始：终端与剪贴板都会截断过长的行</small>
+          </div>
+          <ElInputNumber
+            v-model="draft.transfer.maxFrameChars"
+            class="control"
+            :min="limits.maxFrameChars[0]"
+            :max="limits.maxFrameChars[1]"
+            :step="1024"
+          />
+        </div>
+
+        <div class="row">
+          <div class="label">
+            <span>片间断顿</span>
+            <small>给接收端落盘与回显留时间；越小越快，但更容易丢字符</small>
+          </div>
+          <ElInputNumber
+            v-model="draft.transfer.interFrameDelayMs"
+            class="control"
+            :min="limits.interFrameDelayMs[0]"
+            :max="limits.interFrameDelayMs[1]"
+            :step="50"
+          />
+        </div>
+
+        <div class="row">
+          <div class="label">
+            <span>粘贴整帧含换行</span>
+            <small>开启时一行帧一次粘贴即完成（少一次按键）</small>
+          </div>
+          <ElSwitch v-model="draft.transfer.pasteFrameIncludesNewline" />
+        </div>
+
+        <div class="row">
+          <div class="label">
+            <span>接收脚本</span>
+            <small>零依赖（Node ≥ 18），导出到目标机直接运行</small>
+          </div>
+          <div class="tools-actions">
+            <ElButton size="small" @click="exportTools">
+              <span class="i-mdi-export-variant" /> 导出脚本
+            </ElButton>
+            <ElButton size="small" text @click="revealTools">
+              <span class="i-mdi-folder-open-outline" /> 打开目录
+            </ElButton>
+          </div>
+        </div>
+      </section>
+
+      <section class="card group">
         <h2 class="group-title"><span class="icon i-mdi-cloud-download-outline" /> 更新</h2>
 
         <div class="row">
@@ -400,6 +539,12 @@ async function restoreDefaults(): Promise<void> {
 </template>
 
 <style scoped lang="scss">
+.tools-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .group {
   gap: 4px;
 

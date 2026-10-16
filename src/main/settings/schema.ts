@@ -3,6 +3,7 @@ import type { FocusGuardMode } from '../typing/focus/focusGuard'
 import { isLayoutId, type LayoutId } from '../typing/planner/keymap'
 import type { JitterDistribution, SpeedMode } from '../typing/scheduling/timing'
 import type { TypoCorrection, TypoStyle } from '../typing/scheduling/typo'
+import { TRANSFER_LIMITS, type TransferEncoding } from '@shared/transfer/transfer'
 import type { ImportCharset, LogLevel, Settings } from './types'
 
 export type { ImportCharset, LogLevel, Settings } from './types'
@@ -51,6 +52,13 @@ export const DEFAULT_SETTINGS: Settings = {
     restore: true,
     importCharset: 'auto'
   },
+  transfer: {
+    encoding: 'hex',
+    chunkBytes: 1024,
+    maxFrameChars: 4096,
+    interFrameDelayMs: 400,
+    pasteFrameIncludesNewline: true
+  },
   update: {
     checkOnStartup: true
   },
@@ -74,7 +82,9 @@ export const NUMERIC_BOUNDS = {
   paragraphPauseMs: [0, 5000],
   burstSize: [0, 1000],
   burstPauseMs: [0, 10_000],
-  typoRate: [0, 0.2]
+  typoRate: [0, 0.2],
+  chunkBytes: [64, 1024 * 1024],
+  maxFrameChars: [256, 1024 * 1024]
 } as const satisfies Record<string, readonly [number, number]>
 
 type BoundsKey = keyof typeof NUMERIC_BOUNDS
@@ -140,6 +150,7 @@ const TYPO_CORRECTIONS: readonly TypoCorrection[] = ['auto', 'none']
 const FOCUS_MODES: readonly FocusGuardMode[] = ['off', 'warn', 'strict']
 const LOG_LEVELS: readonly LogLevel[] = ['silent', 'error', 'warn', 'info', 'debug']
 const CHARSETS: readonly ImportCharset[] = ['auto', 'utf8', 'utf16le', 'gbk']
+const TRANSFER_ENCODING_VALUES: readonly TransferEncoding[] = ['hex', 'b64', 'txt']
 
 /**
  * 把任意（可能来自旧版本或被手工编辑过的）JSON 归一化为合法设置。
@@ -155,6 +166,7 @@ export function normalizeSettings(raw: unknown): Settings {
   const privacy = asRecord(root.privacy)
   const clipboard = asRecord(root.clipboard)
   const update = asRecord(root.update)
+  const transfer = asRecord(root.transfer)
   const bounds = NUMERIC_BOUNDS
 
   const layoutValue = keyboard.layout
@@ -273,6 +285,37 @@ export function normalizeSettings(raw: unknown): Settings {
     update: {
       checkOnStartup: readBool(update, 'checkOnStartup', DEFAULT_SETTINGS.update.checkOnStartup)
     },
+    transfer: {
+      encoding: readEnum(
+        transfer,
+        'encoding',
+        TRANSFER_ENCODING_VALUES,
+        DEFAULT_SETTINGS.transfer.encoding
+      ),
+      chunkBytes: readNumber(
+        transfer,
+        'chunkBytes',
+        DEFAULT_SETTINGS.transfer.chunkBytes,
+        bounds.chunkBytes
+      ),
+      maxFrameChars: readNumber(
+        transfer,
+        'maxFrameChars',
+        DEFAULT_SETTINGS.transfer.maxFrameChars,
+        bounds.maxFrameChars
+      ),
+      interFrameDelayMs: readNumber(
+        transfer,
+        'interFrameDelayMs',
+        DEFAULT_SETTINGS.transfer.interFrameDelayMs,
+        TRANSFER_LIMITS.interFrameDelayMs
+      ),
+      pasteFrameIncludesNewline: readBool(
+        transfer,
+        'pasteFrameIncludesNewline',
+        DEFAULT_SETTINGS.transfer.pasteFrameIncludesNewline
+      )
+    },
     verifyStuckKeys: readBool(root, 'verifyStuckKeys', DEFAULT_SETTINGS.verifyStuckKeys),
     logLevel: readEnum(root, 'logLevel', LOG_LEVELS, DEFAULT_SETTINGS.logLevel)
   }
@@ -307,6 +350,8 @@ export function toEngineSettings(settings: Settings): EngineSettings {
     focusGuard: settings.focusGuard,
     seed: settings.seed,
     verifyStuckKeys: settings.verifyStuckKeys,
+    interFrameDelayMs: settings.transfer.interFrameDelayMs,
+    pasteFrameIncludesNewline: settings.transfer.pasteFrameIncludesNewline,
     timing: settings.timing,
     typo: {
       rate: settings.typo.rate,

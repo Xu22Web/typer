@@ -42,6 +42,9 @@ const stats = computed(() => [
   { label: '预计剩余', value: eta.value },
   { label: '已用时', value: `${elapsed.value} 秒` }
 ])
+
+/** 文件传输任务的"片"进度（文本任务没有这个维度）。 */
+const frames = computed(() => typing.progress.value?.frames ?? null)
 </script>
 
 <template>
@@ -77,6 +80,14 @@ const stats = computed(() => [
       </div>
     </dl>
 
+    <!-- 文件传输：多显示一行"片"进度（逐片发送时它比动作数更有意义） -->
+    <p v-if="frames" class="frame-progress mono">
+      <span class="i-mdi-file-arrow-up-down-outline" />
+      片 {{ frames.done }} / {{ frames.total }}（最近 #{{ frames.lastIndex
+      }}<template v-if="frames.failed > 0"> ，失败 {{ frames.failed }}</template
+      >）
+    </p>
+
     <p v-if="typing.lastSummary.value" class="summary">{{ typing.lastSummary.value }}</p>
   </section>
 </template>
@@ -91,12 +102,17 @@ const stats = computed(() => [
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
+
+  /* 右列被左列拉高时，多出来的空间摊到各行之间，而不是堆在卡片底部 */
+  justify-content: space-between;
 }
 
 .stat {
   display: flex;
   flex-direction: column;
+  justify-content: center;
   gap: 1px;
+  min-height: 52px;
   padding: 8px 10px;
   border: 1px solid var(--stroke);
   border-radius: var(--radius-md);
@@ -119,5 +135,13 @@ const stats = computed(() => [
   line-height: 1.7;
   color: var(--text-2);
   word-break: break-all;
+}
+
+.frame-progress {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-2);
 }
 </style>

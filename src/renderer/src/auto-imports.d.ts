@@ -83,6 +83,7 @@ declare global {
   const useSlots: typeof import('vue').useSlots
   const useTemplateRef: typeof import('vue').useTemplateRef
   const useTheme: typeof import('./composables/useTheme').useTheme
+  const useTransfer: typeof import('./composables/useTransfer').useTransfer
   const useTyping: typeof import('./composables/useTyping').useTyping
   const useUpdate: typeof import('./composables/useUpdate').useUpdate
   const useWindowState: typeof import('./composables/useWindowState').useWindowState
@@ -99,6 +100,9 @@ declare global {
   // @ts-ignore
   export type { SettingsActionResult } from './composables/useSettings'
   import('./composables/useSettings')
+  // @ts-ignore
+  export type { TransferPlan } from './composables/useTransfer'
+  import('./composables/useTransfer')
   // @ts-ignore
   export type { LogEntry } from './composables/useTyping'
   import('./composables/useTyping')

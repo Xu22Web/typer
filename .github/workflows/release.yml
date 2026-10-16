@@ -51,7 +51,12 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           $tag = if ('${{ github.ref_type }}' -eq 'tag') { '${{ github.ref_name }}' } else { "v$((Get-Content package.json | ConvertFrom-Json).version)" }
-          $files = @(Get-ChildItem dist/*.exe).FullName + @(Get-ChildItem dist/SHA256SUMS.txt).FullName
+          # tools/ 下的接收与分片脚本也作为资产发布：目标机往往只有 Node 而没有仓库，
+          # 直接下载单个 .mjs 文件最省事（应用内也能「导出脚本」，两条路都留）
+          $files = @(Get-ChildItem dist/*.exe).FullName +
+                   @(Get-ChildItem dist/SHA256SUMS.txt).FullName +
+                   @(Get-ChildItem tools/*.mjs).FullName +
+                   @(Get-ChildItem tools/README.md).FullName
           if (gh release view $tag 2>$null) {
             gh release upload $tag $files --clobber
           } else {

@@ -5,6 +5,7 @@ import type { ImportCharset } from '../settings/types'
 import type { TypingEngine } from '../typing/engine/TypingEngine'
 import type { ProgressSnapshot } from '../typing/engine/progress'
 import type { EngineSnapshot } from '../typing/engine/states'
+import type { TransferSession } from '../transfer/session'
 import type { UpdateCheckResult, UpdateProgress, UpdateState } from '../update/types'
 import type { Logger } from '../util/logger'
 import { IPC } from './channels'
@@ -14,6 +15,9 @@ import {
   parseImportRequest,
   parseSettingsPayload,
   parseStartRequest,
+  parseTransferFramesRequest,
+  parseTransferPrepareRequest,
+  parseTransferResumeRequest,
   type AppInfo
 } from './contracts'
 
@@ -55,9 +59,30 @@ export interface RegisterIpcOptions {
   windowControls?: WindowControls
   /** 更新服务；缺省时不注册更新频道。 */
   updates?: UpdateControls
+  /** 文件传输会话；缺省时不注册传输频道。 */
+  transfer?: TransferControls
   /** 在默认浏览器打开外链。 */
   openExternal?: (url: string) => Promise<void> | void
   logger?: Logger
+}
+
+/** 文件传输的 IPC 面（准备 / 续传比对 / 脚本导出）。 */
+export interface TransferControls {
+  /** 选择要传输的文件（与"导入文本"不同：不做扩展名过滤） */
+  pickFile: () => Promise<string | null>
+  prepare: (
+    path: string,
+    options: Parameters<TransferSession['prepare']>[1],
+    config?: { reuse?: boolean }
+  ) => Promise<unknown>
+  cancelPrepare: () => void
+  matchResume: (text: string) => unknown
+  createRequest: TransferSession['createRequest']
+  plan: TransferSession['plan']
+  /** 把 tools/ 复制到用户选择的目录，返回目标目录 */
+  exportTools: () => Promise<string | null>
+  /** 打开脚本所在目录（找不到时返回 false） */
+  revealTools: () => Promise<boolean> | boolean
 }
 
 /** 更新服务的 IPC 面（只暴露界面需要的那几个动作）。 */
@@ -103,6 +128,7 @@ export function registerIpcHandlers(options: RegisterIpcOptions): string[] {
     pickFile,
     windowControls,
     updates,
+    transfer,
     openExternal,
     logger
   } = options
@@ -191,6 +217,72 @@ export function registerIpcHandlers(options: RegisterIpcOptions): string[] {
     logger?.info(`已导入文件：${result.fileName}（${result.charset}，${result.bytes} 字节）`)
     return result
   })
+
+  if (transfer) {
+    register(IPC.transferPick, () => transfer.pickFile())
+
+    register(IPC.transferPrepare, async (_event, payload) => {
+      const request = parseTransferPrepareRequest(payload)
+      const summary = await transfer.prepare(request.path, request.options, {
+        reuse: request.reuse
+      })
+      logger?.info(`已准备文件传输：${String((summary as { name?: string }).name ?? '')}`)
+      return summary
+    })
+
+    register(IPC.transferCancelPrepare, () => {
+      transfer.cancelPrepare()
+      return true
+    })
+    register(IPC.transferResumeState, (_event, payload) =>
+      transfer.matchResume(parseTransferResumeRequest(payload))
+    )
+
+    register(IPC.transferPlan, (_event, payload) =>
+      transfer.plan(parseTransferFramesRequest(payload))
+    )
+
+    register(IPC.transferExportTools, async () => {
+      const destination = await transfer.exportTools()
+      if (destination) logger?.info(`已导出脚本到 ${destination}`)
+      return destination
+    })
+
+    register(IPC.transferRevealTools, () => transfer.revealTools())
+
+    register(IPC.transferStartFrames, async (_event, payload) => {
+      const options = parseTransferFramesRequest(payload)
+      if (engine.isRunning) {
+        throw new IpcValidationError('已有输入任务正在进行，请先停止')
+      }
+
+      const { request, plan } = transfer.createRequest(options, {
+        onFrame: (index, ok, error) => {
+          if (!ok) {
+            logger?.error(`第 ${index} 片发送失败：${error ?? '未知原因'}`)
+            return
+          }
+          // 逐片都记日志会把日志页冲掉，这里只按固定间隔留痕（失败必记）
+          if (index > 0 && index % 20 === 0) logger?.info(`已发送第 ${index} 片`)
+        }
+      })
+
+      logger?.info(
+        `开始文件传输：发送 ${plan.ranges}（本次 ${request.indexes.length} 片，共 ${request.total} 片）`
+      )
+
+      const result = await engine.start(request, toEngineSettings(settings.get()))
+      return {
+        state: result.state,
+        typed: result.typed,
+        total: result.total,
+        elapsedMs: result.elapsedMs,
+        seed: result.seed,
+        error: result.error ? result.error.message : undefined,
+        plan
+      }
+    })
+  }
 
   if (windowControls) {
     register(IPC.windowMinimize, () => {

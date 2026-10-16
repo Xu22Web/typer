@@ -24,6 +24,8 @@ import {
 } from './ipc/registerIpc'
 import { SettingsStore } from './settings/store'
 import type { ImportCharset } from './settings/types'
+import { copyToolsTo, TransferSession } from './transfer/session'
+import { resolveToolsDir } from './transfer/toolsLocator'
 import { createDriver, type KeyboardDriver } from './typing/drivers'
 import { resolveHostScriptPath } from './typing/drivers/hostLocator'
 import { TypingEngine } from './typing/engine/TypingEngine'
@@ -46,6 +48,7 @@ let engine: TypingEngine | null = null
 let driver: KeyboardDriver | null = null
 let mainWindow: BrowserWindow | null = null
 let updates: UpdateService | null = null
+let transfer: TransferSession | null = null
 
 function broadcast(channel: string, payload: unknown): void {
   for (const window of BrowserWindow.getAllWindows()) {
@@ -128,6 +131,52 @@ function createUnavailableDriver(message: string): KeyboardDriver {
   }
 }
 
+/** 选择要传输的文件：不做扩展名过滤（任意文件都要能传）。 */
+async function pickTransferFile(): Promise<string | null> {
+  const focused = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
+  const options = {
+    title: '选择要输入的文件',
+    properties: ['openFile' as const],
+    filters: [{ name: '所有文件', extensions: ['*'] }]
+  }
+  const result = focused
+    ? await dialog.showOpenDialog(focused, options)
+    : await dialog.showOpenDialog(options)
+  if (result.canceled || result.filePaths.length === 0) return null
+  return result.filePaths[0] ?? null
+}
+
+/** tools/ 在开发模式下位于仓库根目录，打包后位于 resources/ 下。 */
+function toolsLocatorContext(): { isPackaged: boolean; appPath: string; resourcesPath: string } {
+  return {
+    isPackaged: app.isPackaged,
+    appPath: app.getAppPath(),
+    resourcesPath: process.resourcesPath
+  }
+}
+
+/** 把接收/分片脚本复制到用户选择的目录（目标机没有 npm，需要的正是这些可直接运行的文件）。 */
+async function exportTools(): Promise<string | null> {
+  const focused = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
+  const options = {
+    title: '选择脚本导出目录',
+    properties: ['openDirectory' as const, 'createDirectory' as const]
+  }
+  const result = focused
+    ? await dialog.showOpenDialog(focused, options)
+    : await dialog.showOpenDialog(options)
+  if (result.canceled || result.filePaths.length === 0) return null
+  const destination = join(result.filePaths[0] as string, 'typer-tools')
+  copyToolsTo(resolveToolsDir(toolsLocatorContext()), destination)
+  return destination
+}
+
+async function revealTools(): Promise<boolean> {
+  const dir = resolveToolsDir(toolsLocatorContext())
+  const error = await shell.openPath(dir)
+  return error.length === 0
+}
+
 async function importTextFile(
   filePath: string,
   charset: ImportCharset = 'auto'
@@ -207,6 +256,12 @@ async function bootstrap(): Promise<void> {
   driver = buildDriver(store)
 
   const bridge = createEngineEventBridge(broadcast)
+  // 文件传输会话：准备进度要实时推给界面（大文件哈希可能持续数秒）
+  const transferSession = new TransferSession({
+    onPrepareProgress: (progress) => broadcast(IPC.eventTransferPrepare, progress),
+    onLog: (level, message) => logger[level](message)
+  })
+  transfer = transferSession
   const instance = new TypingEngine({
     driver,
     sleep: realSleep,
@@ -280,6 +335,16 @@ async function bootstrap(): Promise<void> {
       isMaximized: () => mainWindow?.isMaximized() ?? false
     },
     updates: updates ?? undefined,
+    transfer: {
+      pickFile: () => pickTransferFile(),
+      prepare: (path, options) => transferSession.prepare(path, options),
+      cancelPrepare: () => transferSession.cancelPrepare(),
+      matchResume: (text) => transferSession.matchResume(text),
+      createRequest: (options, hooks) => transferSession.createRequest(options, hooks),
+      plan: (options) => transferSession.plan(options),
+      exportTools: () => exportTools(),
+      revealTools: () => revealTools()
+    },
     openExternal: async (url) => {
       await shell.openExternal(url)
     },
@@ -354,4 +419,5 @@ app.on('window-all-closed', () => {
 app.on('before-quit', () => {
   disposeHotkeys({ register: () => false, unregisterAll: () => globalShortcut.unregisterAll() })
   void engine?.dispose().catch(() => {})
+  void transfer?.dispose().catch(() => {})
 })

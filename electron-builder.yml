@@ -19,9 +19,13 @@ files:
   - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json,tsconfig.test.json}'
   - '!{vitest.config.ts,coverage,dist}'
 # 输入宿主脚本必须随包分发：主进程会以 powershell.exe -File <resourcesPath>/scripts/typing-host.ps1 启动它
+# tools/ 下的接收与分片脚本同理：目标机没有 npm，用户需要的是"能直接拷过去跑的文件"
+# （应用内「导出脚本 / 打开目录」也会用到这个目录）
 extraResources:
   - from: scripts/typing-host.ps1
     to: scripts/typing-host.ps1
+  - from: tools
+    to: tools
 # 不使用 electron-builder 自带的自动更新（更新由主进程的 src/main/update 自行实现：
 # 检查 GitHub Release → 下载 → SHA-256 校验 → 交给安装程序）。
 # 显式关掉隐含的 publish：否则 electron-builder 会因为 package.json 里有 repository

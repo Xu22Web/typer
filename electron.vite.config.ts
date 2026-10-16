@@ -12,14 +12,18 @@ export default defineConfig({
     resolve: {
       alias: {
         // 主进程内部也用别名，避免深层相对路径
-        '@main': resolve('src/main')
+        '@main': resolve('src/main'),
+        '@shared': resolve('src/shared'),
+        // 帧线格式的唯一实现（tools/ 下的脚本直接复用同一份文件）
+        '@tools': resolve('tools')
       }
     }
   },
   preload: {
     resolve: {
       alias: {
-        '@main': resolve('src/main')
+        '@main': resolve('src/main'),
+        '@shared': resolve('src/shared')
       }
     }
   },
@@ -28,7 +32,9 @@ export default defineConfig({
       alias: {
         '@renderer': resolve('src/renderer/src'),
         // 渲染进程直接引用主进程的纯函数/类型（预览统计、状态标签、载荷净化等）
-        '@main': resolve('src/main')
+        '@main': resolve('src/main'),
+        // 跨进程共享的纯常量/纯函数（不含 node: 依赖）
+        '@shared': resolve('src/shared')
       }
     },
     plugins: [

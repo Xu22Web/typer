@@ -55,5 +55,23 @@ export default defineConfig(
       '@typescript-eslint/explicit-function-return-type': 'off'
     }
   },
+  {
+    // tools/ 下的接收/分片脚本要能直接 `node xxx.mjs` 运行（目标机不一定有构建环境），
+    // 因此同样是纯 JS：不做类型标注要求，并且允许脚本里用 process / console 这类全局。
+    files: ['tools/**/*.mjs'],
+    languageOptions: {
+      globals: {
+        process: 'readonly',
+        console: 'readonly',
+        Buffer: 'readonly',
+        TextEncoder: 'readonly',
+        TextDecoder: 'readonly',
+        URL: 'readonly'
+      }
+    },
+    rules: {
+      '@typescript-eslint/explicit-function-return-type': 'off'
+    }
+  },
   eslintConfigPrettier
 )

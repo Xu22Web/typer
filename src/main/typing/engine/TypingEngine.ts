@@ -6,11 +6,39 @@ import { toHostItems } from '../drivers/protocol'
 import { createRng, resolveSeed, type Rng } from '../scheduling/rng'
 import { baseIntervalMsFor, TimingScheduler, type TimingSettings } from '../scheduling/timing'
 import type { TypoCorrection, TypoOptions, TypoStyle } from '../scheduling/typo'
-import { FocusGuard, type FocusGuardMode } from '../focus/focusGuard'
-import { computeProgress, type ProgressSnapshot } from './progress'
+import { FocusGuard, type FocusGuardMode, type FocusSnapshot } from '../focus/focusGuard'
+import { computeProgress, type ProgressFrames, type ProgressSnapshot } from './progress'
 import { isBusy, type EngineSnapshot, type EngineState } from './states'
 
 export type InsertMode = 'keystroke' | 'paste' | 'auto'
+
+/**
+ * 一次输入任务的来源。
+ *
+ * - `text`：现有路径，把文本按字符规划成动作（含错字、停顿等全部拟人特性）
+ * - `frames`：文件传输路径，逐"帧"发送（每片一行），**不使用错字**（打错会破坏数据），
+ *   并且支持只发送一部分片（续传 / 定点重传）
+ */
+export type TypingRequest =
+  | { kind: 'text'; text: string }
+  | {
+      kind: 'frames'
+      jobId: string
+      /** 任务总片数（用于日志与进度文案） */
+      total: number
+      /** 本次要发送的片号（升序；可以是全量、缺失片或指定片） */
+      indexes: number[]
+      /** 渲染某一帧（返回不含换行的单行文本） */
+      render: (index: number) => Promise<string> | string
+      /** 某一帧的字符数（用于进度总量与耗时预估，不触发磁盘读取） */
+      charsOf: (index: number) => number
+      /** 开始帧：接收端据此建立任务；续传时可省略 */
+      begin?: () => string
+      /** 结束帧：通知接收端可以合并校验；只发部分片时应省略 */
+      end?: () => string
+      /** 每帧发送结果回调（成功/失败原因） */
+      onFrame?: (index: number, ok: boolean, error?: string) => void
+    }
 
 /** 引擎需要的设置子集（由设置层派生，测试可直接构造）。 */
 export interface EngineSettings {
@@ -24,6 +52,10 @@ export interface EngineSettings {
   seed: number
   /** 完成后自检是否有按键粘住 */
   verifyStuckKeys: boolean
+  /** 文件传输：片与片之间的额外停顿（给接收端落盘/回显留时间） */
+  interFrameDelayMs?: number
+  /** 文件传输：粘贴帧时是否把行尾换行一起粘贴（少一次按键） */
+  pasteFrameIncludesNewline?: boolean
   timing: TimingSettings
   typo: {
     rate: number
@@ -82,6 +114,8 @@ export class TypingEngine {
   private running = false
   private disposed = false
   private baseIntervalMs = 60
+  /** 文件传输任务的片进度（文本任务为 null） */
+  private frames: ProgressFrames | null = null
 
   constructor(private readonly deps: EngineDeps) {
     this.driver = deps.driver
@@ -105,11 +139,15 @@ export class TypingEngine {
   }
 
   /** 开始一次输入。重复调用会被拒绝（不会产生两条并行输入流）。 */
-  async start(text: string, settings: EngineSettings): Promise<RunResult> {
+  async start(request: TypingRequest | string, settings: EngineSettings): Promise<RunResult> {
     if (this.disposed) throw new Error('引擎已释放')
     if (isBusy(this.stateValue)) {
       throw new Error('已有输入任务正在进行，请先停止')
     }
+
+    // 兼容原有调用方：字符串等价于文本任务
+    const task: TypingRequest =
+      typeof request === 'string' ? { kind: 'text', text: request } : request
 
     this.aborted = false
     this.abortReason = ''
@@ -118,6 +156,10 @@ export class TypingEngine {
     this.typedCount = 0
     this.totalCount = 0
     this.countdownRemainingMs = 0
+    this.frames =
+      task.kind === 'frames'
+        ? { done: 0, total: task.indexes.length, lastIndex: -1, failed: 0 }
+        : null
     this.baseIntervalMs = Math.max(1, baseIntervalMsFor(settings.timing))
     this.running = true
 
@@ -128,7 +170,7 @@ export class TypingEngine {
     let outcome: RunResult['state'] = 'completed'
 
     try {
-      outcome = await this.runOnce(text, settings, seed, rngFactory)
+      outcome = await this.runOnce(task, settings, seed, rngFactory)
     } catch (caught) {
       error = caught instanceof Error ? caught : new Error(String(caught))
       outcome = 'failed'
@@ -164,16 +206,11 @@ export class TypingEngine {
   }
 
   private async runOnce(
-    text: string,
+    task: TypingRequest,
     settings: EngineSettings,
     seed: number,
     rngFactory: (seed: number) => Rng
   ): Promise<RunResult['state']> {
-    const planBase: PlanOptions = {
-      layout: settings.layout,
-      forceUnicodeForAll: settings.forceUnicodeForAll
-    }
-
     // 1) 倒计时
     this.setState('countdown')
     this.startedAt = this.deps.now()
@@ -194,7 +231,28 @@ export class TypingEngine {
     const guard = new FocusGuard(settings.focusGuard, this.driver)
     const expectedFocus = await guard.capture()
 
-    // 3) 统计动作总数：与产出使用"同种子、同起点"的独立随机源，保证总数准确
+    // 3) 分派：文件传输（逐帧）与文本输入是两条独立路径，互不影响
+    if (task.kind === 'frames') {
+      return this.runFrameJob(task, settings, seed, rngFactory, guard, expectedFocus)
+    }
+    return this.runTextJob(task.text, settings, seed, rngFactory, guard, expectedFocus)
+  }
+
+  /** 文本任务：统计动作总数 → 空文本短路 → 粘贴或逐块输入。 */
+  private async runTextJob(
+    text: string,
+    settings: EngineSettings,
+    seed: number,
+    rngFactory: (seed: number) => Rng,
+    guard: FocusGuard,
+    expectedFocus: FocusSnapshot | null
+  ): Promise<RunResult['state']> {
+    const planBase: PlanOptions = {
+      layout: settings.layout,
+      forceUnicodeForAll: settings.forceUnicodeForAll
+    }
+
+    // 统计动作总数：与产出使用"同种子、同起点"的独立随机源，保证总数准确
     const typoOptions: TypoOptions = {
       rate: settings.typo.rate,
       style: settings.typo.style,
@@ -288,24 +346,183 @@ export class TypingEngine {
 
     if (!(await flush())) return 'aborted'
 
-    if (settings.verifyStuckKeys) {
-      try {
-        const probe = await this.driver.probe()
-        if (probe.stuckKeys.length > 0) {
-          this.deps.onLog?.(
-            'warn',
-            `检测到仍有按键处于按下状态：${probe.stuckKeys
-              .map((vk) => `0x${vk.toString(16)}`)
-              .join(', ')}`
-          )
-        }
-      } catch {
-        // 探测失败不影响完成状态
-      }
-    }
+    if (settings.verifyStuckKeys) await this.probeStuckKeys()
 
     this.emitProgress(true)
     return 'completed'
+  }
+
+  /**
+   * 文件传输任务：逐帧发送（每片一行）。
+   *
+   * 与文本任务的三个关键差异：
+   * 1. **不打错字**：错字会直接破坏数据（这里是"传输"而不是"演示打字"）
+   * 2. **逐帧落定**：一片（一行）下发完毕再发下一片，片间可选额外停顿，
+   *    这样接收端总能在完整的一行上做校验
+   * 3. **按帧选注入方式**：长帧走剪贴板粘贴、短帧走真实按键（沿用 `insertMode` 的自动策略）
+   */
+  private async runFrameJob(
+    task: Extract<TypingRequest, { kind: 'frames' }>,
+    settings: EngineSettings,
+    seed: number,
+    rngFactory: (seed: number) => Rng,
+    guard: FocusGuard,
+    expectedFocus: FocusSnapshot | null
+  ): Promise<RunResult['state']> {
+    const planBase: PlanOptions = {
+      layout: settings.layout,
+      forceUnicodeForAll: settings.forceUnicodeForAll
+    }
+    const beginText = task.begin?.()
+    const endText = task.end?.()
+
+    // 总量：开始帧 + 每片（帧字符 + 行尾）+ 结束帧，全部由 charsOf 提供，无需读文件
+    let total = 0
+    if (beginText) total += beginText.length + 1
+    for (const index of task.indexes) total += Math.max(0, task.charsOf(index)) + 1
+    if (endText) total += endText.length + 1
+    this.totalCount = total
+
+    if (this.aborted) return 'aborted'
+
+    this.emitProgress(true)
+    this.setState('running')
+
+    await this.driver.start()
+
+    const scheduler = new TimingScheduler(settings.timing, rngFactory(seed))
+    const interFrameDelay = Math.max(0, Math.round(settings.interFrameDelayMs ?? 0))
+    const pastePerFrame = settings.insertMode === 'paste'
+    const pasteThreshold = Math.max(1, settings.autoPasteThreshold)
+    const pasteIncludesNewline = settings.pasteFrameIncludesNewline !== false
+
+    const sendText = async (text: string): Promise<void> => {
+      const scheduled: ScheduledAction[] = []
+      for (const action of iterateActions(text, { ...planBase, typo: null })) {
+        scheduled.push({ action, delayMs: scheduler.delayFor(action) })
+      }
+      await this.driver.send(toHostItems(scheduled))
+      this.typedCount += scheduled.length
+      this.emitProgress(false)
+    }
+
+    /** 发送一整帧（含行尾换行）。 */
+    const sendFrame = async (text: string): Promise<void> => {
+      const paste =
+        pastePerFrame || (settings.insertMode === 'auto' && text.length >= pasteThreshold)
+
+      if (paste) {
+        // 粘贴：把行尾换行一起放进剪贴板，少一次按键（目标端按行读，等价）
+        const payload = pasteIncludesNewline ? `${text}\n` : text
+        await this.driver.paste(payload)
+        if (!pasteIncludesNewline) await sendText('\n')
+        this.typedCount += text.length + 1
+      } else {
+        await sendText(`${text}\n`)
+      }
+      this.emitProgress(false)
+    }
+
+    const verifyFocus = async (): Promise<boolean> => {
+      const verdict = await guard.verify(expectedFocus)
+      if (!verdict.changed) return true
+      this.deps.onLog?.('warn', verdict.warning ?? '前台窗口已变化')
+      if (verdict.blocked) {
+        this.abortReason = verdict.warning ?? '前台窗口已变化'
+        return false
+      }
+      return true
+    }
+
+    try {
+      if (beginText) {
+        if (!(await verifyFocus())) return 'aborted'
+        await sendFrame(beginText)
+      }
+
+      let sent = 0
+      for (const index of task.indexes) {
+        if (this.aborted) return 'aborted'
+
+        // 暂停：在片与片之间等待（不会把半行留在目标窗口里）
+        if (this.paused) {
+          this.setState('paused')
+          await this.waitWhilePaused()
+          if (this.aborted) return 'aborted'
+          this.setState('running')
+        }
+
+        if (!(await verifyFocus())) return 'aborted'
+
+        let text: string
+        try {
+          text = String(await task.render(index))
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          this.markFrameFailed(index, message)
+          task.onFrame?.(index, false, message)
+          continue
+        }
+
+        await sendFrame(text)
+
+        sent += 1
+        this.markFrameDone(index)
+        task.onFrame?.(index, true)
+
+        if (sent < task.indexes.length && interFrameDelay > 0) {
+          await this.deps.sleep(interFrameDelay, () => !this.aborted)
+        }
+      }
+
+      if (endText) {
+        if (!(await verifyFocus())) return 'aborted'
+        await sendFrame(endText)
+      }
+
+      if (settings.verifyStuckKeys) await this.probeStuckKeys()
+
+      this.emitProgress(true)
+      return 'completed'
+    } finally {
+      // 中止/失败也要保证修饰键被释放（粘贴路径会按下 Ctrl）
+      await this.driver.releaseAll().catch(() => undefined)
+    }
+  }
+
+  private markFrameDone(index: number): void {
+    if (!this.frames) return
+    this.frames = {
+      done: this.frames.done + 1,
+      total: this.frames.total,
+      lastIndex: index,
+      failed: this.frames.failed
+    }
+    this.emitProgress(false)
+  }
+
+  private markFrameFailed(index: number, message: string): void {
+    if (this.frames) {
+      this.frames = { ...this.frames, lastIndex: index, failed: this.frames.failed + 1 }
+    }
+    this.deps.onLog?.('error', `第 ${index} 片发送失败：${message}`)
+    this.emitProgress(false)
+  }
+
+  private async probeStuckKeys(): Promise<void> {
+    try {
+      const probe = await this.driver.probe()
+      if (probe.stuckKeys.length > 0) {
+        this.deps.onLog?.(
+          'warn',
+          `检测到仍有按键处于按下状态：${probe.stuckKeys
+            .map((vk) => `0x${vk.toString(16)}`)
+            .join(', ')}`
+        )
+      }
+    } catch {
+      // 探测失败不影响完成状态
+    }
   }
 
   pause(): void {
@@ -367,7 +584,8 @@ export class TypingEngine {
         elapsedMs: now - this.startedAt,
         baseIntervalMs: this.baseIntervalMs,
         stage: this.stateValue === 'countdown' ? 'countdown' : 'typing',
-        countdownRemainingMs: this.countdownRemainingMs
+        countdownRemainingMs: this.countdownRemainingMs,
+        frames: this.frames ?? undefined
       })
     )
   }

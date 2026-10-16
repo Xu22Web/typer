@@ -55,6 +55,19 @@ const api = {
     pick: () => invoke(IPC.filesPick),
     import: (path: string, charset?: string) => invoke(IPC.filesImport, { path, charset })
   },
+  transfer: {
+    pick: () => invoke(IPC.transferPick),
+    prepare: (path: string, options: unknown, config?: { reuse?: boolean }) =>
+      invoke(IPC.transferPrepare, { path, options, reuse: config?.reuse === true }),
+    cancelPrepare: () => invoke(IPC.transferCancelPrepare),
+    resumeState: (text: string) => invoke(IPC.transferResumeState, { text }),
+    plan: (options: unknown) => invoke(IPC.transferPlan, options),
+    start: (options: unknown) => invoke(IPC.transferStartFrames, options),
+    exportTools: () => invoke(IPC.transferExportTools),
+    revealTools: () => invoke(IPC.transferRevealTools),
+    onPrepareProgress: (listener: (payload: unknown) => void) =>
+      subscribe(IPC.eventTransferPrepare, listener)
+  },
   window: {
     minimize: () => invoke(IPC.windowMinimize),
     toggleMaximize: () => invoke(IPC.windowToggleMaximize),
