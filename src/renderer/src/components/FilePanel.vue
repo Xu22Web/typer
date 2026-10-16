@@ -332,7 +332,7 @@ const previewRows = computed(() => summary.value?.preview ?? [])
           </div>
 
           <p class="plan-line">
-            <span class="i-mdi-information-outline" />
+            <span class="i-mdi-information-outline text-icon" />
             本次将发送 <strong>{{ transfer.plan.value?.ranges ?? '全部' }}</strong> 共
             {{ transfer.sendingCount.value }} 片<template v-if="transfer.plan.value?.sendBegin">
               ，先发开始帧</template

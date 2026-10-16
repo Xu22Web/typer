@@ -221,7 +221,7 @@ async function insertToolScriptFromFile(): Promise<void> {
   display: grid;
   grid-template-columns: minmax(0, 1.6fr) minmax(280px, 1fr);
   gap: 16px;
-  /* 两列等高：左列是主任务（内容区），通常更高，右列拉伸对齐它的底边 */
+  /* 宽窗口：两列等高（左列是主任务，右列拉伸对齐它的底边） */
   align-items: stretch;
 }
 
@@ -270,7 +270,7 @@ async function insertToolScriptFromFile(): Promise<void> {
   min-height: 0;
   gap: 16px;
 
-  /* 目标窗口是固定内容，多出来的高度给运行状态，右列因此与左列等高 */
+  /* 宽窗口下右列与左列等高：目标窗口是固定内容，多出来的高度给运行状态 */
   > :last-child {
     flex: 1;
   }
@@ -376,9 +376,36 @@ async function insertToolScriptFromFile(): Promise<void> {
   }
 }
 
-@media (max-width: 980px) {
+/*
+ * 中窗口（含默认窗口宽度）：内容区独占一行，目标窗口与运行状态并排放在它下面、两卡等高；
+ * 高度多出来的部分留给内容，避免卡片看起来"半空"。
+ */
+@media (max-width: 1279px) {
   .input-layout {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .side-column {
+    flex-direction: row;
+    align-items: stretch;
+
+    > :first-child,
+    > :last-child {
+      flex: 1;
+      min-width: 0;
+    }
+  }
+
+  /* 目标窗口内容少，撑高后把说明压到底部，与运行状态的统计区对齐 */
+  .target {
+    justify-content: space-between;
+  }
+}
+
+/* 窄窗口：全部单列 */
+@media (max-width: 980px) {
+  .side-column {
+    flex-direction: column;
   }
 }
 </style>

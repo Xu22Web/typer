@@ -7,7 +7,6 @@ import { estimateTotalMs } from '@main/typing/scheduling/timing'
  */
 const typing = useTyping()
 const settingsStore = useSettings()
-const toolScript = useToolScript()
 
 /** 当前生效的设置 */
 const settings = settingsStore.settings
@@ -32,6 +31,11 @@ const blocker = computed(() => {
   if (typing.text.value.length === 0) return '先在内容区粘贴要输入的文本'
   return ''
 })
+
+/** @description 清空内容区 */
+function clear(): void {
+  typing.text.value = ''
+}
 </script>
 
 <template>
@@ -56,11 +60,11 @@ const blocker = computed(() => {
       <ElButton
         size="small"
         text
-        :loading="toolScript.loading.value"
-        title="把接收脚本全文放进内容区"
-        @click="toolScript.insert()"
+        :disabled="typing.text.value.length === 0"
+        title="清空内容区"
+        @click="clear()"
       >
-        <span class="i-mdi-file-code-outline" /> 获取接收脚本
+        <span class="i-mdi-eraser" /> 清空
       </ElButton>
     </div>
 
@@ -83,7 +87,7 @@ const blocker = computed(() => {
     </p>
 
     <p v-if="looksLikeFrames" class="frame-hint">
-      <span class="i-mdi-information-outline" />
+      <span class="i-mdi-information-outline text-icon" />
       看起来是 Typer 帧文本：逐字符输入完全可行（接收端会逐片校验）， 但请把「错字概率」设为
       0，否则错字会破坏该帧、需要重传那一片。
     </p>
