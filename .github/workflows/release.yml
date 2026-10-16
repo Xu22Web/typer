@@ -1,0 +1,59 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  # 允许手动触发，便于补发某个版本
+  workflow_dispatch:
+
+jobs:
+  release:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Test
+        run: pnpm test
+
+      - name: System tests
+        run: pnpm test:system
+
+      - name: Build installer
+        # 生成 dist/Typer-<version>-setup.exe（NSIS 安装向导）
+        run: pnpm build:win
+
+      - name: Generate checksums
+        shell: pwsh
+        # 发布 SHA256SUMS.txt：应用内“更新”功能下载安装包后会拿它做完整性校验，
+        # 缺少该文件时应用会拒绝自动安装（只提供浏览器下载入口）。
+        run: |
+          Get-ChildItem dist/*.exe | ForEach-Object {
+            $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
+            "$hash  $($_.Name)"
+          } | Set-Content -Path dist/SHA256SUMS.txt -Encoding utf8 -NoNewline:$false
+
+      - name: Publish GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $tag = if ('${{ github.ref_type }}' -eq 'tag') { '${{ github.ref_name }}' } else { "v$((Get-Content package.json | ConvertFrom-Json).version)" }
+          $files = @(Get-ChildItem dist/*.exe).FullName + @(Get-ChildItem dist/SHA256SUMS.txt).FullName
+          if (gh release view $tag 2>$null) {
+            gh release upload $tag $files --clobber
+          } else {
+            gh release create $tag $files --title $tag --generate-notes
+          }

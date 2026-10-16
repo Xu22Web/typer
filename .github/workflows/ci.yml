@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  check:
+    # 应用是 Windows 专属（依赖 Win32 SendInput），CI 也跑在 Windows 上，
+    # 这样系统测试那一层（真实调用 powershell.exe 宿主）才有意义。
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Format check
+        run: pnpm format:check
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Unit tests
+        run: pnpm test
+
+      - name: System tests
+        # 默认层：校验宿主脚本语法/编码，并以 -DryRun 真实启动宿主（不产生真实按键）。
+        # 真实注入层需要 TYPIST_E2E=1 且能取得前台窗口，CI 上不开启。
+        run: pnpm test:system
+
+      - name: Build
+        run: pnpm build

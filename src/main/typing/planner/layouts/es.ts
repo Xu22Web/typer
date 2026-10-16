@@ -1,0 +1,32 @@
+import { LayoutBuilder, type KeyboardLayout } from './types'
+import { VK, addStandardLetters } from './common'
+
+/**
+ * 西班牙语布局（es-ES）。
+ *
+ * 与 US 基本一致：字母 + 数字行（Shift 后为 ! " · $ % & / ( ) =），
+ * 另有 `ñ` / `Ñ`（VK_OEM_1）。其余符号（¿ ¡ ´ ¨ ç 等）走 Unicode 注入。
+ */
+export function createEsLayout(): KeyboardLayout {
+  const builder = new LayoutBuilder()
+
+  addStandardLetters(builder, 'qwertyuiopasdfghjklzxcvbnm')
+  builder.add('ñ', VK.OEM_1)
+  builder.add('Ñ', VK.OEM_1, 'shift')
+
+  const digitShifts = ['!', '"', '·', '$', '%', '&', '/', '(', ')', '=']
+  '1234567890'.split('').forEach((digit, index) => {
+    const vk = digit.charCodeAt(0)
+    builder.add(digit, vk)
+    const shifted = digitShifts[index]
+    if (shifted) builder.add(shifted, vk, 'shift')
+  })
+
+  builder.pair(' ', ' ', VK.SPACE)
+  builder.markAltGr('|', '@', '#', '~', '\\', '{', '[', ']', '}')
+  builder.markDead('`', '´', '¨', '^')
+
+  return builder.build('es', 'Español', '仅收录字母（含 ñ）、数字行与空格；其余符号走 Unicode 注入')
+}
+
+export const ES_LAYOUT = createEsLayout()

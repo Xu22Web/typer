@@ -1,0 +1,82 @@
+{
+  "name": "typer",
+  "productName": "Typer",
+  "version": "0.1.0",
+  "description": "把文本逐字符模拟键盘输入到任意窗口的 Windows 桌面工具（支持中文、emoji 与需要组合键的特殊符号）",
+  "main": "./out/main/index.js",
+  "author": {
+    "name": "Xu22Web"
+  },
+  "license": "MIT",
+  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Xu22Web/typer.git"
+  },
+  "homepage": "https://github.com/Xu22Web/typer#readme",
+  "bugs": {
+    "url": "https://github.com/Xu22Web/typer/issues"
+  },
+  "engines": {
+    "node": ">=20.19.0"
+  },
+  "packageManager": "pnpm@12.11.2",
+  "scripts": {
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "lint": "eslint --cache .",
+    "typecheck:node": "tsc --noEmit -p tsconfig.node.json --composite false",
+    "typecheck:test": "tsc --noEmit -p tsconfig.test.json",
+    "typecheck:web": "vue-tsc --noEmit -p tsconfig.web.json --composite false",
+    "typecheck": "npm run typecheck:node && npm run typecheck:test && npm run typecheck:web",
+    "start": "electron-vite preview",
+    "dev": "electron-vite dev",
+    "build": "npm run typecheck && electron-vite build",
+    "postinstall": "electron-builder install-app-deps",
+    "build:unpack": "npm run build && electron-builder --dir",
+    "build:win": "npm run build && electron-builder --win",
+    "icons": "node scripts/generate-icons.mjs",
+    "test": "vitest run --project unit",
+    "test:watch": "vitest --project unit",
+    "test:all": "vitest run",
+    "test:system": "node scripts/run-system-tests.mjs",
+    "test:cov": "vitest run --project unit --coverage"
+  },
+  "dependencies": {
+    "@electron-toolkit/preload": "^3.0.2",
+    "@electron-toolkit/utils": "^4.0.0",
+    "element-plus": "^2.14.6",
+    "iconv-lite": "^0.7.3",
+    "pinia-plugin-persistedstate": "^4.7.1"
+  },
+  "devDependencies": {
+    "@electron-toolkit/eslint-config-prettier": "3.0.0",
+    "@electron-toolkit/eslint-config-ts": "^3.1.0",
+    "@electron-toolkit/tsconfig": "^2.0.0",
+    "@iconify-json/mdi": "^1.2.3",
+    "@types/node": "^22.19.1",
+    "@vitejs/plugin-vue": "^6.0.2",
+    "@vitest/coverage-v8": "^4.1.11",
+    "@xu22web/unplugin-vue-components": "^32.2.0",
+    "electron": "^39.2.6",
+    "electron-builder": "^26.0.12",
+    "electron-vite": "^5.0.0",
+    "eslint": "^9.39.1",
+    "eslint-plugin-vue": "^10.6.2",
+    "pinia": "^4.0.3",
+    "png-to-ico": "^3.0.2",
+    "prettier": "^3.7.4",
+    "sass": "^1.104.1",
+    "sharp": "^0.35.5",
+    "typescript": "^5.9.3",
+    "unocss": "^66.10.5",
+    "unplugin-auto-import": "^21.1.0",
+    "vite": "^7.2.6",
+    "vite-plugin-vue-devtools": "^8.2.1",
+    "vitest": "^4.1.11",
+    "vue": "^3.6.0-rc.9",
+    "vue-eslint-parser": "^10.2.0",
+    "vue-router": "^5.3.1",
+    "vue-tsc": "^3.1.6"
+  }
+}

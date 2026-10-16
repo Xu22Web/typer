@@ -1,0 +1,192 @@
+/**
+ * 设计 token。
+ *
+ * 取值参考 Windows 11 (Fluent 2)：中性灰底 + 纯色卡片 + 1px 描边、
+ * 8px 圆角、极轻的阴影；强调色保留品牌青绿（与图标同色相）。
+ * 所有颜色都走变量，深浅主题只在这一处切换。
+ */
+:root {
+  color-scheme: dark;
+
+  /* 文字 */
+  --text-1: rgba(255, 255, 255, 0.92);
+  --text-2: rgba(255, 255, 255, 0.62);
+  --text-3: rgba(255, 255, 255, 0.42);
+
+  /* 表面：底 / 卡片 / 浮层 */
+  --bg: #202020;
+  --card-bg: #2b2b2b;
+  --card-bg-hover: #323232;
+  --layer-bg: #2c2c2c;
+  --acrylic: rgba(32, 32, 32, 0.72);
+  --stroke: rgba(255, 255, 255, 0.07);
+  --stroke-strong: rgba(255, 255, 255, 0.12);
+  --stroke-hover: rgba(255, 255, 255, 0.2);
+
+  /* 控件填充（Win11 的 subtle fill 语义） */
+  --ctrl-fill: rgba(255, 255, 255, 0.06);
+  --ctrl-fill-hover: rgba(255, 255, 255, 0.09);
+  --ctrl-fill-pressed: rgba(255, 255, 255, 0.03);
+  --ctrl-disabled: rgba(255, 255, 255, 0.04);
+
+  /* 强调色（品牌） */
+  --accent: #42d392;
+  --accent-strong: #2fbe80;
+  --accent-rgb: 66, 211, 146;
+  --accent-soft: rgba(66, 211, 146, 0.14);
+  --accent-border: rgba(66, 211, 146, 0.35);
+  --accent-grad: linear-gradient(135deg, #4ee0a8, #1fbfc2 52%, #3e7bf0);
+  --on-accent: #0b2418;
+
+  --danger: #ff6b6b;
+  --danger-soft: rgba(255, 107, 107, 0.14);
+  --danger-border: rgba(255, 107, 107, 0.4);
+  --warning: #f0b429;
+  --warning-soft: rgba(240, 180, 41, 0.14);
+
+  /* 焦点环 */
+  --focus: rgba(66, 211, 146, 0.85);
+
+  /* 投影：卡片几乎不用，浮层用一层柔和的 */
+  --shadow-flyout: 0 8px 24px rgba(0, 0, 0, 0.35);
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.18);
+
+  --scrollbar: rgba(255, 255, 255, 0.18);
+  --scrollbar-hover: rgba(255, 255, 255, 0.32);
+
+  /* 圆角与尺寸 */
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --titlebar-h: 48px;
+  --statusbar-h: 34px;
+  --sidenav-w: 216px;
+
+  --font-sans:
+    'Segoe UI Variable Text', 'Segoe UI Variable', 'Segoe UI', 'Microsoft YaHei UI',
+    'Microsoft YaHei', system-ui, sans-serif;
+  --font-mono: 'Cascadia Mono', 'Cascadia Code', Consolas, ui-monospace, monospace;
+}
+
+html.light {
+  color-scheme: light;
+
+  --text-1: rgba(0, 0, 0, 0.9);
+  --text-2: rgba(0, 0, 0, 0.62);
+  --text-3: rgba(0, 0, 0, 0.44);
+
+  --bg: #f3f3f3;
+  --card-bg: #ffffff;
+  --card-bg-hover: #fbfbfb;
+  --layer-bg: #ffffff;
+  --acrylic: rgba(243, 243, 243, 0.75);
+  --stroke: rgba(0, 0, 0, 0.06);
+  --stroke-strong: rgba(0, 0, 0, 0.1);
+  --stroke-hover: rgba(0, 0, 0, 0.2);
+
+  --ctrl-fill: rgba(255, 255, 255, 0.7);
+  --ctrl-fill-hover: rgba(249, 249, 249, 0.6);
+  --ctrl-fill-pressed: rgba(0, 0, 0, 0.04);
+  --ctrl-disabled: rgba(0, 0, 0, 0.04);
+
+  --accent: #0f9d58;
+  --accent-strong: #0c8248;
+  --accent-rgb: 15, 157, 88;
+  --accent-soft: rgba(15, 157, 88, 0.1);
+  --accent-border: rgba(15, 157, 88, 0.32);
+  --on-accent: #ffffff;
+
+  --danger: #c42b1c;
+  --danger-soft: rgba(196, 43, 28, 0.08);
+  --danger-border: rgba(196, 43, 28, 0.3);
+  --warning: #9d5d00;
+  --warning-soft: rgba(157, 93, 0, 0.1);
+
+  --focus: rgba(15, 157, 88, 0.9);
+
+  --shadow-flyout: 0 8px 24px rgba(0, 0, 0, 0.14);
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.04);
+
+  --scrollbar: rgba(0, 0, 0, 0.2);
+  --scrollbar-hover: rgba(0, 0, 0, 0.34);
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  font-weight: normal;
+}
+
+/*
+ * 列表重置：UA 默认样式里 ul 带 `padding-inline-start: 40px` 与 `margin-block: 1em`，
+ * 而组件里的 ul（导航、日志、统计）都要自己控制内边距，不重置就会莫名缩进 40px。
+ * 需要项目符号的地方（如已知限制列表）在组件里显式声明 list-style 与 padding。
+ */
+ul,
+ol {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+body {
+  min-height: 100vh;
+  color: var(--text-1);
+  line-height: 1.6;
+  font-family: var(--font-sans);
+  font-size: 14px;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/*
+ * Element Plus 主题对齐。
+ *
+ * 组件库默认是蓝色圆角体系，与 Fluent 不一致；这里统一到应用 token。
+ * 用 `:root:root` 提高特异性，才能稳定压过 element-plus 的 `:root` (0,1,0)
+ * 与 `html.dark` (0,1,1)，不依赖样式注入顺序。
+ */
+:root:root {
+  --el-font-family: var(--font-sans);
+  --el-font-size-base: 14px;
+  --el-border-radius-base: var(--radius-md);
+  --el-border-radius-small: var(--radius-sm);
+  --el-border-radius-round: 999px;
+
+  --el-color-primary: var(--accent);
+  --el-color-primary-rgb: var(--accent-rgb);
+  --el-color-primary-dark-2: var(--accent-strong);
+  --el-color-primary-light-3: color-mix(in srgb, var(--accent) 80%, var(--bg));
+  --el-color-primary-light-5: color-mix(in srgb, var(--accent) 65%, var(--bg));
+  --el-color-primary-light-7: color-mix(in srgb, var(--accent) 45%, var(--bg));
+  --el-color-primary-light-8: color-mix(in srgb, var(--accent) 32%, var(--bg));
+  --el-color-primary-light-9: color-mix(in srgb, var(--accent) 16%, var(--bg));
+  --el-color-success: var(--accent);
+  --el-color-danger: var(--danger);
+  --el-color-error: var(--danger);
+  --el-color-warning: var(--warning);
+
+  --el-bg-color: var(--card-bg);
+  --el-bg-color-overlay: var(--layer-bg);
+  --el-fill-color-blank: var(--card-bg);
+  --el-fill-color-light: var(--ctrl-fill);
+  --el-fill-color-lighter: var(--ctrl-fill-pressed);
+  --el-fill-color: var(--ctrl-fill);
+
+  --el-border-color: var(--stroke-strong);
+  --el-border-color-light: var(--stroke);
+  --el-border-color-lighter: var(--stroke);
+  --el-border-color-hover: var(--stroke-hover);
+
+  --el-text-color-primary: var(--text-1);
+  --el-text-color-regular: var(--text-1);
+  --el-text-color-secondary: var(--text-2);
+  --el-text-color-placeholder: var(--text-3);
+  --el-text-color-disabled: var(--text-3);
+
+  --el-box-shadow-light: var(--shadow-flyout);
+  --el-mask-color: color-mix(in srgb, var(--bg) 70%, transparent);
+}

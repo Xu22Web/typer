@@ -1,0 +1,73 @@
+appId: com.xu22web.typer
+productName: Typer
+directories:
+  buildResources: build
+files:
+  # 必须显式包含 out/：本仓库的 .gitignore 含 out/dist，而 electron-builder 会按 .gitignore 过滤，
+  # 不显式声明会导致打包产物里没有主进程与渲染进程代码（应用启动即报错）。
+  - out/**/*
+  - package.json
+  - '!**/*.map'
+  - '!**/.vscode/*'
+  - '!.github/*'
+  - '!src/*'
+  - '!tests/*'
+  - '!scripts/*'
+  - '!electron.vite.config.{js,ts,mjs,cjs}'
+  - '!{.eslintcache,eslint.config.mjs,.prettierignore,.prettierrc.yaml,CHANGELOG.md,README.md}'
+  - '!{.env,.env.*,.npmrc,pnpm-lock.yaml}'
+  - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json,tsconfig.test.json}'
+  - '!{vitest.config.ts,coverage,dist}'
+# 输入宿主脚本必须随包分发：主进程会以 powershell.exe -File <resourcesPath>/scripts/typing-host.ps1 启动它
+extraResources:
+  - from: scripts/typing-host.ps1
+    to: scripts/typing-host.ps1
+# 不使用 electron-builder 自带的自动更新（更新由主进程的 src/main/update 自行实现：
+# 检查 GitHub Release → 下载 → SHA-256 校验 → 交给安装程序）。
+# 显式关掉隐含的 publish：否则 electron-builder 会因为 package.json 里有 repository
+# 而自动推导出 GitHub 发布器，进而生成用不到的 app-update.yml / latest.yml，
+# 并可能在 CI 上误触发上传。
+publish: null
+win:
+  # 图标由 resources/icon.svg 生成（见 pnpm icons）
+  icon: build/icon.ico
+  executableName: Typer
+nsis:
+  # Typer-<version>-setup.exe（安装包名跟随产品名，与界面 / Release 页面保持同一套命名）
+  artifactName: ${productName}-${version}-setup.${ext}
+  shortcutName: ${productName}
+  uninstallDisplayName: ${productName}
+  createDesktopShortcut: always
+  # ↓↓↓ 安装向导（assisted installer）：逐步确认，而非一键静默安装 ↓↓↓
+  oneClick: false
+  # 允许用户修改安装目录（仅有 oneClick: false 时才生效，否则会直接报配置错误）
+  allowToChangeInstallationDirectory: true
+  # false = 显示「为所有用户 / 仅为当前用户」选择页；true = 强制装到 Program Files 且不显示该页
+  perMachine: false
+  # 需要时装到所有用户时自动请求 UAC 提权（false 则要求用户手动以管理员身份重开安装包）
+  allowElevation: true
+  # 完成页的「运行 xxx」勾选框
+  runAfterFinish: true
+  # 关闭"差量更新包"：我们用自己的更新流程下载完整安装包，不需要 .blockmap，
+  # 也就不必为差量更新额外生成元数据。
+  differentialPackage: false
+  # 安装向导界面语言：默认简体中文（LCID 2052），并同时打包英文
+  language: '2052'
+  installerLanguages:
+    - zh_CN
+    - en_US
+  # 多语言安装包是否弹出语言选择对话框
+  displayLanguageSelector: false
+  # 卸载时删除用户数据（%APPDATA%\Typer：settings.json、缓存、Local Storage 等）。
+  # 实测：设为 false 时卸载后 %APPDATA%\Typer 会完整残留；设为 true 后 userData、
+  # 安装目录、桌面/开始菜单快捷方式与注册表项全部清除。
+  # 注意：模板在"升级流程"（--updated）下会跳过删除，以免升级时丢配置。
+  deleteAppDataOnUninstall: true
+  # 兜底清理（必需）：electron-builder 的 NSIS 模板在安装时**无条件**把安装程序自身
+  # 复制到 %LOCALAPPDATA%\Typer-updater\installer.exe（约 88MB，供差量更新使用），
+  # 而官方卸载模板不会删除该目录；自定义卸载脚本会一并清掉（详见 build/installer.nsh）。
+  include: build/installer.nsh
+  # 许可协议页：无需在此指定，放 build/license_zh_CN.txt / build/license_en.txt 即自动生效
+npmRebuild: false
+electronDownload:
+  mirror: https://npmmirror.com/mirrors/electron/

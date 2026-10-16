@@ -1,0 +1,47 @@
+/** 渲染进程与主进程之间的频道名（preload 与主进程共享，避免手写字符串出错）。 */
+export const IPC = {
+  appInfo: 'app:info',
+  settingsGet: 'settings:get',
+  settingsSet: 'settings:set',
+  settingsReset: 'settings:reset',
+  typingStart: 'typing:start',
+  typingPause: 'typing:pause',
+  typingResume: 'typing:resume',
+  typingStop: 'typing:stop',
+  typingStatus: 'typing:status',
+  typingForeground: 'typing:foreground',
+  filesImport: 'files:import',
+  filesPick: 'files:pick',
+  /** 自绘标题栏的窗口控制（frameless 窗口没有系统按钮，必须自己实现） */
+  windowMinimize: 'window:minimize',
+  windowToggleMaximize: 'window:toggle-maximize',
+  windowClose: 'window:close',
+  windowIsMaximized: 'window:is-maximized',
+  /** 更新检查与安装 */
+  updateCheck: 'update:check',
+  updateDownload: 'update:download',
+  updateCancel: 'update:cancel',
+  updateInstall: 'update:install',
+  updateState: 'update:get-state',
+  /** 用默认浏览器打开外部链接（只允许 http/https） */
+  shellOpenExternal: 'shell:open-external',
+  /** 主进程 → 渲染进程的事件 */
+  eventProgress: 'typing:progress',
+  eventState: 'typing:state',
+  eventLog: 'typing:log',
+  eventWindowState: 'window:state',
+  eventUpdateState: 'update:state',
+  eventUpdateProgress: 'update:progress'
+} as const
+
+export type IpcChannel = (typeof IPC)[keyof typeof IPC]
+
+/** 主进程主动推送的频道。 */
+export const EVENT_CHANNELS: readonly string[] = [
+  IPC.eventProgress,
+  IPC.eventState,
+  IPC.eventLog,
+  IPC.eventWindowState,
+  IPC.eventUpdateState,
+  IPC.eventUpdateProgress
+]

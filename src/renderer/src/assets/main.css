@@ -1,0 +1,489 @@
+@import './base.css';
+
+body {
+  overflow: hidden;
+  background-color: var(--bg);
+  /* Windows 11 的 Mica 观感：底色上两团极淡的品牌色光，随主题一起走 */
+  background-image:
+    radial-gradient(58% 44% at 8% -6%, rgba(var(--accent-rgb), 0.1), transparent 72%),
+    radial-gradient(46% 38% at 96% 0%, rgba(62, 123, 240, 0.08), transparent 74%);
+  background-repeat: no-repeat;
+  background-attachment: fixed;
+  user-select: none;
+}
+
+#app {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ==========================================================================
+   滚动条
+   ========================================================================== */
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar);
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-hover);
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* ==========================================================================
+   基础元素
+   ========================================================================== */
+
+code {
+  padding: 2px 5px;
+  border: 1px solid var(--stroke);
+  border-radius: var(--radius-sm);
+  background: var(--ctrl-fill);
+  font-family: var(--font-mono);
+  font-size: 0.86em;
+}
+
+h1,
+h2,
+h3 {
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+
+/* ==========================================================================
+   卡片：Win11 的 "卡片 = 纯色面板 + 1px 描边 + 8px 圆角"
+   ========================================================================== */
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid var(--stroke);
+  border-radius: var(--radius-md);
+  background: var(--card-bg);
+  box-shadow: var(--shadow-card);
+}
+
+.card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 24px;
+}
+
+.card-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-1);
+
+  .icon {
+    font-size: 17px;
+    color: var(--accent);
+  }
+}
+
+.card-desc {
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--text-2);
+}
+
+/* ==========================================================================
+   按钮与图标按钮
+   ========================================================================== */
+
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background: var(--ctrl-fill);
+  color: var(--text-1);
+  font-size: 16px;
+  cursor: pointer;
+  transition:
+    background-color 0.12s ease,
+    border-color 0.12s ease,
+    color 0.12s ease;
+}
+
+.icon-btn:hover:not(:disabled) {
+  background: var(--ctrl-fill-hover);
+  border-color: var(--stroke);
+}
+
+.icon-btn:active:not(:disabled) {
+  background: var(--ctrl-fill-pressed);
+}
+
+.icon-btn:disabled {
+  background: var(--ctrl-disabled);
+  color: var(--text-3);
+  cursor: default;
+}
+
+/* 无填充的图标按钮：用于页面内联操作，悬停才显形 */
+.icon-btn.ghost {
+  background: transparent;
+  color: var(--text-2);
+}
+
+.icon-btn.ghost:hover:not(:disabled) {
+  background: var(--ctrl-fill);
+  color: var(--text-1);
+}
+
+/* ==========================================================================
+   小标签 / 徽章
+   ========================================================================== */
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 10px;
+  border: 1px solid var(--stroke);
+  border-radius: 999px;
+  background: var(--ctrl-fill);
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--text-2);
+  white-space: nowrap;
+
+  strong {
+    font-weight: 600;
+    color: var(--text-1);
+  }
+}
+
+.chip.accent {
+  border-color: var(--accent-border);
+  background: var(--accent-soft);
+  color: var(--accent);
+
+  strong {
+    color: var(--accent);
+  }
+}
+
+.chip.warn {
+  border-color: color-mix(in srgb, var(--warning) 40%, transparent);
+  background: var(--warning-soft);
+  color: var(--warning);
+
+  strong {
+    color: var(--warning);
+  }
+}
+
+.chip.bad {
+  border-color: var(--danger-border);
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+/* ==========================================================================
+   状态点与通用排版小工具
+   ========================================================================== */
+
+.dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--text-3);
+  box-shadow: 0 0 0 3px transparent;
+}
+
+.dot.ok {
+  background: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.dot.warn {
+  background: var(--warning);
+  box-shadow: 0 0 0 3px var(--warning-soft);
+}
+
+.dot.bad {
+  background: var(--danger);
+  box-shadow: 0 0 0 3px var(--danger-soft);
+}
+
+.muted {
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+.mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.ellipsis {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.spacer {
+  flex: 1;
+}
+
+/* ==========================================================================
+   页面骨架：标题区 + 内容
+   ========================================================================== */
+
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  width: 100%;
+  min-height: 100%;
+}
+
+.page-header h1 {
+  font-size: 24px;
+  font-weight: 600;
+}
+
+.page-header .page-desc {
+  margin-top: 6px;
+  max-width: 720px;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--text-2);
+}
+
+/* ==========================================================================
+   自绘标题栏的拖拽规则
+   ========================================================================== */
+
+/*
+ * 必须放在全局样式里：标题栏内的控件（含子组件渲染出的按钮）都要退出拖拽区域，
+ * 否则按钮点不动。用元素选择器可以覆盖任何子组件的根元素。
+ */
+.titlebar {
+  -webkit-app-region: drag;
+}
+
+.titlebar a,
+.titlebar button,
+.titlebar input {
+  -webkit-app-region: no-drag;
+}
+
+/* ==========================================================================
+   Element Plus 细节校正（让它看起来像 Fluent 控件）
+   ========================================================================== */
+
+.el-button {
+  border-radius: var(--radius-md);
+  font-weight: 500;
+}
+
+/* Win11 的次级按钮：极浅填充 + 1px 描边，而不是纯透明 */
+.el-button.el-button--default:not(.is-text):not(.is-link) {
+  background: var(--ctrl-fill);
+  border-color: var(--stroke-strong);
+  color: var(--text-1);
+}
+
+.el-button.el-button--default:not(.is-text):not(.is-link):hover:not(.is-disabled) {
+  background: var(--ctrl-fill-hover);
+  border-color: var(--stroke-hover);
+  color: var(--text-1);
+}
+
+/*
+ * 主按钮：强调色底 + 深色文字（深色主题下的浅色强调色需要深字才够对比）。
+ * 选择器写成两段类名是为了压过 element-plus 自己的 `.el-button--primary`
+ * （同为单类名时，样式注入顺序在打包后会变，不能依赖顺序）。
+ */
+.el-button.el-button--primary:not(.is-plain):not(.is-disabled) {
+  background: var(--accent);
+  border-color: transparent;
+  color: var(--on-accent);
+}
+
+.el-button.el-button--primary:not(.is-plain):not(.is-disabled):hover {
+  background: var(--accent-strong);
+  color: var(--on-accent);
+}
+
+/* 危险按钮（次要样式）也要跟着主题走，避免出现"玫红" */
+.el-button.el-button--danger.is-plain:not(.is-disabled) {
+  background: var(--danger-soft);
+  border-color: var(--danger-border);
+  color: var(--danger);
+}
+
+.el-button.el-button--danger.is-plain:not(.is-disabled):hover {
+  background: color-mix(in srgb, var(--danger) 18%, transparent);
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.el-button.el-button--primary.is-plain:not(.is-disabled) {
+  background: var(--accent-soft);
+  border-color: var(--accent-border);
+  color: var(--accent);
+}
+
+.el-button.el-button--primary.is-plain:not(.is-disabled):hover {
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.el-input__wrapper,
+.el-textarea__inner,
+.el-select__wrapper,
+.el-input-number {
+  border-radius: var(--radius-md);
+}
+
+.el-textarea__inner {
+  background-color: var(--card-bg);
+  box-shadow: 0 0 0 1px var(--stroke-strong) inset;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.85;
+  padding: 12px 14px;
+}
+
+.el-textarea__inner:hover {
+  box-shadow: 0 0 0 1px var(--stroke-hover) inset;
+}
+
+.el-textarea__inner:focus {
+  box-shadow:
+    0 0 0 1px var(--accent) inset,
+    0 0 0 3px var(--accent-soft);
+}
+
+.el-tag {
+  border-radius: 999px;
+  font-weight: 600;
+}
+
+.el-progress-bar__outer {
+  background-color: var(--ctrl-fill);
+}
+
+/* 设置页的分段控件 */
+.el-segmented {
+  --el-segmented-bg-color: var(--ctrl-fill);
+  --el-segmented-item-selected-bg-color: var(--card-bg);
+  border-radius: var(--radius-md);
+}
+
+/*
+ * 折叠面板：每个 item 独立成卡片，而不是默认那样连在一起。
+ *
+ * 注意选择器特异性：Element Plus 自带的
+ *   `.el-collapse-icon-position-right .el-collapse-item__header { padding-right: 8px }`
+ * 是 0,2,0，会压过单个类名的覆盖规则，导致箭头离右边缘只有 8px、与卡片内边距对不齐。
+ * 与其它 EP 覆盖一样用 `:root` 前缀抬高特异性，不依赖样式注入顺序。
+ */
+:root .el-collapse {
+  --el-collapse-border-color: transparent;
+  --el-collapse-header-bg-color: transparent;
+  --el-collapse-content-bg-color: transparent;
+  --el-collapse-header-text-color: var(--text-1);
+  border: none;
+}
+
+.el-collapse-item {
+  border: 1px solid var(--stroke);
+  border-radius: var(--radius-md);
+  background: var(--card-bg);
+  overflow: hidden;
+
+  & + .el-collapse-item {
+    margin-top: 8px;
+  }
+
+  /* EP 给最后一个 item 加了 -1px 的下外边距来消除相邻边框，卡片化后要还原 */
+  &:last-child {
+    margin-bottom: 0;
+  }
+}
+
+:root .el-collapse .el-collapse-item__header {
+  padding: 0 14px;
+  height: 48px;
+  min-height: 48px;
+  line-height: 48px;
+  border: none;
+  background: transparent;
+  font-size: 13px;
+}
+
+:root .el-collapse .el-collapse-item__wrap {
+  border: none;
+  background: transparent;
+}
+
+:root .el-collapse .el-collapse-item__content {
+  padding: 0 14px 14px;
+  font-size: 13px;
+}
+
+/* ==========================================================================
+   主题切换的圆形扩散过渡
+   ========================================================================== */
+
+/*
+ * 关掉 View Transition 自带的交叉淡入：真正的动画是 useTheme 里对
+ * ::view-transition-new(root) 施加的 clip-path 圆形扩散，两者叠加会显得浑浊。
+ */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation: none;
+  mix-blend-mode: normal;
+}
+
+::view-transition-new(root) {
+  z-index: 1;
+}
