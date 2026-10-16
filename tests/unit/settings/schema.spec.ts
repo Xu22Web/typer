@@ -99,6 +99,21 @@ describe('normalizeSettings', () => {
       true
     )
   })
+
+  it('快捷键里的跨平台写法统一成 Ctrl（本程序只有 Windows 版本）', () => {
+    expect(normalizeSettings({}).hotkeys.stop).toBe('Ctrl+Alt+X')
+    expect(normalizeSettings({ hotkeys: { stop: 'CommandOrControl+Alt+X' } }).hotkeys.stop).toBe(
+      'Ctrl+Alt+X'
+    )
+    expect(normalizeSettings({ hotkeys: { stop: 'Command+Alt+X' } }).hotkeys.stop).toBe(
+      'Ctrl+Alt+X'
+    )
+    expect(normalizeSettings({ hotkeys: { stop: 'Cmd+Shift+S' } }).hotkeys.stop).toBe(
+      'Ctrl+Shift+S'
+    )
+    // 已经是 Ctrl 的写法原样保留
+    expect(normalizeSettings({ hotkeys: { stop: 'Ctrl+Alt+Q' } }).hotkeys.stop).toBe('Ctrl+Alt+Q')
+  })
 })
 
 describe('mergeSettings', () => {
