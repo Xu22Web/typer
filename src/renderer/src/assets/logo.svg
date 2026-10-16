@@ -1,89 +1,73 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="Typer">
   <title>Typer</title>
-  <desc>键盘敲击：无底色键盘主体，键位由青绿过渡到蓝，其中一颗键正被按下</desc>
+  <desc>灰色屏幕在上、彩色键盘磁贴在下前压：键盘为两排白色按键 + 空格条，对应"把文字逐个打进任意窗口"</desc>
+
   <defs>
-    <!-- 键盘面：左上受光，右下自然收暗，做出实体按键的弧面感 -->
-    <linearGradient id="face" x1="0.08" y1="0" x2="0.62" y2="1">
-      <stop offset="0" stop-color="#ffffff" />
-      <stop offset="0.6" stop-color="#f3f8fd" />
-      <stop offset="1" stop-color="#dbe7f2" />
+    <clipPath id="panelClip"><rect x="88" y="56" width="336" height="248" rx="47"/></clipPath>
+    
+    <linearGradient id="tile" x1="0.06" y1="0" x2="0.94" y2="1">
+      <stop offset="0" stop-color="#2fd0b4"/>
+      <stop offset="0.45" stop-color="#16bcc9"/>
+      <stop offset="1" stop-color="#226ce4"/>
     </linearGradient>
-    <!-- 底座侧面：给键盘一点厚度 -->
-    <linearGradient id="base" x1="0" y1="0" x2="0.2" y2="1">
-      <stop offset="0" stop-color="#c6d5e4" />
-      <stop offset="1" stop-color="#a8bccf" />
+    <linearGradient id="tileLight" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.3"/>
+      <stop offset="0.5" stop-color="#ffffff" stop-opacity="0.03"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
     </linearGradient>
-    <!-- 轮廓光：透明背景下靠它把白色主体从浅色桌面里拉出来 -->
-    <linearGradient id="rim" x1="0" y1="0" x2="0.8" y2="1">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="0.95" />
-      <stop offset="0.45" stop-color="#aec0d1" stop-opacity="0.5" />
-      <stop offset="1" stop-color="#8fa5ba" stop-opacity="0.42" />
+    <linearGradient id="tileShade" x1="0" y1="1" x2="0" y2="0">
+      <stop offset="0" stop-color="#0b2f6b" stop-opacity="0.22"/>
+      <stop offset="0.5" stop-color="#0b2f6b" stop-opacity="0.03"/>
+      <stop offset="1" stop-color="#0b2f6b" stop-opacity="0"/>
     </linearGradient>
-    <!-- 键位配色：同一族色相里从青绿走到蓝，多色但不花 -->
-    <linearGradient id="keyMint" x1="0" y1="0" x2="0.35" y2="1">
-      <stop offset="0" stop-color="#6fecbb" />
-      <stop offset="1" stop-color="#17bdb4" />
+    <linearGradient id="tileRim" x1="0.1" y1="0" x2="0.72" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.72"/>
+      <stop offset="0.45" stop-color="#ffffff" stop-opacity="0.1"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
     </linearGradient>
-    <linearGradient id="keyCyan" x1="0" y1="0" x2="0.35" y2="1">
-      <stop offset="0" stop-color="#52dcdf" />
-      <stop offset="1" stop-color="#1fa6d2" />
+    <linearGradient id="body" x1="0.1" y1="0" x2="0.85" y2="1">
+      <stop offset="0" stop-color="#b0b9c4"/>
+      <stop offset="0.55" stop-color="#8f99a6"/>
+      <stop offset="1" stop-color="#78828f"/>
     </linearGradient>
-    <linearGradient id="keyPressed" x1="0" y1="0" x2="0.35" y2="1">
-      <stop offset="0" stop-color="#2c6fe0" />
-      <stop offset="1" stop-color="#1c4ec0" />
+    <linearGradient id="bodyLip" x1="0.1" y1="0" x2="0.8" y2="1">
+      <stop offset="0" stop-color="#c8d0d9"/>
+      <stop offset="1" stop-color="#9ea8b4"/>
     </linearGradient>
-    <linearGradient id="keySpace" x1="0" y1="0" x2="0.35" y2="1">
-      <stop offset="0" stop-color="#63e5c2" />
-      <stop offset="1" stop-color="#26b4cd" />
+    <linearGradient id="bodyRim" x1="0.1" y1="0" x2="0.7" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.7"/>
+      <stop offset="0.5" stop-color="#ffffff" stop-opacity="0.14"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0.05"/>
     </linearGradient>
-    <!-- 键帽顶部高光 -->
-    <linearGradient id="capTop" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="0.5" />
-      <stop offset="1" stop-color="#ffffff" stop-opacity="0" />
+    <linearGradient id="keyWhite" x1="0" y1="0" x2="0.15" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="0.68" stop-color="#fbfdff"/>
+      <stop offset="1" stop-color="#e8f1f8"/>
     </linearGradient>
-    <filter id="bodyShadow" x="-30%" y="-30%" width="170%" height="190%">
-      <feDropShadow dx="0" dy="14" stdDeviation="16" flood-color="#0a2743" flood-opacity="0.28" />
+    <filter id="bodyShadow" x="-30%" y="-30%" width="170%" height="180%">
+      <feDropShadow dx="0" dy="14" stdDeviation="15" flood-color="#0b1a2b" flood-opacity="0.28"/>
+      <feDropShadow dx="0" dy="4" stdDeviation="5" flood-color="#0b1a2b" flood-opacity="0.14"/>
     </filter>
-    <filter id="keyShadow" x="-45%" y="-45%" width="200%" height="220%">
-      <feDropShadow dx="0" dy="5" stdDeviation="6" flood-color="#0a2743" flood-opacity="0.2" />
+    <filter id="tileShadow" x="-30%" y="-30%" width="170%" height="190%">
+      <feDropShadow dx="0" dy="12" stdDeviation="13" flood-color="#04203a" flood-opacity="0.3"/>
+      <feDropShadow dx="0" dy="3" stdDeviation="4" flood-color="#04203a" flood-opacity="0.16"/>
     </filter>
-    <filter id="pressedShadow" x="-45%" y="-45%" width="200%" height="220%">
-      <feDropShadow dx="0" dy="2" stdDeviation="4" flood-color="#0a2743" flood-opacity="0.35" />
+    <filter id="keyShadow" x="-60%" y="-60%" width="220%" height="240%">
+      <feDropShadow dx="0" dy="2.5" stdDeviation="3" flood-color="#0a2a48" flood-opacity="0.16"/>
     </filter>
   </defs>
-
-  <!-- 键盘：底座 + 面 + 键位。键位刻意做大做少——同一份图形要兼顾 16px 任务栏与 256px 展示。 -->
-  <g filter="url(#bodyShadow)">
-    <rect x="48" y="152" width="416" height="218" rx="60" fill="url(#base)" />
-    <rect x="48" y="144" width="416" height="212" rx="58" fill="url(#face)" />
-    <rect
-      x="48"
-      y="144"
-      width="416"
-      height="212"
-      rx="58"
-      fill="none"
-      stroke="url(#rim)"
-      stroke-width="2.5"
-    />
-  </g>
-
-  <!-- 第一行：三颗大键，中间一颗按下 -->
-  <g filter="url(#keyShadow)">
-    <rect x="104" y="188" width="90" height="64" rx="22" fill="url(#keyMint)" />
-    <rect x="316" y="188" width="90" height="64" rx="22" fill="url(#keyCyan)" />
-  </g>
-  <rect x="202" y="186" width="106" height="72" rx="24" fill="#c3d4e5" />
-  <g filter="url(#pressedShadow)">
-    <rect x="207" y="196" width="96" height="56" rx="20" fill="url(#keyPressed)" />
-  </g>
-  <rect x="104" y="188" width="90" height="26" rx="22" fill="url(#capTop)" />
-  <rect x="316" y="188" width="90" height="26" rx="22" fill="url(#capTop)" />
-  <rect x="207" y="196" width="96" height="20" rx="20" fill="#ffffff" fill-opacity="0.16" />
-
-  <!-- 空格键 -->
-  <g filter="url(#keyShadow)">
-    <rect x="146" y="276" width="220" height="46" rx="23" fill="url(#keySpace)" />
-    <rect x="146" y="276" width="220" height="20" rx="23" fill="url(#capTop)" />
+  <g transform="translate(256 256) scale(1.1) translate(-256 -256)">
+    <g filter="url(#bodyShadow)">
+      <rect x="88" y="56" width="336" height="248" rx="47" fill="url(#body)"/>
+      <g clip-path="url(#panelClip)"><rect x="88" y="279.20000000000005" width="336" height="24.799999999999955" fill="url(#bodyLip)"/></g>
+      <rect x="89.5" y="57.5" width="333" height="245" rx="45.5" fill="none" stroke="url(#bodyRim)" stroke-width="2.5"/>
+    </g>
+    <g filter="url(#tileShadow)">
+      <rect x="100" y="242" width="312" height="212" rx="40" fill="url(#tile)"/>
+      <rect x="100" y="242" width="312" height="212" rx="40" fill="url(#tileLight)"/>
+      <rect x="100" y="242" width="312" height="212" rx="40" fill="url(#tileShade)"/>
+      <rect x="101.5" y="243.5" width="309" height="209" rx="38.5" fill="none" stroke="url(#tileRim)" stroke-width="2.5"/>
+    </g>
+    <g filter="url(#keyShadow)"><circle cx="162.4" cy="296.1" r="20.8" fill="#e3edf6"/><circle cx="162.4" cy="295.476" r="19.136" fill="url(#keyWhite)"/><circle cx="219.6" cy="296.1" r="20.8" fill="#e3edf6"/><circle cx="219.6" cy="295.476" r="19.136" fill="url(#keyWhite)"/><circle cx="276.8" cy="296.1" r="20.8" fill="#e3edf6"/><circle cx="276.8" cy="295.476" r="19.136" fill="url(#keyWhite)"/><circle cx="334" cy="296.1" r="20.8" fill="#e3edf6"/><circle cx="334" cy="295.476" r="19.136" fill="url(#keyWhite)"/><circle cx="198.8" cy="358.5" r="20.8" fill="#e3edf6"/><circle cx="198.8" cy="357.876" r="19.136" fill="url(#keyWhite)"/><circle cx="256" cy="358.5" r="20.8" fill="#e3edf6"/><circle cx="256" cy="357.876" r="19.136" fill="url(#keyWhite)"/><circle cx="313.2" cy="358.5" r="20.8" fill="#e3edf6"/><circle cx="313.2" cy="357.876" r="19.136" fill="url(#keyWhite)"/><rect x="167.5" y="402.2" width="177" height="25" rx="12.5" fill="#e3edf6"/><rect x="167.5" y="401.6" width="177" height="23.3" rx="11.7" fill="url(#keyWhite)"/></g>
   </g>
 </svg>

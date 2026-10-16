@@ -20,7 +20,7 @@ const { available } = useUpdate()
     <ul class="list">
       <li v-for="item in items" :key="item.to">
         <RouterLink class="item" :to="item.to" :title="item.hint">
-          <span class="bar" />
+          <span class="nav-indicator" />
           <span class="icon" :class="item.icon" />
           <span class="label">{{ item.label }}</span>
           <span
@@ -73,7 +73,7 @@ const { available } = useUpdate()
   }
 
   /* 选中指示条：默认不可见，选中时从 12px 长到 16px */
-  .bar {
+  .nav-indicator {
     position: absolute;
     left: 0;
     top: 50%;
@@ -88,7 +88,7 @@ const { available } = useUpdate()
   &.active {
     background: var(--ctrl-fill);
 
-    .bar {
+    .nav-indicator {
       height: 16px;
     }
 

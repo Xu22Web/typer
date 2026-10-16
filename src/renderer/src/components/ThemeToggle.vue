@@ -9,7 +9,7 @@ const { isDark, toggle } = useTheme()
     :aria-label="isDark ? '切换到亮色主题' : '切换到暗色主题'"
     @click="toggle"
   >
-    <span class="icon text-lg" :class="isDark ? 'i-mdi-weather-sunny' : 'i-mdi-weather-night'" />
+    <span class="icon" :class="isDark ? 'i-mdi-weather-sunny' : 'i-mdi-weather-night'" />
   </button>
 </template>
 
@@ -31,12 +31,15 @@ const { isDark, toggle } = useTheme()
     background-color 0.2s;
 }
 
+/* `--surface-hover` 是别名里不存在的 token，写在这里等于没有悬停反馈 */
 .toggle:hover {
   color: var(--text-1);
-  background: var(--surface-hover);
+  background: var(--ctrl-fill);
 }
 
+/* 图标尺寸原来靠 UnoCSS 的 `text-lg` 工具类，工具类本身不可依赖，这里显式声明 */
 .icon {
+  font-size: 16px;
   transition: transform 0.3s ease;
 }
 

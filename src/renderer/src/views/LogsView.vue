@@ -113,7 +113,7 @@ async function copyAll(): Promise<void> {
         <li v-for="(entry, index) in visible" :key="`${entry.at}-${index}`" :class="entry.level">
           <span class="icon" :class="levelIcon[entry.level]" />
           <span class="time mono">{{ new Date(entry.at).toLocaleTimeString() }}</span>
-          <span class="text">{{ entry.message }}</span>
+          <span class="message">{{ entry.message }}</span>
         </li>
         <li v-if="visible.length === 0" class="empty">
           {{
@@ -172,7 +172,7 @@ async function copyAll(): Promise<void> {
       color: var(--text-3);
     }
 
-    .text {
+    .message {
       min-width: 0;
       color: var(--text-1);
       word-break: break-all;
@@ -180,14 +180,14 @@ async function copyAll(): Promise<void> {
 
     &.warn {
       .icon,
-      .text {
+      .message {
         color: var(--warning);
       }
     }
 
     &.error {
       .icon,
-      .text {
+      .message {
         color: var(--danger);
       }
     }

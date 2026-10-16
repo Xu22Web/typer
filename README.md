@@ -161,6 +161,12 @@ tests/system/                  # 系统测试（真实宿主；真实注入部�
   （main / preload / renderer / 测试四套配置保持一致）。
 - **样式**：`assets/base.css` 放设计 token 与基础重置（含 `ul`/`ol` 重置，避免浏览器默认
   `padding-inline-start` 干扰布局），`assets/main.css` 放组件与 Element Plus 覆盖样式。
+- **类名**：组件内的类名用**当前部件的语义**命名即可（`card-head`、`notice`、`stats`、`row`…），
+  不必加组件前缀；关键是不能用 `grid` / `left` / `text-lg` 这类**看起来像工具类**的名字——
+  UnoCSS 的 presetWind 会为同名 token 生成真实工具类（`.grid{display:grid}`），
+  两者混在一起既难分辨又依赖样式注入顺序。图标统一用 UnoCSS 的 `i-mdi-*`，
+  跨组件复用的辅助类（`mono` / `muted` / `ellipsis` / `chip` / `spacer` / `icon-btn`）只在
+  `main.css` 里定义一次。
 - **文案**：产品名统一写作 **Typer**（界面、标题栏、README、安装包名一致），
   只有 npm 包名、仓库名与 appId 保留小写 `typer`。
 

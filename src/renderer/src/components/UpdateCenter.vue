@@ -188,7 +188,7 @@ function openDownloadPage(): void {
 
       <template v-else-if="available">
         <ElButton type="primary" :disabled="!result?.latest?.asset" @click="download()">
-          <span class="mdi:download" /><span class="i-mdi-cloud-download-outline" /> 下载更新
+          <span class="i-mdi-download" /> 下载更新
         </ElButton>
         <ElButton v-if="!result?.latest?.asset" type="primary" plain @click="openDownloadPage()">
           <span class="i-mdi-open-in-new" /> 前往发布页

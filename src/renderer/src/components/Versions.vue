@@ -10,7 +10,7 @@ const versions = reactive({
 <template>
   <ul class="list">
     <li class="item">Electron v{{ versions.electron }}</li>
-    <li class="item v-chrome">Chromium v{{ versions.chrome }}</li>
+    <li class="item chrome">Chromium v{{ versions.chrome }}</li>
     <li class="item">Node v{{ versions.node }}</li>
   </ul>
 </template>
@@ -36,7 +36,7 @@ const versions = reactive({
 }
 
 @media (max-width: 1400px) {
-  .v-chrome {
+  .chrome {
     display: none;
   }
 }

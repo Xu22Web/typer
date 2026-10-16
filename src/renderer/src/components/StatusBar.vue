@@ -49,8 +49,8 @@ const running = computed(() => typing.isRunning.value)
       <span class="i-mdi-shield-check-outline" />
       内容仅在本机处理，默认不落盘
     </span>
-    <span class="sep hide-narrow">·</span>
-    <Versions class="hide-narrow" />
+    <span class="sep collapsible">·</span>
+    <Versions class="collapsible" />
   </footer>
 </template>
 
@@ -99,7 +99,7 @@ const running = computed(() => typing.isRunning.value)
 
 /* 版本号是"顺带看一眼"的信息，窗口不够宽时优先让位给状态与目标窗口 */
 @media (max-width: 1180px) {
-  .hide-narrow {
+  .collapsible {
     display: none;
   }
 }

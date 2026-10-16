@@ -26,7 +26,7 @@ const ring = computed(() => {
 <template>
   <Transition name="fade">
     <div v-if="visible" class="overlay">
-      <div class="ring" :style="{ backgroundImage: ring }">
+      <div class="progress-ring" :style="{ backgroundImage: ring }">
         <div class="inner">
           <span class="count mono">{{ seconds }}</span>
           <span class="unit">秒后开始</span>
@@ -63,7 +63,7 @@ const ring = computed(() => {
   backdrop-filter: blur(20px);
 }
 
-.ring {
+.progress-ring {
   display: flex;
   align-items: center;
   justify-content: center;

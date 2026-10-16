@@ -65,7 +65,7 @@ const startLabel = computed(() => {
       description="键盘注入目前仅支持 Windows。界面可以打开，但无法真正输入。"
     />
 
-    <div class="grid">
+    <div class="input-layout">
       <!-- 主任务：内容区 -->
       <section class="card editor">
         <div class="card-head">
@@ -107,7 +107,7 @@ const startLabel = computed(() => {
       </section>
 
       <!-- 次要信息：目标窗口 + 运行状态 -->
-      <aside class="side">
+      <aside class="side-column">
         <section class="card target">
           <div class="card-head">
             <h2 class="card-title"><span class="icon i-mdi-target" /> 目标窗口</h2>
@@ -137,17 +137,14 @@ const startLabel = computed(() => {
     </div>
 
     <!-- 主操作条：开始是唯一的主按钮，其余按危险/次要分组 -->
-    <section class="card actions">
-      <div class="left">
+    <section class="card action-bar">
+      <div class="secondary">
         <ElButton :disabled="typing.isRunning.value" @click="typing.importFile()">
           <span class="i-mdi-file-import-outline" /> 导入文本
         </ElButton>
         <RouterLink class="link-btn" to="/settings">
           <span class="i-mdi-tune-vertical" /> 调整设置
         </RouterLink>
-      </div>
-
-      <div class="right">
         <ElButton
           v-if="typing.state.value === 'paused'"
           type="primary"
@@ -162,6 +159,9 @@ const startLabel = computed(() => {
         <ElButton type="danger" plain :disabled="!typing.isRunning.value" @click="typing.stop()">
           <span class="i-mdi-stop" /> 停止
         </ElButton>
+      </div>
+
+      <div class="primary">
         <ElButton
           type="primary"
           size="large"
@@ -174,8 +174,8 @@ const startLabel = computed(() => {
       </div>
     </section>
 
-    <section class="card tip">
-      <div class="tip-head">
+    <section class="card notice">
+      <div class="notice-head">
         <span class="icon i-mdi-lightbulb-on-outline" />
         <span>开始后请勿移动鼠标或切换窗口</span>
         <div class="spacer" />
@@ -187,7 +187,7 @@ const startLabel = computed(() => {
         紧急停止，内容区里按 <code>Ctrl+Enter</code> 也能开始。
         目标程序若开着中文输入法，建议先切到英文。
       </p>
-      <p v-if="latestLog" class="latest mono">
+      <p v-if="latestLog" class="latest-log mono">
         <span class="i-mdi-history" />
         {{ new Date(latestLog.at).toLocaleTimeString() }} · {{ latestLog.message }}
       </p>
@@ -196,11 +196,12 @@ const startLabel = computed(() => {
 </template>
 
 <style scoped lang="scss">
-.grid {
+.input-layout {
   display: grid;
   grid-template-columns: minmax(0, 1.6fr) minmax(280px, 1fr);
   gap: 16px;
-  align-items: start;
+  /* 两列等高：左列是主任务（内容区），通常更高，右列拉伸对齐它的底边 */
+  align-items: stretch;
 }
 
 .editor {
@@ -220,10 +221,18 @@ const startLabel = computed(() => {
   }
 }
 
-.side {
+.side-column {
   display: flex;
   flex-direction: column;
+  min-height: 0;
   gap: 16px;
+
+  /* 目标窗口是固定内容，多出来的高度给运行状态，右列因此与左列等高；
+     多出的高度用 space-between 摊到各行之间，避免卡片底部出现一块空档 */
+  > :last-child {
+    flex: 1;
+    justify-content: space-between;
+  }
 }
 
 .target-name {
@@ -234,17 +243,25 @@ const startLabel = computed(() => {
   font-weight: 600;
 }
 
-.actions {
+.action-bar {
+  /* 两端对齐：次要操作（含运行控制）成组贴左，主按钮单独贴右 */
+  justify-content: space-between;
   flex-direction: row;
   align-items: center;
   gap: 12px;
   padding: 12px 16px;
 
-  .left,
-  .right {
+  .secondary,
+  .primary {
     display: flex;
     align-items: center;
+    flex-wrap: wrap;
     gap: 8px;
+  }
+
+  /* 换行时主按钮仍保持靠右，不会被推到下一行的开头 */
+  .primary {
+    margin-left: auto;
   }
 
   /*
@@ -291,10 +308,10 @@ const startLabel = computed(() => {
   }
 }
 
-.tip {
+.notice {
   gap: 8px;
 
-  .tip-head {
+  .notice-head {
     display: flex;
     align-items: center;
     gap: 8px;
@@ -307,7 +324,7 @@ const startLabel = computed(() => {
     }
   }
 
-  .latest {
+  .latest-log {
     display: flex;
     align-items: center;
     gap: 6px;
@@ -319,7 +336,7 @@ const startLabel = computed(() => {
 }
 
 @media (max-width: 980px) {
-  .grid {
+  .input-layout {
     grid-template-columns: minmax(0, 1fr);
   }
 }

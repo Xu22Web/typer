@@ -102,9 +102,11 @@ const pageTitle = computed(() => {
 }
 
 /*
- * 当前页面名。类名刻意不叫 `.page`：全局样式里的 `.page` 是"页面骨架"
- * （width: 100% + flex-direction: column），撞名会让这里被撑满整条标题栏，
- * 文本随即被 align-items 水平居中——看起来就像"页面名莫名其妙居中了"。
+ * 当前页面名（放在品牌分隔线右侧，靠标题栏的 align-items 垂直居中）。
+ *
+ * 这里刻意不叫 `.page`：全局样式里的 `.page` 是"页面骨架"
+ * （width: 100% + flex-direction: column），撞名会让这个 span 被撑满整条标题栏，
+ * 文本随即被水平居中——看起来就像"页面名莫名其妙居中了"。
  */
 .page-title {
   font-size: 13px;
