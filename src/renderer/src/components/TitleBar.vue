@@ -25,7 +25,7 @@ const pageTitle = computed(() => {
     </RouterLink>
 
     <span class="divider" />
-    <span class="page">{{ pageTitle }}</span>
+    <span class="page-title">{{ pageTitle }}</span>
 
     <div class="spacer" />
 
@@ -101,11 +101,12 @@ const pageTitle = computed(() => {
   background: var(--stroke-strong);
 }
 
-.page {
-  /* 与品牌名、分隔线同一条基线：行高固定为 1，避免继承 body 的 1.6 把文字顶高 */
-  display: inline-flex;
-  align-items: center;
-  height: 100%;
+/*
+ * 当前页面名。类名刻意不叫 `.page`：全局样式里的 `.page` 是"页面骨架"
+ * （width: 100% + flex-direction: column），撞名会让这里被撑满整条标题栏，
+ * 文本随即被 align-items 水平居中——看起来就像"页面名莫名其妙居中了"。
+ */
+.page-title {
   font-size: 13px;
   line-height: 1;
   color: var(--text-2);

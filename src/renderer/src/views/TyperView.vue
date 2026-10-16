@@ -247,6 +247,26 @@ const startLabel = computed(() => {
     gap: 8px;
   }
 
+  /*
+   * 操作条只有两级尺寸：次要控件 32px、主按钮 40px。
+   * Element Plus 的按钮与 RouterLink 是两种元素，默认度量并不一致
+   * （按钮 32px/14px 字，链接 36.8px/13px 字），不显式对齐就会出现
+   * "同一排按钮高矮不一"的错位。
+   */
+  :deep(.el-button:not(.el-button--large)),
+  .link-btn {
+    height: 32px;
+    padding: 0 12px;
+    font-size: 13px;
+  }
+
+  :deep(.el-button--large) {
+    height: 40px;
+    padding: 0 20px;
+    font-size: 14px;
+    font-weight: 600;
+  }
+
   @media (max-width: 780px) {
     flex-wrap: wrap;
   }
