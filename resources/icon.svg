@@ -1,9 +1,9 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="Typer">
   <title>Typer</title>
-  <desc>灰色屏幕在上、彩色键盘磁贴在下前压：键盘为两排白色按键 + 空格条，对应"把文字逐个打进任意窗口"</desc>
+  <desc>灰色屏幕面板在上、彩色键盘磁贴向左下错位前压：键盘为两排白色按键 + 空格条，对应"把文字逐个打进任意窗口"</desc>
 
   <defs>
-    <clipPath id="panelClip"><rect x="88" y="56" width="336" height="248" rx="47"/></clipPath>
+    <clipPath id="panelClip"><rect x="120" y="61" width="328" height="258" rx="21"/></clipPath>
     
     <linearGradient id="tile" x1="0.06" y1="0" x2="0.94" y2="1">
       <stop offset="0" stop-color="#2fd0b4"/>
@@ -58,16 +58,16 @@
   </defs>
   <g transform="translate(256 256) scale(1.1) translate(-256 -256)">
     <g filter="url(#bodyShadow)">
-      <rect x="88" y="56" width="336" height="248" rx="47" fill="url(#body)"/>
-      <g clip-path="url(#panelClip)"><rect x="88" y="279.20000000000005" width="336" height="24.799999999999955" fill="url(#bodyLip)"/></g>
-      <rect x="89.5" y="57.5" width="333" height="245" rx="45.5" fill="none" stroke="url(#bodyRim)" stroke-width="2.5"/>
+      <rect x="120" y="61" width="328" height="258" rx="21" fill="url(#body)"/>
+      <g clip-path="url(#panelClip)"><rect x="120" y="293.2" width="328" height="25.8" fill="url(#bodyLip)"/></g>
+      <rect x="121.5" y="62.5" width="325" height="255" rx="19.5" fill="none" stroke="url(#bodyRim)" stroke-width="2.5"/>
     </g>
     <g filter="url(#tileShadow)">
-      <rect x="100" y="242" width="312" height="212" rx="40" fill="url(#tile)"/>
-      <rect x="100" y="242" width="312" height="212" rx="40" fill="url(#tileLight)"/>
-      <rect x="100" y="242" width="312" height="212" rx="40" fill="url(#tileShade)"/>
-      <rect x="101.5" y="243.5" width="309" height="209" rx="38.5" fill="none" stroke="url(#tileRim)" stroke-width="2.5"/>
+      <rect x="65" y="263" width="258" height="188" rx="18" fill="url(#tile)"/>
+      <rect x="65" y="263" width="258" height="188" rx="18" fill="url(#tileLight)"/>
+      <rect x="65" y="263" width="258" height="188" rx="18" fill="url(#tileShade)"/>
+      <rect x="66.5" y="264.5" width="255" height="185" rx="16.5" fill="none" stroke="url(#tileRim)" stroke-width="2.5"/>
     </g>
-    <g filter="url(#keyShadow)"><circle cx="162.4" cy="296.1" r="20.8" fill="#e3edf6"/><circle cx="162.4" cy="295.476" r="19.136" fill="url(#keyWhite)"/><circle cx="219.6" cy="296.1" r="20.8" fill="#e3edf6"/><circle cx="219.6" cy="295.476" r="19.136" fill="url(#keyWhite)"/><circle cx="276.8" cy="296.1" r="20.8" fill="#e3edf6"/><circle cx="276.8" cy="295.476" r="19.136" fill="url(#keyWhite)"/><circle cx="334" cy="296.1" r="20.8" fill="#e3edf6"/><circle cx="334" cy="295.476" r="19.136" fill="url(#keyWhite)"/><circle cx="198.8" cy="358.5" r="20.8" fill="#e3edf6"/><circle cx="198.8" cy="357.876" r="19.136" fill="url(#keyWhite)"/><circle cx="256" cy="358.5" r="20.8" fill="#e3edf6"/><circle cx="256" cy="357.876" r="19.136" fill="url(#keyWhite)"/><circle cx="313.2" cy="358.5" r="20.8" fill="#e3edf6"/><circle cx="313.2" cy="357.876" r="19.136" fill="url(#keyWhite)"/><rect x="167.5" y="402.2" width="177" height="25" rx="12.5" fill="#e3edf6"/><rect x="167.5" y="401.6" width="177" height="23.3" rx="11.7" fill="url(#keyWhite)"/></g>
+    <g filter="url(#keyShadow)"><circle cx="123.5" cy="308.45" r="12.7" fill="#e3edf6"/><circle cx="123.5" cy="308" r="11.75" fill="url(#keyWhite)"/><circle cx="170.5" cy="308.45" r="12.7" fill="#e3edf6"/><circle cx="170.5" cy="308" r="11.75" fill="url(#keyWhite)"/><circle cx="217.5" cy="308.45" r="12.7" fill="#e3edf6"/><circle cx="217.5" cy="308" r="11.75" fill="url(#keyWhite)"/><circle cx="264.5" cy="308.45" r="12.7" fill="#e3edf6"/><circle cx="264.5" cy="308" r="11.75" fill="url(#keyWhite)"/><circle cx="147" cy="355.45" r="12.7" fill="#e3edf6"/><circle cx="147" cy="355" r="11.75" fill="url(#keyWhite)"/><circle cx="194" cy="355.45" r="12.7" fill="#e3edf6"/><circle cx="194" cy="355" r="11.75" fill="url(#keyWhite)"/><circle cx="241" cy="355.45" r="12.7" fill="#e3edf6"/><circle cx="241" cy="355" r="11.75" fill="url(#keyWhite)"/><rect x="112" y="389.5" width="164" height="25" rx="12.5" fill="#e3edf6"/><rect x="112" y="388.9" width="164" height="23.4" rx="11.7" fill="url(#keyWhite)"/></g>
   </g>
 </svg>
