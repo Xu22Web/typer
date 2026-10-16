@@ -11,9 +11,9 @@ node typer-recv.mjs --help        # 查看全部选项
 node typer-recv.mjs --selftest    # 校验 CRC / 编码 / 转义 / 片号解析是否正常
 ```
 
-> 本目录里的 `.mjs` 是**构建产物**（源码 `typer-recv.ts`，由 `npm run build:tools` 用 esbuild 打成
-> 压缩过的单文件）。发到目标机时请保留 `.mjs` 扩展名：Node 靠扩展名识别 ESM，改名成 `.js` 后需要
-> 同目录有 `{"type":"module"}` 的 `package.json` 才能运行。
+> 本目录里的 `.mjs` 与 `run.bat` 是**构建产物**（源码 `typer-recv.ts`，由 `npm run build:tools` 用
+> esbuild 打成压缩过的单文件，并生成双击入口 `run.bat`）。发到目标机时请保留 `.mjs` 扩展名：
+> Node 靠扩展名识别 ESM，改名成 `.js` 后需要同目录有 `{"type":"module"}` 的 `package.json` 才能运行。
 
 ---
 
@@ -22,8 +22,12 @@ node typer-recv.mjs --selftest    # 校验 CRC / 编码 / 转义 / 片号解析�
 | 方式                 | 做法                                                                                                                                         |
 | -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
 | **让 Typer 打进去**  | 文件页脚本卡点「插入接收脚本到文本输入」→ 内容区变成脚本全文并切到文本模式 → 在目标机执行 `cat > typer-recv.mjs` 再开始输入，最后按 `Ctrl+D` |
-| **导出文件**         | 文件页/设置页的「导出脚本」把 `typer-recv.mjs` 复制到指定目录，再用 U 盘、共享目录或 Typer 的文件模式传过去                                  |
-| **从安装目录直接取** | 安装后的 `<安装目录>\resources\tools\typer-recv.mjs`（「打开脚本目录」按钮可直接定位）                                                       |
+| **导出文件**         | 文件页/设置页的「导出脚本」把 `typer-recv.mjs`、`run.bat` 与本文档复制到指定目录（双击 `run.bat` 即可运行）                                  |
+| **从安装目录直接取** | 安装后的 `<安装目录>\resources\tools\`（脚本、`run.bat` 与本文档都在，“打开脚本目录”按钮可直接定位）                                         |
+
+`run.bat` 是给人用的入口：双击即可运行接收端（等价于 `node typer-recv.mjs`，命令行参数原样转发、
+退出码原样返回），不必手敲命令；PATH 上没有 Node 时会给出提示并停住窗口。它由 `npm run build:tools`
+随脚本一起生成。
 
 ## 2. 为什么不是"直接输入二进制"
 
@@ -108,6 +112,7 @@ node typer-recv.mjs [选项]
 
 ```bash
 # ① 目标机：启动接收端，等待输入（raw 模式，被"打"进来的内容不会回显）
+#    导出目录下双击 run.bat 等价于下面这行
 node typer-recv.mjs -o received.bin --token
 
 # ② 发送端：Typer 的「文件」页选择文件 → 开始输入
@@ -130,7 +135,7 @@ node typer-recv.mjs -o received.bin --token
 ## 6. 开发
 
 ```bash
-npm run build:tools    # tools/typer-recv.ts → tools/typer-recv.mjs（esbuild，target node16，压缩输出）
+npm run build:tools    # tools/typer-recv.ts → tools/typer-recv.mjs（压缩）+ tools/run.bat
 npm run test:system    # 先构建，再用真实子进程跑接收端做端到端验证
 ```
 

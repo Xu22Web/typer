@@ -224,7 +224,11 @@ async function start(): Promise<void> {
 async function exportTools(): Promise<void> {
   try {
     const destination = await window.api.transfer.exportTools()
-    if (destination) useTyping().log('info', `接收脚本已导出到 ${destination}`)
+    if (destination)
+      useTyping().log(
+        'info',
+        `接收端脚本与 run.bat 已导出到 ${destination}（目标机双击 run.bat 即可）`
+      )
   } catch (err) {
     useTyping().log('error', err instanceof Error ? err.message : String(err))
   }

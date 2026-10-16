@@ -45,6 +45,27 @@ function toolPath(name: string): string {
 
 const RECV = toolPath('typer-recv.mjs')
 
+/**
+ * @description 通过 cmd 运行 tools/run.bat：验证"目标机双击这个文件"真的能启动接收端。
+ * stdin 关闭 —— 接收端在没给 `--in` 时会一直等标准输入，测试里必须立刻给它 EOF
+ * @param args 传给 run.bat 的参数
+ * @returns 退出码与 stdout/stderr
+ */
+async function runBat(args: string[]): Promise<ToolResult> {
+  const command = process.env.ComSpec ?? 'cmd.exe'
+  try {
+    const { stdout, stderr } = await run(command, ['/d', '/c', toolPath('run.bat'), ...args], {
+      cwd: work,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      maxBuffer: 32 * 1024 * 1024
+    })
+    return { code: 0, stdout, stderr }
+  } catch (error) {
+    const failure = error as { code?: number; stdout?: string; stderr?: string }
+    return { code: failure.code ?? -1, stdout: failure.stdout ?? '', stderr: failure.stderr ?? '' }
+  }
+}
+
 interface ToolResult {
   code: number
   stdout: string
@@ -526,5 +547,28 @@ describe('应用与接收端的一致性（同一文件、同一参数）', () =
     expect(retried.code).toBe(0)
     expect(readFileSync(join(work, 'out.bin')).equals(source)).toBe(true)
     await app.job.dispose()
+  })
+})
+
+describe('run.bat：给目标机用的双击入口', () => {
+  it('内容只含 ASCII、行尾为 CRLF，并把参数与退出码原样交给 node', () => {
+    const bat = readFileSync(toolPath('run.bat'), 'utf8')
+    // cmd 逐字节解释 .bat：中文会随控制台代码页乱码，LF 行尾会让带标签的跳转失效
+    expect(bat).not.toMatch(/[^\r\n\x20-\x7e]/)
+    expect(bat).toContain('node "%~dp0typer-recv.mjs" %*')
+    expect(bat).toContain('exit /b %errorlevel%')
+    expect(bat).toContain('if errorlevel 1 goto :no_node')
+  })
+
+  it('真实运行 run.bat：参数与退出码原样交给 node', async () => {
+    const selftest = await runBat(['--selftest'])
+    expect(selftest.code).toBe(0)
+    expect(selftest.stdout).toContain('自检通过')
+
+    // --help 只打印用法、不读标准输入，适合比对"经 run.bat"与"直接跑 node"是否完全一致
+    const viaBat = await runBat(['--help'])
+    const direct = await runTool(RECV, ['--help'], work)
+    expect(viaBat.code).toBe(direct.code)
+    expect(viaBat.stdout).toBe(direct.stdout)
   })
 })

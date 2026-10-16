@@ -142,10 +142,7 @@ const previewRows = computed(() => summary.value?.preview ?? [])
     <div v-if="!summary" class="empty">
       <p class="empty-title">选择一个文件，Typer 会把它逐片"打"到目标窗口</p>
       <p class="empty-desc">
-        文件会被切成每片一行的纯文本帧，接收端逐片校验、支持断点续传，合并后再校验整文件哈希。
-        目标端运行
-        <code class="mono">typer-recv.mjs</code>
-        接收即可（脚本还没拿过去时，先在下面「脚本」里取走）。
+        文件会被切成每片一行的纯文本帧，逐片校验、支持断点续传，接收端合并后再校验整文件哈希。
       </p>
       <ElButton type="primary" :loading="preparing" @click="pick">
         <span class="i-mdi-file-search-outline" /> 选择文件
@@ -345,21 +342,29 @@ const previewRows = computed(() => summary.value?.preview ?? [])
 
     <!-- 脚本：目标机需要的东西，一键取走（未选文件时也要能取，目标机往往先缺脚本） -->
     <div class="tools">
-      <span class="icon i-mdi-console-line" />
-      <span class="tools-text muted">
-        目标端运行
-        <code class="mono">node typer-recv.mjs -o 输出文件</code> 接收；脚本零依赖（Node ≥ 16）
-      </span>
-      <div class="spacer" />
-      <ElButton size="small" text :loading="toolScript.loading.value" @click="emit('insertScript')">
-        <span class="i-mdi-content-paste" /> 插入接收脚本到文本输入
-      </ElButton>
-      <ElButton size="small" text @click="transfer.exportTools()">
-        <span class="i-mdi-export-variant" /> 导出脚本
-      </ElButton>
-      <ElButton size="small" text @click="transfer.revealTools()">
-        <span class="i-mdi-folder-open-outline" /> 打开目录
-      </ElButton>
+      <p class="tools-text muted">
+        <span class="icon i-mdi-console-line text-icon" />
+        <span>
+          目标端运行 <code class="mono">typer-recv.mjs</code> 或双击
+          <code class="mono">run.bat</code>；零依赖，Node ≥ 16
+        </span>
+      </p>
+      <div class="tools-actions">
+        <ElButton
+          size="small"
+          text
+          :loading="toolScript.loading.value"
+          @click="emit('insertScript')"
+        >
+          <span class="i-mdi-content-paste" /> 插入接收脚本到文本输入
+        </ElButton>
+        <ElButton size="small" text @click="transfer.exportTools()">
+          <span class="i-mdi-export-variant" /> 导出脚本
+        </ElButton>
+        <ElButton size="small" text @click="transfer.revealTools()">
+          <span class="i-mdi-folder-open-outline" /> 打开目录
+        </ElButton>
+      </div>
     </div>
 
     <ElProgress
@@ -557,18 +562,30 @@ const previewRows = computed(() => summary.value?.preview ?? [])
 
 .tools {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
-  padding-top: 8px;
+  padding-top: 10px;
   border-top: 1px solid var(--stroke);
   font-size: 12px;
 }
 
+/* 说明文字占住剩余宽度、按需换行（不给省略号：这条提示要能完整看到） */
 .tools-text {
+  display: flex;
+  align-items: flex-start;
+  flex: 1 1 16rem;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  gap: 6px;
+  line-height: 1.7;
+}
+
+/* 宽度不够时整组按钮换到下一行，仍贴右 */
+.tools-actions {
+  display: flex;
+  flex-wrap: wrap;
+  margin-left: auto;
+  gap: 4px;
 }
 
 .prepare-progress {

@@ -206,16 +206,16 @@ export class TransferSession {
 }
 
 /**
- * @description 判断文件是否属于"要发给用户的构建产物 / 说明文档"（.ts 源码与 .d.mts 类型声明留在仓库里，用户拿到也没用）
+ * @description 判断文件是否属于"要发给用户的构建产物 / 说明文档 / 启动脚本"（.ts 源码与 .d.mts 类型声明留在仓库里，用户拿到也没用）
  * @param name 文件名（不含目录）
  * @returns 是否应复制
  */
 function shouldExport(name: string): boolean {
-  return name.endsWith('.mjs') || name === 'README.md'
+  return name.endsWith('.mjs') || name.endsWith('.bat') || name === 'README.md'
 }
 
 /**
- * @description 把 tools/ 里随包分发的接收端构建产物与说明文档复制到目标目录（目标机没有包管理器，需要的是能直接拷过去跑的文件，所以只挑产物、不打包成 zip）
+ * @description 把 tools/ 里随包分发的接收端产物（脚本本体 + run.bat 启动脚本）与说明文档复制到目标目录（目标机没有包管理器，需要的是能直接拷过去跑的文件，所以只挑产物、不打包成 zip）
  * @param toolsDir 源目录
  * @param destination 目标目录
  * @returns 已复制的相对路径列表
@@ -246,5 +246,6 @@ export function copyToolsTo(toolsDir: string, destination: string): string[] {
   }
 
   walk('')
+
   return copied
 }

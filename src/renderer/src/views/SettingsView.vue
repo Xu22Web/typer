@@ -54,7 +54,7 @@ function applyChunkPreset(id: string): void {
 async function exportTools(): Promise<void> {
   try {
     const destination = await window.api.transfer.exportTools()
-    if (destination) ElMessage.success(`已导出到 ${destination}`)
+    if (destination) ElMessage.success(`已导出到 ${destination}（双击 run.bat 即可运行接收端）`)
   } catch (err) {
     ElMessage.error(err instanceof Error ? err.message : String(err))
   }
@@ -531,7 +531,7 @@ async function restoreDefaults(): Promise<void> {
         <div class="row">
           <div class="label">
             <span>接收脚本</span>
-            <small>零依赖（Node ≥ 16），导出到目标机直接运行</small>
+            <small>零依赖（Node ≥ 16）；导出后双击同目录 run.bat 即可运行</small>
           </div>
           <div class="tools-actions">
             <ElButton size="small" @click="exportTools">

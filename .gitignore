@@ -3,6 +3,8 @@ dist
 out
 coverage
 build/preview
+tools/typer-recv.mjs
+tools/run.bat
 .DS_Store
 .eslintcache
 *.log*

@@ -1,11 +1,12 @@
-// 把 tools/ 下的接收端 TS 源码打包成目标机可直接运行的单个 ESM 文件（tools/typer-recv.mjs）。
+// 把 tools/ 下的接收端 TS 源码打包成目标机可直接运行的单个 ESM 文件（tools/typer-recv.mjs），
+// 并生成同目录的启动脚本 tools/run.bat。
 // 目标机（用户要"把文件从本机传到另一台机器"）通常没有 npm / 没有构建环境，因此产物必须：
 //   · 单文件自包含（除 node: 内置模块外不引入任何第三方依赖）；
 //   · 兼容 Node 16（很多老机器只有 Node 16），所以构建后要自检有没有用到更高版本才有的 API；
 //   · 能直接 `node typer-recv.mjs` 跑（ESM，靠 .mjs 扩展名让 Node 按模块解析）；
 //   · 尽量小：这份产物会作为文本被 Typer"打"进目标终端，体积直接决定输入耗时。
 // 用 `pnpm build:tools` 运行（dev / build / test 脚本已自动串联）。
-import { readFileSync, statSync } from 'node:fs'
+import { readFileSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { isBuiltin } from 'node:module'
@@ -37,6 +38,27 @@ const FORBIDDEN_APIS = [
   'Object.hasOwn',
   'AbortSignal.timeout'
 ]
+
+/**
+ * 随产物一起生成的启动脚本：目标机双击即可运行接收端，省去手敲 `node typer-recv.mjs`。
+ * 内容只用 ASCII —— .bat 由 cmd 按当前控制台代码页逐字节解释，写中文会随机器乱码；
+ * 行尾必须是 CRLF，否则带标签的跳转在部分 cmd 版本上不生效。
+ */
+const RUN_BAT = [
+  '@echo off',
+  'rem Typer file receiver launcher: forwards all arguments to node.',
+  'setlocal',
+  'where node >nul 2>nul',
+  'if errorlevel 1 goto :no_node',
+  'node "%~dp0typer-recv.mjs" %*',
+  'exit /b %errorlevel%',
+  '',
+  ':no_node',
+  'echo Node.js not found on PATH. Install Node 16 or newer, then run this file again.',
+  'pause',
+  'exit /b 1',
+  ''
+].join('\r\n')
 
 /**
  * @description 在文本里找出所有命中片段，返回 "第 N 行: 内容" 形式的位置描述
@@ -128,6 +150,11 @@ async function main() {
 
   const bytes = statSync(outfile).size
   console.log(`tools/typer-recv.mjs  ${bytes} bytes`)
+
+  const batFile = join(root, 'tools', 'run.bat')
+  writeFileSync(batFile, RUN_BAT)
+  console.log(`tools/run.bat         ${statSync(batFile).size} bytes`)
+
   console.log(`自检：${problems.length === 0 ? '通过' : `失败（${problems.length} 项）`}`)
 
   if (problems.length > 0) process.exitCode = 1

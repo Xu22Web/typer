@@ -20,8 +20,8 @@ files:
   - '!{vitest.config.ts,coverage,dist}'
 # 输入宿主脚本必须随包分发：主进程会以 powershell.exe -File <resourcesPath>/scripts/typing-host.ps1 启动它
 # tools/ 里随包分发的是接收端脚本的**构建产物**：目标机没有 npm、也没有构建环境，用户要的是
-# "能直接拷过去 `node typer-recv.mjs` 跑的单文件"，所以用 filter 只带产物（tools/typer-recv.mjs，
-# 由 `pnpm build:tools` 生成）与说明文档，不把 .ts 源码打进安装包
+# "能直接拷过去 `node typer-recv.mjs` 跑的单文件"，所以用 filter 只带产物（tools/typer-recv.mjs 与
+# tools/run.bat，均由 `pnpm build:tools` 生成）与说明文档，不把 .ts 源码打进安装包
 # （应用内「导出脚本 / 打开目录」也会用到这个目录）
 extraResources:
   - from: scripts/typing-host.ps1
@@ -30,6 +30,7 @@ extraResources:
     to: tools
     filter:
       - '**/*.mjs'
+      - '*.bat'
       - README.md
 # 不使用 electron-builder 自带的自动更新（更新由主进程的 src/main/update 自行实现：
 # 检查 GitHub Release → 下载 → SHA-256 校验 → 交给安装程序）。

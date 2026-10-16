@@ -4,6 +4,8 @@ pnpm-lock.yaml
 LICENSE
 tsconfig.json
 tsconfig.*.json
+tools/typer-recv.mjs
+tools/run.bat
 src/renderer/src/auto-imports.d.ts
 src/renderer/src/components.d.ts
 # 构建产物，由 pnpm build:tools 生成

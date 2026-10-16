@@ -125,7 +125,7 @@ async function copyAll(): Promise<void> {
 
       <ul ref="listEl" class="list" @scroll="autoScroll = false" @click="autoScroll = true">
         <li v-for="(entry, index) in visible" :key="`${entry.at}-${index}`" :class="entry.level">
-          <span class="icon" :class="levelIcon[entry.level]" />
+          <span class="icon text-icon" :class="levelIcon[entry.level]" />
           <span class="time mono">{{ new Date(entry.at).toLocaleTimeString() }}</span>
           <span class="message">{{ entry.message }}</span>
         </li>
@@ -164,12 +164,12 @@ async function copyAll(): Promise<void> {
 
   li {
     display: flex;
-    align-items: baseline;
+    align-items: flex-start;
     gap: 10px;
     padding: 6px 8px;
     border-radius: var(--radius-sm);
     font-size: 12.5px;
-    line-height: 1.6;
+    line-height: 20px;
 
     &:hover {
       background: var(--ctrl-fill);

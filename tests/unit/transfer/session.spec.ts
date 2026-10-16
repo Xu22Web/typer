@@ -256,10 +256,11 @@ describe('tools 定位与导出', () => {
     ).toThrow(ToolsDirNotFoundError)
   })
 
-  it('导出只复制构建产物与 README，不把 .ts 源码与类型声明带给用户', () => {
+  it('导出只复制产物、启动脚本与 README，不把 .ts 源码与类型声明带给用户', () => {
     const toolsDir = join(work, 'tools-src')
     mkdirSync(join(toolsDir, 'lib'), { recursive: true })
     writeFileSync(join(toolsDir, 'typer-recv.mjs'), '// 接收端构建产物\n')
+    writeFileSync(join(toolsDir, 'run.bat'), '@echo off\r\n')
     writeFileSync(join(toolsDir, 'typer-recv.ts'), 'export const dummy = 1\n')
     writeFileSync(join(toolsDir, 'typer-recv.d.mts'), 'export declare const dummy: number\n')
     writeFileSync(join(toolsDir, 'README.md'), '# 使用说明\n')
@@ -269,11 +270,12 @@ describe('tools 定位与导出', () => {
     const copied = copyToolsTo(toolsDir, destination)
 
     expect(copied.sort()).toEqual(
-      [join('lib', 'frame.mjs'), 'README.md', 'typer-recv.mjs'].sort() as string[]
+      [join('lib', 'frame.mjs'), 'README.md', 'run.bat', 'typer-recv.mjs'].sort() as string[]
     )
     expect(readdirSync(destination)).not.toContain('typer-recv.ts')
     expect(readdirSync(destination)).not.toContain('typer-recv.d.mts')
     expect(existsSync(join(destination, 'typer-recv.mjs'))).toBe(true)
+    expect(existsSync(join(destination, 'run.bat'))).toBe(true)
     expect(existsSync(join(destination, 'README.md'))).toBe(true)
   })
 })
