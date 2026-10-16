@@ -11,11 +11,20 @@ const OWNER = 'Xu22Web'
 const REPO = 'typer'
 const INSTALLER = 'typer-0.2.0-setup.exe'
 
-/** 造一段"安装包"内容（几百 KB，确保会走多块流式写入）。 */
+/**
+ * @description 造一段"安装包"内容（几百 KB，确保走多块流式写入）
+ * @param seed 内容前缀
+ * @returns 安装包字节
+ */
 function makeInstallerBytes(seed = 'typer'): Buffer {
   return Buffer.from(`${seed}-${'payload'.repeat(20_000)}`, 'utf8')
 }
 
+/**
+ * @description 计算字节内容的 SHA-256 十六进制摘要
+ * @param buffer 待计算内容
+ * @returns 十六进制摘要
+ */
 function sha256(buffer: Buffer): string {
   return createHash('sha256').update(buffer).digest('hex')
 }
@@ -46,6 +55,11 @@ interface FakeServer {
   downloadCount: () => number
 }
 
+/**
+ * @description 造一个模拟 GitHub Releases 的 fetch 实现
+ * @param options 服务端行为开关
+ * @returns 调用记录、fetch 与下载计数
+ */
 function createFakeServer(options: FakeServerOptions = {}): FakeServer {
   const bytes = options.bytes ?? makeInstallerBytes()
   const version = options.version ?? '0.2.0'
@@ -128,6 +142,12 @@ interface Harness {
   quit: () => boolean
 }
 
+/**
+ * @description 造一个接了假服务器、记录状态/进度/安装调用的更新服务
+ * @param serverOptions 假服务器行为开关
+ * @param overrides 覆盖服务依赖（当前版本、打包状态、安装器启动）
+ * @returns 服务与观测记录
+ */
 function createHarness(
   serverOptions: FakeServerOptions = {},
   overrides: {
@@ -179,6 +199,11 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
+/**
+ * @description 把 harness 的临时目录登记到 afterEach 清理列表
+ * @param harness 待登记的 harness
+ * @returns 同一个 harness
+ */
 function track(harness: Harness): Harness {
   created.push(harness.dir)
   return harness

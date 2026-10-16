@@ -32,7 +32,12 @@ import {
   verifyIntegrity
 } from '@tools/lib/frame.mjs'
 
-/** 确定性随机字节（测试里不依赖 Math.random）。 */
+/**
+ * @description 生成确定性随机字节，避免测试依赖 Math.random
+ * @param length 字节数
+ * @param seed 随机种子
+ * @returns 随机字节数组
+ */
 function randomBytes(length: number, seed = 1): Uint8Array {
   const out = new Uint8Array(length)
   let state = seed >>> 0
@@ -43,7 +48,13 @@ function randomBytes(length: number, seed = 1): Uint8Array {
   return out
 }
 
-/** 走一遍完整的"构造 → 解析 → 校验 → 合并"，返回合并后的字节。 */
+/**
+ * @description 走一遍完整的"构造 → 解析 → 校验 → 合并"，并断言结束帧哈希一致
+ * @param source 原始字节
+ * @param chunkBytes 片大小
+ * @param enc 载荷编码
+ * @returns 合并后的字节
+ */
 function roundTrip(source: Uint8Array, chunkBytes: number, enc: 'hex' | 'b64'): Uint8Array {
   const job = 'a1b2c3d4'
   const total = chunkCount(source.length, chunkBytes)
@@ -351,6 +362,11 @@ describe('分片规划', () => {
   })
 
   it('txt 分片支持自定义 charset 字节长度（如 GBK 中文占 2 字节）', () => {
+    /**
+     * @description 按 GBK 规则估算字符串的字节长度
+     * @param chunk 文本片
+     * @returns 字节数
+     */
     const gbkLength = (chunk: string): number => chunk.length * 2
     const chunks = planTextChunks('中文', 3, gbkLength)
     expect(chunks.length).toBe(2)

@@ -65,10 +65,17 @@ export interface HostProbeData {
   stuckKeys: number[]
 }
 
+/** 宿主通信协议错误：`code` 决定面向用户的说明（见 ERROR_MESSAGES）。 */
 export class ProtocolError extends Error {
   readonly code: string
   readonly detail?: string
 
+  /**
+   * @description 构造协议错误
+   * @param code 错误码，用于映射中文说明
+   * @param message 原始错误信息（技术细节）
+   * @param detail 附加线索，通常是宿主返回的原因
+   */
   constructor(code: string, message: string, detail?: string) {
     super(message)
     this.name = 'ProtocolError'
@@ -91,6 +98,11 @@ export const ERROR_MESSAGES: Readonly<Record<string, string>> = {
   E_CLIPBOARD: '剪贴板操作失败'
 }
 
+/**
+ * @description 把任意错误转成面向用户的一句话说明
+ * @param error 捕获到的错误
+ * @returns 用户可读的说明（优先映射错误码）
+ */
 export function describeError(error: unknown): string {
   if (error instanceof ProtocolError) {
     return ERROR_MESSAGES[error.code] ?? `${error.code}: ${error.message}`
@@ -99,6 +111,11 @@ export function describeError(error: unknown): string {
   return String(error)
 }
 
+/**
+ * @description 把带节奏信息的动作序列转成宿主可执行的原子动作
+ * @param scheduled 引擎产出的动作与延迟
+ * @returns 协议层动作列表
+ */
 export function toHostItems(scheduled: ScheduledAction[]): HostItem[] {
   const items: HostItem[] = []
   for (const { action, delayMs } of scheduled) {
@@ -114,7 +131,11 @@ export function toHostItems(scheduled: ScheduledAction[]): HostItem[] {
   return items
 }
 
-/** 计算一批动作会产生的底层输入事件数（用于校验注入结果）。 */
+/**
+ * @description 计算一批动作会产生的底层输入事件数（用于校验注入结果）
+ * @param items 协议层动作列表
+ * @returns 期望的事件总数
+ */
 export function expectedEventCount(items: HostItem[]): number {
   let total = 0
   for (const item of items) {
@@ -125,10 +146,11 @@ export function expectedEventCount(items: HostItem[]): number {
 }
 
 /**
- * 把所有非 ASCII 字符转成 `\uXXXX` 转义，使发往宿主的每一行都是纯 ASCII。
- *
- * 这样做的原因：Windows 控制台代码页（GBK/UTF-8）会让 UTF-8 中文在
- * PowerShell 的 stdin 上被误解码，纯 ASCII 传输可以从根本上规避该问题。
+ * @description 把所有非 ASCII 字符转成 `\uXXXX` 转义，使发往宿主的每一行都是纯 ASCII；
+ * 这样做的原因：Windows 控制台代码页（GBK/UTF-8）会让 UTF-8 中文在 PowerShell 的 stdin 上被误解码，
+ * 纯 ASCII 传输可以从根本上规避该问题
+ * @param text 原始文本
+ * @returns 仅含 ASCII 的等价文本
  */
 export function escapeNonAscii(text: string): string {
   return text.replace(/[^\x20-\x7e]/g, (char) => {
@@ -142,13 +164,18 @@ export interface HostRequestPayload {
   [key: string]: unknown
 }
 
-/** 序列化一行请求（纯 ASCII + 换行）。 */
+/**
+ * @description 序列化为一行请求（纯 ASCII + 换行）
+ * @param payload 请求 id、指令名与附加字段
+ * @returns 可写入子进程 stdin 的一行
+ */
 export function encodeRequest(payload: HostRequestPayload): string {
   return `${escapeNonAscii(JSON.stringify(payload))}\n`
 }
 
 /**
- * 行解码器：处理 stdout 的分片（一个响应被拆开）与粘包（多个响应同批到达）。
+ * @description 创建行解码器：处理 stdout 的分片（一个响应被拆开）与粘包（多个响应同批到达）
+ * @returns 增量解码函数，入参是 stdout 分片，返回其中完整的行
  */
 export function createLineDecoder(): (chunk: string | Buffer) => string[] {
   let buffer = ''
@@ -168,6 +195,11 @@ export function createLineDecoder(): (chunk: string | Buffer) => string[] {
   }
 }
 
+/**
+ * @description 解析并校验一行宿主响应
+ * @param line 宿主 stdout 中的一行
+ * @returns 结构化响应
+ */
 export function parseResponse(line: string): HostResponse {
   let parsed: unknown
   try {
@@ -195,7 +227,12 @@ export function parseResponse(line: string): HostResponse {
   return candidate as HostResponse
 }
 
-/** 校验 `type` 指令的注入结果：少于请求的事件数说明被系统拦截。 */
+/**
+ * @description 校验 `type` 指令的注入结果：少于请求的事件数说明被系统拦截
+ * @param data 宿主返回的原始数据
+ * @param requestedEvents 本批动作期望的事件数
+ * @returns 校验通过后的注入统计
+ */
 export function assertInjectionResult(data: unknown, requestedEvents: number): HostTypeData {
   if (typeof data !== 'object' || data === null) {
     throw new ProtocolError('E_PARSE', 'type 指令的返回内容格式错误')

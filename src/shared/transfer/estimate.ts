@@ -2,10 +2,7 @@ import type { TransferJobSummary } from './transfer'
 
 /**
  * 预计耗时估算（纯函数，界面与测试共用）。
- *
- * 关键点：**必须按实际注入方式来算**。文件传输的每一帧通常很长，会走剪贴板粘贴
- * （一次粘贴 = 一个动作），如果按"逐字符按键"去估，几千字节的文件会被算成几个小时，
- * 提示完全失真。所以这里按帧判断走粘贴还是按键，再分别计价。
+ * 必须按实际注入方式计价：长帧走剪贴板粘贴（一次粘贴即一个动作），若按逐字符按键估算，几千字节的文件会被算成几小时，提示完全失真。
  */
 export interface TransferEstimateConfig {
   insertMode: 'keystroke' | 'paste' | 'auto'
@@ -32,6 +29,12 @@ export interface TransferEstimate {
 /** 一次粘贴的固定开销：实测（写剪贴板 + Ctrl+V + 目标端回显）约 100~200ms。 */
 export const PASTE_OVERHEAD_MS = 140
 
+/**
+ * @description 按实际注入方式估算一次传输的耗时
+ * @param summary 任务摘要
+ * @param config 节奏与注入方式配置
+ * @returns 预计耗时与本次实际会用的注入方式
+ */
 export function estimateTransferMs(
   summary: TransferJobSummary,
   config: TransferEstimateConfig
@@ -44,6 +47,11 @@ export function estimateTransferMs(
   }
 
   const averagePayload = Math.max(1, Math.round(summary.frameChars / frames) - 1)
+  /**
+   * @description 判断该长度的帧是否改用剪贴板粘贴
+   * @param chars 帧的字符数
+   * @returns 是否走粘贴
+   */
   const usesPaste = (chars: number): boolean => {
     if (config.insertMode === 'paste') return true
     if (config.insertMode === 'keystroke') return false

@@ -2,12 +2,9 @@ import { LayoutBuilder, type KeyboardLayout } from './types'
 import { addStandardLetters } from './common'
 
 /**
- * 法语布局（fr-FR，AZERTY）。
- *
- * 只收录"确定无误"的键位：
- * - 字母：a/q、z/w、m 的物理位置与 QWERTY 不同
- * - 数字：AZERTY 上数字本身需要按 Shift
- * 其余符号（& é " ' ( - è _ ç à ) = 等）一律回退到 Unicode 注入。
+ * @description 法语布局（fr-FR，AZERTY）：只收录确定无误的键位——字母 a/q、z/w、m 的物理位置
+ * 与 QWERTY 不同，且数字本身需要按 Shift；其余符号（& é " ' ( - è _ ç à ) = 等）走 Unicode 注入
+ * @returns 法语布局
  */
 export function createFrLayout(): KeyboardLayout {
   const builder = new LayoutBuilder()

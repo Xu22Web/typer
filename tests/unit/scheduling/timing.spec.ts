@@ -10,6 +10,11 @@ import {
 import type { KeyAction, KeystrokeAction } from '@main/typing/planner/types'
 import { TIMING_PRESETS } from '@main/typing/scheduling/presets'
 
+/**
+ * @description 构造一份带默认值的节奏设置
+ * @param overrides 需要覆盖的字段
+ * @returns 完整的 TimingSettings
+ */
 function settings(overrides: Partial<TimingSettings> = {}): TimingSettings {
   return {
     speedMode: 'cps',
@@ -28,12 +33,24 @@ function settings(overrides: Partial<TimingSettings> = {}): TimingSettings {
   }
 }
 
+/**
+ * @description 造一个真实按键动作，vk 取字符大写形式的码点
+ * @param char 字符
+ * @returns 真实按键动作
+ */
 const key = (char: string): KeyAction => ({
   kind: 'key',
   vk: char.toUpperCase().charCodeAt(0),
   modifiers: [],
   char
 })
+
+/**
+ * @description 造一个 Unicode 报文动作，可标记为代理对的后续码元
+ * @param char 字符
+ * @param continues 是否为代理对的第二个码元
+ * @returns Unicode 动作
+ */
 const unicode = (char: string, continues = false): KeystrokeAction => {
   const action: KeystrokeAction = { kind: 'unicode', codeUnit: 0x4e2d, char }
   if (continues) return { ...action, continues: true }
@@ -103,6 +120,10 @@ describe('TimingScheduler', () => {
   })
 
   it('相同种子得到完全相同的节奏（可复现）', () => {
+    /**
+     * @description 用同一种子跑一段节奏并返回延迟序列
+     * @returns 20 个动作的延迟
+     */
     const run = (): number[] => {
       const scheduler = new TimingScheduler(
         settings({ jitterMs: 20, distribution: 'gaussian', burstSize: 3, burstPauseMs: 100 }),

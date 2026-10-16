@@ -1,13 +1,7 @@
 #!/usr/bin/env node
 // Typer 分片端（离线）：把文件切成"每片一行"的帧文本，产出帧文件 + manifest.json。
-//
-// 存在的意义：
-//   - 让"分片"这件事完全可离线复现（不依赖 Electron 界面），也方便做夹具与排查
-//   - 产出的 frames.txt 可以直接粘到 Typer 的「文本」页输入，等价于文件模式的分片传输
-//   - `--verify` 能把生成结果按接收端的规则重新解析、逐片校验并合并比对，先于真实传输发现问题
-//
-// 只用 node: 内置模块，Node >= 18 直接运行。
-//
+// 让"分片"可完全离线复现（不依赖 Electron 界面）：`--single` 产出的帧文本可直接粘到 Typer 的「文本」页，`--verify` 能在真实传输前按接收端规则重放校验。
+// 只用 node: 内置模块、零第三方依赖，Node >= 18 直接运行（目标机不一定有构建环境）。
 // 用法：node typer-chunk.mjs <文件> [选项]（`--help` 查看全部选项）
 
 import { createHash } from 'node:crypto'
@@ -67,6 +61,11 @@ const HELP = `Typer 分片端（生成帧文本 + manifest）
   -h, --help             显示本帮助
 `
 
+/**
+ * @description 解析命令行参数（`--key value`、`--key=value`、`-k value` 与布尔开关）
+ * @param argv 参数数组
+ * @returns 选项表与位置参数
+ */
 function parseArgs(argv) {
   const options = {}
   const aliases = { o: 'out', q: 'quiet', h: 'help' }
@@ -104,10 +103,18 @@ if (options.help || positional.length === 0) {
 
 const quiet = options.quiet === true
 
+/**
+ * @description 非安静模式下打印一行到标准输出
+ * @param line 行内容
+ */
 function log(line) {
   if (!quiet) process.stdout.write(`${line}\n`)
 }
 
+/**
+ * @description 打印错误并以退出码 4 结束进程
+ * @param message 错误说明
+ */
 function fail(message) {
   process.stderr.write(`错误：${message}\n`)
   process.exit(4)
@@ -183,6 +190,11 @@ const total = textChunks === null ? chunkCount(size, chunkBytes) : textChunks.le
 
 mkdirSync(outDir, { recursive: true })
 
+/**
+ * @description 以 UTF-8 读取整个文件，并确认没有 BOM 且字节与文本一致（txt 编码的前提）
+ * @param path 源文件路径
+ * @returns 文件文本
+ */
 function readWholeFileAsUtf8(path) {
   const bytes = readFileSync(path)
   if (bytes.length >= 3 && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) {
@@ -195,7 +207,10 @@ function readWholeFileAsUtf8(path) {
   return text
 }
 
-/** 整文件 SHA-256：流式读取，避免把大文件读进内存。 */
+/**
+ * @description 计算整文件 SHA-256（流式读取，避免把大文件读进内存）
+ * @returns 64 位小写 hex
+ */
 function computeWholeHash() {
   const fd = openSync(sourcePath, 'r')
   const buffer = Buffer.allocUnsafe(1 << 20)
@@ -240,7 +255,7 @@ if (singlePath) {
   singleStream = []
 }
 
-/** 按片生成帧文本：读一片、算校验、立即写出，内存只占一个片。 */
+/** @description 按片生成帧文本：读一片、算校验、立即写出，内存只占一个片 */
 function generateFromBytes() {
   const fd = openSync(sourcePath, 'r')
   const buffer = Buffer.allocUnsafe(chunkBytes)
@@ -261,7 +276,7 @@ function generateFromBytes() {
   }
 }
 
-/** txt 模式：按字符边界切分，保证每片的字节长度与其 UTF-8 编码一致。 */
+/** @description txt 模式：按字符边界切分，保证每片的字节长度与其 UTF-8 编码一致 */
 function generateFromText() {
   if (textChunks === null) throw new Error('txt 模式的片表缺失')
   textChunks.forEach((chunk, seq) =>
@@ -269,6 +284,12 @@ function generateFromText() {
   )
 }
 
+/**
+ * @description 构造并写出一片数据帧（同时记录清单条目）
+ * @param seq 片号
+ * @param bytes 本片字节
+ * @param payloadOverride 已编码的载荷（txt 模式传入，省略则按 enc 编码）
+ */
 function writeFrame(seq, bytes, payloadOverride) {
   const payload = payloadOverride ?? encodeBytes(bytes, enc)
   const line = buildDataFrame({
@@ -326,15 +347,19 @@ if (options.verify === true) {
 }
 
 /**
- * 用接收端的规则把生成结果重新读一遍：逐片解析 + 校验，再合并比对整文件哈希。
- *
- * 这一步在"真机传输"之前就能证明帧文本本身是无损的（分片边界、编码、转义、校验字段都对）。
+ * @description 用接收端的规则把生成结果重新读一遍：逐片解析 + 校验，再合并比对整文件哈希；
+ * 在"真机传输"之前就能证明帧文本本身无损（分片边界、编码、转义、校验字段都对）
+ * @returns 退出码（0 通过，3 失败）
  */
 function verifyGenerated() {
   const digest = createHash('sha256')
   let merged = 0
   let framesChecked = 0
 
+  /**
+   * @description 解析并校验一行帧，同时把数据字节喂给整文件哈希
+   * @param line 待处理的帧行
+   */
   const feed = (line) => {
     const frame = parseFrame(sanitizeLine(line))
     if (frame.kind === 'begin') {

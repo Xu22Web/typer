@@ -1,9 +1,6 @@
 /**
- * 流式下载器。
- *
- * 之所以不直接用 `fetch(url).then(r => r.arrayBuffer())`：
- * 安装包接近 100MB，全量读进内存既浪费又会让"下载进度"无从谈起。
- * 这里用 `pipeline` 边读边写盘（自带背压与错误清理），中间插一个计数器汇报进度。
+ * 流式下载器：用 pipeline 边读边写盘（自带背压与错误清理），中间插一个计数器汇报进度。
+ * 安装包接近 100MB，全量读进内存既浪费又无法汇报进度，因此不采用 arrayBuffer 式的写法。
  */
 import { createWriteStream } from 'node:fs'
 import { mkdir, rm } from 'node:fs/promises'
@@ -31,13 +28,18 @@ export interface DownloadResult {
 
 /** 用户主动取消下载（与"网络失败"区分开，界面提示不同）。 */
 export class DownloadCancelledError extends Error {
+  /** @description 建立"用户主动取消下载"错误 */
   constructor() {
     super('已取消下载')
     this.name = 'DownloadCancelledError'
   }
 }
 
-/** 下载到本地文件；失败时清掉半成品，避免把残缺文件当成安装包。 */
+/**
+ * @description 流式下载到本地文件；失败时清掉半成品，避免把残缺文件当成安装包
+ * @param options 地址、目标路径、fetch 实现、UA、进度回调与取消信号
+ * @returns 落地路径与实际字节数
+ */
 export async function downloadToFile(options: DownloadOptions): Promise<DownloadResult> {
   const { url, destPath, fetch, userAgent, signal } = options
 
@@ -66,6 +68,7 @@ export async function downloadToFile(options: DownloadOptions): Promise<Download
   let lastBytes = 0
   let bytesPerSecond = 0
 
+  /** @description 汇报一次进度；速度按不满 400ms 也不重复采样的节奏估算 */
   const report = (): void => {
     const now = Date.now()
     const elapsed = now - lastTick
@@ -83,6 +86,12 @@ export async function downloadToFile(options: DownloadOptions): Promise<Download
   }
 
   const counter = new Transform({
+    /**
+     * @description 累计已接收字节数并汇报进度
+     * @param chunk 数据块
+     * @param _encoding 流编码（不使用）
+     * @param callback 继续管道的回调
+     */
     transform(chunk: Buffer, _encoding, callback) {
       received += chunk.length
       report()
@@ -122,10 +131,20 @@ export async function downloadToFile(options: DownloadOptions): Promise<Download
   return { filePath: destPath, bytes: received }
 }
 
+/**
+ * @description 判断错误是否来自主动取消或超时
+ * @param error 任意抛出物
+ * @returns 是否为中止类错误
+ */
 function isAbortError(error: unknown): boolean {
   return error instanceof Error && (error.name === 'AbortError' || error.name === 'TimeoutError')
 }
 
+/**
+ * @description 取出可展示的错误文本
+ * @param error 任意抛出物
+ * @returns 错误文本
+ */
 function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }

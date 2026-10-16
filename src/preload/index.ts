@@ -8,6 +8,12 @@ import type { EngineSnapshot } from '@main/typing/engine/states'
 import type { WindowStatePayload } from '@main/ipc/contracts'
 import type { UpdateProgress, UpdateState } from '@main/update/types'
 
+/**
+ * @description 订阅主进程事件
+ * @param channel IPC 事件频道
+ * @param listener 收到载荷时的回调
+ * @returns 取消订阅的函数
+ */
 function subscribe<T>(channel: string, listener: (payload: T) => void): () => void {
   const wrapped = (_event: unknown, payload: T): void => listener(payload)
   ipcRenderer.on(channel, wrapped)
@@ -17,13 +23,12 @@ function subscribe<T>(channel: string, listener: (payload: T) => void): () => vo
 }
 
 /**
- * 统一从这里发请求，做两件事：
- *
- * 1. 把参数净化成"结构化克隆能处理"的纯对象。渲染进程传进来的参数常常是 Vue 的
- *    响应式 Proxy，而 `ipcRenderer.invoke` 用结构化克隆序列化参数，**无法克隆 Proxy**，
- *    会抛 `An object could not be cloned` 让整个调用失败。
- * 2. 剥掉 Electron 给主进程错误加的包装（`Error invoking remote method 'x': Error: …`），
- *    让界面能直接展示主进程给出的中文原因。
+ * @description 统一从这里发请求：净化参数并剥掉 Electron 给主进程错误加的包装，让界面能直接展示主进程给出的中文原因。
+ * 必须净化参数是因为渲染进程传进来的常常是 Vue 响应式 Proxy，而 `ipcRenderer.invoke` 用结构化克隆
+ * 序列化参数、无法克隆 Proxy，会抛 `An object could not be cloned` 让整个调用失败
+ * @param channel IPC 频道
+ * @param args 传给主进程的参数
+ * @returns 主进程返回的结果
  */
 async function invoke<T = unknown>(channel: string, ...args: unknown[]): Promise<T> {
   try {

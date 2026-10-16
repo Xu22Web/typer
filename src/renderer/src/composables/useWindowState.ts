@@ -3,14 +3,14 @@ import type { ComputedRef, Ref } from 'vue'
 
 /**
  * 自绘标题栏的窗口状态（模块级单例）。
- *
- * 窗口是无边框的（`frame: false`），最小化/最大化/关闭都必须经由 IPC 交给主进程；
- * 最大化状态则反之由主进程推送（用户双击标题栏、`Win+↑`、拖拽到屏幕上边缘都会改变它，
- * 只靠渲染进程自己记录会失同步）。
+ * 最大化状态由主进程推送：双击标题栏、Win+↑、拖到屏幕上边缘都会改变它，
+ * 只靠渲染进程自己记录会失同步。
  */
 const maximized = ref(false)
+/** 是否已订阅主进程推送，避免重复绑定 */
 let wired = false
 
+/** @description 首次调用时订阅主进程的窗口状态推送，并同步一次当前状态 */
 function wire(): void {
   if (wired) return
   wired = true
@@ -20,6 +20,7 @@ function wire(): void {
   void sync()
 }
 
+/** @description 主动向主进程查询一次最大化状态 */
 async function sync(): Promise<void> {
   try {
     maximized.value = await window.api.window.isMaximized()
@@ -28,6 +29,10 @@ async function sync(): Promise<void> {
   }
 }
 
+/**
+ * @description 窗口控制：读取最大化状态并提供最小化/最大化切换/关闭
+ * @returns 窗口状态与控制方法
+ */
 export function useWindowState(): {
   maximized: Ref<boolean>
   maximizedLabel: ComputedRef<string>

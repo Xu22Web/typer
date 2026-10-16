@@ -11,14 +11,9 @@ import { TransferError } from './prepare'
 import type { ResumeMatch, ResumeState, TransferJobSummary } from '@shared/transfer/transfer'
 
 /**
- * 解析操作者从接收端带回来的续传状态。
- *
- * 支持三种形态（都是接收端会打印/写出的东西）：
- *   1. `resume.json`（接收端 `--report` 持续写出的报告）
- *   2. 续传令牌 `@TYPER1/R <job> <total> <missing>`（`--token` 打印，可整行复制粘贴）
- *   3. 裸片号列表 `3,5,12-20`（操作者手抄 `#MISS` 那一行）
- *
- * 只接受"片号集合"这一种语义：不要在这一层偷偷推断文件内容或哈希。
+ * @description 解析操作者从接收端带回来的续传状态；接受 resume.json、续传令牌或裸片号列表，只认"片号集合"这一种语义
+ * @param raw 续传文本（报告 / 令牌 / 片号列表）
+ * @returns 续传状态
  */
 export function parseResumeState(raw: string): ResumeState {
   const text = String(raw ?? '').trim()
@@ -29,6 +24,11 @@ export function parseResumeState(raw: string): ResumeState {
   return parseRanges(text)
 }
 
+/**
+ * @description 解析续传令牌（`@TYPER1/R …`）
+ * @param text 令牌文本
+ * @returns 续传状态
+ */
 function parseToken(text: string): ResumeState {
   let frame
   try {
@@ -53,6 +53,11 @@ function parseToken(text: string): ResumeState {
   }
 }
 
+/**
+ * @description 解析接收端持续写出的 JSON 报告
+ * @param text 报告文本
+ * @returns 续传状态
+ */
 function parseReport(text: string): ResumeState {
   let parsed: unknown
   try {
@@ -96,6 +101,11 @@ function parseReport(text: string): ResumeState {
   return { job, total, size, sha256, doneRanges, missing, source: 'report' }
 }
 
+/**
+ * @description 解析裸片号列表（操作者手抄 `#MISS` 那一行）
+ * @param text 片号列表文本
+ * @returns 续传状态（无 job/total 信息）
+ */
 function parseRanges(text: string): ResumeState {
   // 手抄 `#MISS` 的情况：只有片号列表，没有 job/total
   try {
@@ -116,6 +126,12 @@ function parseRanges(text: string): ResumeState {
   }
 }
 
+/**
+ * @description 读取报告里的非负整数字段
+ * @param value 候选值
+ * @param name 字段名，用于拼错误消息
+ * @returns 合法的非负整数
+ */
 function readInt(value: unknown, name: string): number {
   if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
     throw new TransferError('resume-format', `续传报告里的 ${name} 不合法`)
@@ -124,10 +140,10 @@ function readInt(value: unknown, name: string): number {
 }
 
 /**
- * 把续传状态与当前任务比对。
- *
- * 任何"任务身份"不一致（job / 片数 / 大小 / 哈希）都直接拒绝：宁可让用户重来一次，
- * 也不能把两次不同任务的数据混进同一个文件（那会得到一个"看着像成功"的坏结果）。
+ * @description 把续传状态与当前任务比对；任何任务身份不一致（job / 片数 / 大小 / 哈希）都直接拒绝，避免把两次任务的数据混进同一个文件
+ * @param state 续传状态
+ * @param summary 当前任务摘要
+ * @returns 匹配结果：待补发的片与提示
  */
 export function matchResume(state: ResumeState, summary: TransferJobSummary): ResumeMatch {
   const warnings: string[] = []
@@ -181,9 +197,10 @@ export interface ResolveSendOptions {
 }
 
 /**
- * 计算这次实际要发送的片号。
- *
- * 三种来源：显式的 `only`（重传指定片）、`from`（从某处续发）、否则全发。
+ * @description 计算这次实际要发送的片号：显式 only 优先，否则从 from 起，最后退化为全发
+ * @param total 任务总片数
+ * @param options 片选择条件
+ * @returns 升序片号列表
  */
 export function resolveSendIndexes(total: number, options: ResolveSendOptions = {}): number[] {
   try {
@@ -194,7 +211,12 @@ export function resolveSendIndexes(total: number, options: ResolveSendOptions = 
   }
 }
 
-/** 片号集合 → 紧凑区间文本（给界面展示用）。 */
+/**
+ * @description 把片号集合压成紧凑区间文本（给界面展示用）
+ * @param indexes 片号列表
+ * @param total 任务总片数
+ * @returns 区间文本
+ */
 export function describeIndexes(indexes: readonly number[], total: number): string {
   if (indexes.length === 0) return '无'
   try {

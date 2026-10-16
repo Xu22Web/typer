@@ -7,7 +7,7 @@ import type {
   WritableStreamLike
 } from '@main/typing/drivers/powershellDriver'
 
-/** 把子进程拆成"可控的假对象"，从而完整测试驱动的生命周期。 */
+/** @description 把子进程拆成可控的假对象，让驱动的生命周期可完整断言 */
 export class FakeChildProcess extends EventEmitter implements ChildProcessLike {
   readonly writes: string[] = []
   readonly writtenLines: string[] = []
@@ -49,42 +49,75 @@ export class FakeChildProcess extends EventEmitter implements ChildProcessLike {
     super()
   }
 
-  /** 模拟宿主输出一段内容（可故意切成多段以测试分片重组）。 */
+  /**
+   * @description 模拟宿主输出一段内容，可故意切成多段以覆盖分片重组
+   * @param chunk 写入 stdout 的文本
+   */
   emitStdout(chunk: string): void {
     this.stdoutEmitter.emit('data', chunk)
   }
 
+  /**
+   * @description 模拟宿主输出一段 stderr 文本
+   * @param chunk 写入 stderr 的文本
+   */
   emitStderr(chunk: string): void {
     this.stderrEmitter.emit('data', chunk)
   }
 
+  /**
+   * @description 模拟终止子进程，仅记录调用状态
+   * @returns 固定为 true，与真实 ChildProcess.kill 的返回类型保持一致
+   */
   kill(): boolean {
     this.killed = true
     return true
   }
 
+  /**
+   * @description 模拟子进程退出，触发 exit 事件
+   * @param code 退出码
+   * @param signal 退出信号
+   */
   exit(code: number | null = 0, signal: string | null = null): void {
     this.emit('exit', code, signal)
   }
 
-  /** 解析收到的请求（返回 JSON 对象），便于断言协议。 */
+  /**
+   * @description 解析驱动写到 stdin 的每一行请求，便于断言协议
+   * @returns 收到的请求对象列表
+   */
   parsedRequests(): Array<Record<string, unknown>> {
     return this.writtenLines.map((line) => JSON.parse(line) as Record<string, unknown>)
   }
 
+  /**
+   * @description 取最近一条请求的 id
+   * @returns 最后一条请求的 id，无请求时为 0
+   */
   lastRequestId(): number {
     const requests = this.parsedRequests()
     const last = requests[requests.length - 1]
     return Number(last?.id ?? 0)
   }
 
-  /** 按请求 id 回一个成功响应。 */
+  /**
+   * @description 按请求 id 回一个成功响应
+   * @param id 对应的请求 id
+   * @param data 响应负载，缺省时不带 data 字段
+   */
   respondOk(id: number, data?: unknown): void {
     this.emitStdout(
       `${JSON.stringify(data === undefined ? { id, ok: true } : { id, ok: true, data })}\n`
     )
   }
 
+  /**
+   * @description 按请求 id 回一个失败响应
+   * @param id 对应的请求 id
+   * @param code 错误码
+   * @param message 错误描述
+   */
   respondError(id: number, code: string, message = 'mock error'): void {
     this.emitStdout(`${JSON.stringify({ id, ok: false, error: { code, message } })}\n`)
   }
@@ -97,7 +130,7 @@ export interface FakeSpawn {
   failNext?: Error
 }
 
-/** 自动应答器返回的结果：`delayMs` 可模拟宿主响应慢。 */
+/** @description 自动应答器返回的结果，`delayMs` 用于模拟宿主响应慢 */
 export interface AutoRespondOutcome {
   data?: unknown
   error?: { code: string; message: string }
@@ -105,13 +138,18 @@ export interface AutoRespondOutcome {
 }
 
 export interface FakeSpawnOptions {
-  /** 让假宿主自动响应请求，测试无需手工应答。 */
+  /** @description 让假宿主自动响应请求，测试无需手工应答 */
   autoRespond?: (
     request: Record<string, unknown>,
     child: FakeChildProcess
   ) => AutoRespondOutcome | undefined
 }
 
+/**
+ * @description 接管 stdin.write，在请求写入后自动产生响应
+ * @param child 被接管的假子进程
+ * @param responder 根据请求生成响应的应答器
+ */
 function attachAutoRespond(
   child: FakeChildProcess,
   responder: NonNullable<FakeSpawnOptions['autoRespond']>
@@ -150,7 +188,11 @@ function attachAutoRespond(
   }
 }
 
-/** 可注入的 spawn：每次调用生成一个新的 FakeChildProcess。 */
+/**
+ * @description 创建可注入的 spawn，每次调用都生成一个新的 FakeChildProcess
+ * @param options 配置项，可开启自动应答
+ * @returns 假的 spawn 实现及其调用记录
+ */
 export function createFakeSpawn(options: FakeSpawnOptions = {}): FakeSpawn {
   const children: FakeChildProcess[] = []
   const calls: Array<{ command: string; args: readonly string[]; options: SpawnOptionsLike }> = []
@@ -175,7 +217,7 @@ export function createFakeSpawn(options: FakeSpawnOptions = {}): FakeSpawn {
   return fake
 }
 
-/** 假 ipcMain：记录注册的频道与处理器，便于直接调用。 */
+/** @description 假 ipcMain，记录注册的频道与处理器，便于直接调用 */
 export interface FakeIpcMain {
   handlers: Map<string, (event: unknown, ...args: unknown[]) => unknown>
   handle(channel: string, listener: (event: unknown, ...args: unknown[]) => unknown): void
@@ -184,6 +226,10 @@ export interface FakeIpcMain {
   readonly channels: string[]
 }
 
+/**
+ * @description 创建假 ipcMain，重复注册同一频道会立即报错
+ * @returns 可注册、移除并直接 invoke 的假 ipcMain
+ */
 export function createFakeIpcMain(): FakeIpcMain {
   const handlers = new Map<string, (event: unknown, ...args: unknown[]) => unknown>()
   return {
@@ -206,7 +252,7 @@ export function createFakeIpcMain(): FakeIpcMain {
   }
 }
 
-/** 内存文件系统：覆盖设置存储的原子写/损坏回退等路径。 */
+/** @description 内存文件系统，用于覆盖设置存储的原子写与损坏回退等路径 */
 export interface MemoryFs {
   files: Map<string, string>
   dirs: Set<string>
@@ -218,6 +264,11 @@ export interface MemoryFs {
   mkdirSync(path: string, options: { recursive: true }): string | undefined
 }
 
+/**
+ * @description 创建内存文件系统，可通过 failWrites 模拟只读磁盘
+ * @param initial 初始文件内容
+ * @returns 与 fs 同步 API 子集一致的假实现
+ */
 export function createMemoryFs(initial: Record<string, string> = {}): MemoryFs {
   const files = new Map(Object.entries(initial))
   const fs: MemoryFs = {
@@ -248,7 +299,11 @@ export function createMemoryFs(initial: Record<string, string> = {}): MemoryFs {
   return fs
 }
 
-/** 假剪贴板。 */
+/**
+ * @description 创建假剪贴板，记录每次写入以便断言
+ * @param initial 初始剪贴板内容
+ * @returns 带读写方法与写入历史的假剪贴板
+ */
 export function createFakeClipboard(initial = ''): {
   readText(): string
   writeText(text: string): void

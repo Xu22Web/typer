@@ -3,20 +3,19 @@ import { buildPlan } from '@main/typing/planner/plan'
 import { estimateTotalMs } from '@main/typing/scheduling/timing'
 
 /**
- * 输入页：只承载"准备内容 → 开始输入"这一条主线。
- *
- * 刻意不在这里堆日志与全部设置：日志在「日志」页，节奏与隐私在「设置」页；
- * 这里保留一条最新日志与两个快捷入口，保证主任务不被淹没。
+ * 输入页：只承载"准备内容 → 开始输入"这一条主线，日志在「日志」页、节奏与隐私在「设置」页。
  */
 const typing = useTyping()
 const transfer = useTransfer()
 const settingsStore = useSettings()
 
-/** 输入页有两种模式：逐字符输入文本，或把文件切成帧逐片发送。 */
+/** 输入页有两种模式：逐字符输入文本，或把文件切成帧逐片发送 */
 const mode = ref<'text' | 'file'>('text')
 
+/** 当前生效的设置 */
 const settings = settingsStore.settings
 
+/** @description 进入页面时加载设置并初始化引擎（订阅事件、读前台窗口） */
 onMounted(async () => {
   await settingsStore.load()
   await typing.init()
@@ -38,8 +37,10 @@ const preview = computed(() => {
   return { stats, estimated: estimateTotalMs(stats.typed, settings.value.timing) }
 })
 
+/** 是否已识别到前台窗口（用于决定要不要提示"切到目标窗口"） */
 const detected = computed(() => typing.targetWindow.value !== '未检测')
 
+/** 最新一条日志，用于在输入页提示"刚刚发生了什么" */
 const latestLog = computed(() => typing.logs.value.at(-1) ?? null)
 
 /** 开始前的引导语：把"为什么现在不能开始"讲清楚 */
@@ -55,6 +56,7 @@ const blocker = computed(() => {
   return ''
 })
 
+/** 开始按钮文案：文件模式显示要发多少片，倒计时非 0 时补上"几秒后" */
 const startLabel = computed(() => {
   const delay = settings.value?.startDelayMs ?? 0
   const suffix = delay > 0 ? `（${Math.round(delay / 1000)} 秒后）` : ''
@@ -65,8 +67,10 @@ const startLabel = computed(() => {
   return delay > 0 ? `开始输入（${Math.round(delay / 1000)} 秒后）` : '开始输入'
 })
 
+/** 是否正忙：文件模式看准备进度，文本模式看引擎请求是否在途 */
 const busy = computed(() => (mode.value === 'file' ? transfer.preparing.value : typing.busy.value))
 
+/** 当前是否允许开始；不允许时由 blocker 说明原因 */
 const canStart = computed(() => {
   if (typing.isRunning.value || typing.unsupported.value || busy.value) return false
   if (mode.value === 'file') {
@@ -75,6 +79,7 @@ const canStart = computed(() => {
   return typing.canStart.value
 })
 
+/** @description 按当前模式开始输入或发送；不可开始时直接返回 */
 function start(): void {
   if (!canStart.value) return
   void (mode.value === 'file' ? transfer.start() : typing.start())

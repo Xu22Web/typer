@@ -13,17 +13,24 @@ export interface FocusVerdict {
   changed: boolean
 }
 
-/** 判定两个前台窗口快照是否"同一个窗口"（hwnd 一致，或 pid + 标题一致）。 */
+/**
+ * @description 判定两个前台窗口快照是否"同一个窗口"（hwnd 一致，或 pid + 标题一致）
+ * @param a 目标窗口快照
+ * @param b 当前窗口快照
+ * @returns 是否为同一个窗口
+ */
 export function sameWindow(a: FocusSnapshot, b: FocusSnapshot): boolean {
   if (a.hwnd === b.hwnd) return true
   return a.pid === b.pid && a.title === b.title
 }
 
 /**
- * 纯函数版的焦点判定，便于测试三种模式的差异：
- * - off：不检查
- * - warn：窗口变了只提示，仍然继续输入
- * - strict：窗口变了直接阻止（交由引擎暂停/中止）
+ * @description 纯函数版的焦点判定：off 不检查，warn 窗口变了只提示仍继续输入，
+ * strict 窗口变了直接阻止（交由引擎暂停/中止）
+ * @param mode 守卫模式
+ * @param expected 倒计时开始前记录的目标窗口；null 表示未记录
+ * @param current 当前前台窗口
+ * @returns 是否阻止、窗口是否变化与需要提示的警告
  */
 export function evaluateFocus(
   mode: FocusGuardMode,
@@ -45,13 +52,22 @@ export function evaluateFocus(
   return { blocked: mode === 'strict', changed: true, warning: message }
 }
 
+/** 焦点守护：把"前台窗口是否仍是目标窗口"的查询与判定包在一起。 */
 export class FocusGuard {
+  /**
+   * @description 用守卫模式与"查询前台窗口"的最小依赖创建守护
+   * @param mode 守卫模式
+   * @param driver 只取 foreground 的驱动切片
+   */
   constructor(
     private readonly mode: FocusGuardMode,
     private readonly driver: Pick<KeyboardDriver, 'foreground'>
   ) {}
 
-  /** 倒计时开始前记录目标窗口。off 模式返回 null（不做任何查询）。 */
+  /**
+   * @description 倒计时开始前记录目标窗口；off 模式不做任何查询
+   * @returns 目标窗口快照，未记录或查询失败时为 null
+   */
   async capture(): Promise<FocusSnapshot | null> {
     if (this.mode === 'off') return null
     try {
@@ -62,6 +78,11 @@ export class FocusGuard {
     }
   }
 
+  /**
+   * @description 再次查询前台窗口并给出判定
+   * @param expected 目标窗口快照；null 表示不做检查
+   * @returns 是否阻止、窗口是否变化与需要提示的警告
+   */
   async verify(expected: FocusSnapshot | null): Promise<FocusVerdict> {
     if (this.mode === 'off' || expected === null) {
       return { blocked: false, changed: false }

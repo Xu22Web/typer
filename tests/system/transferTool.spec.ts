@@ -20,7 +20,13 @@ interface ToolResult {
   stderr: string
 }
 
-/** 真实启动脚本进程：这里要验证的正是"跨进程、跨脚本"的行为，不做任何模拟。 */
+/**
+ * @description 真实启动脚本进程并收集输出；这里要验证的正是"跨进程、跨脚本"的行为，不做任何模拟
+ * @param script 脚本路径
+ * @param args 脚本参数
+ * @param cwd 工作目录
+ * @returns 退出码与 stdout/stderr
+ */
 async function runTool(script: string, args: string[], cwd: string): Promise<ToolResult> {
   try {
     const { stdout, stderr } = await run(process.execPath, [script, ...args], {
@@ -44,7 +50,12 @@ afterEach(() => {
   rmSync(work, { recursive: true, force: true })
 })
 
-/** 生成源文件（确定性内容，含 0x00/0xFF/CRLF 等"会捣乱"的字节）。 */
+/**
+ * @description 生成确定性源文件，含 0x00/0xFF/CRLF/Ctrl+Z 等"会捣乱"的字节
+ * @param size 字节数
+ * @param seed 随机种子
+ * @returns 源文件内容
+ */
 function makeSource(size: number, seed = 5): Buffer {
   const buffer = Buffer.allocUnsafe(size)
   let state = seed >>> 0
@@ -66,7 +77,12 @@ interface ChunkResult {
   lines: string[]
 }
 
-/** 用分片脚本生成帧文本（同时验证它能独立于应用工作）。 */
+/**
+ * @description 用分片脚本生成帧文本，同时验证它在应用之外也能独立工作
+ * @param sourcePath 源文件路径（相对 work 目录）
+ * @param options 片大小、编码与输出目录
+ * @returns 任务 id、哈希、片数与帧行
+ */
 async function chunkFile(
   sourcePath: string,
   options: { chunk?: number; enc?: string; out?: string } = {}
@@ -102,7 +118,12 @@ async function chunkFile(
   }
 }
 
-/** 把若干行帧文本写成文件，模拟"只发了一部分"。 */
+/**
+ * @description 把若干行帧文本写成文件，模拟"只发了一部分"
+ * @param name 文件名
+ * @param lines 帧行
+ * @returns 文件路径
+ */
 function writeSubset(name: string, lines: string[]): string {
   const path = join(work, name)
   writeFileSync(path, `${lines.join('\n')}\n`)
@@ -354,7 +375,13 @@ describe('typer-recv.mjs：真实终端噪声的容忍', () => {
 })
 
 describe('应用与脚本的一致性（同一文件、同一参数）', () => {
-  /** 用应用侧模块（主进程用的那套）生成整套帧文本。 */
+  /**
+   * @description 用应用侧模块（主进程用的那套）生成整套帧文本
+   * @param path 源文件路径
+   * @param options 传输选项
+   * @param only 只生成这些片号（默认为全部）
+   * @returns 任务句柄与帧行
+   */
   async function framesFromApp(
     path: string,
     options: { encoding: 'hex' | 'b64' | 'txt'; chunkBytes: number; maxFrameChars: number },

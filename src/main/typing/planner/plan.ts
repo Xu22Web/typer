@@ -33,7 +33,13 @@ export type CharResolution =
     }
   | { kind: 'skip' }
 
-/** 单字符 → 注入方式。换行与 Tab 始终使用真实按键（与布局无关）。 */
+/**
+ * @description 单字符 → 注入方式；换行与 Tab 始终使用真实按键（与布局无关）
+ * @param char 单个码点
+ * @param layout 目标窗口使用的键盘布局
+ * @param forceUnicodeForAll 是否强制全部走 Unicode 注入
+ * @returns 真实按键 / Unicode 报文 / 跳过
+ */
 export function resolveChar(
   char: string,
   layout: KeyboardLayout,
@@ -89,6 +95,13 @@ interface IterateContext {
   collector?: PlanCollector
 }
 
+/**
+ * @description 产出单个字符对应的动作，并按需累计统计
+ * @param char 单个码点
+ * @param context 布局、造错与统计上下文
+ * @param options 是否把该字符计入"新输入"统计（造错产生的字符不计入）
+ * @returns 动作生成器
+ */
 function* emitChar(
   char: string,
   context: IterateContext,
@@ -116,14 +129,30 @@ function* emitChar(
   }
 }
 
+/**
+ * @description 统计字符串的码点数（代理对记为 1）
+ * @param text 待统计文本
+ * @returns 码点个数
+ */
 function countCodePoints(text: string): number {
   return toCodePoints(text).length
 }
 
+/**
+ * @description 判断字符是否可参与"相邻字符颠倒"式造错（当前只针对拉丁字母）
+ * @param char 单个码点
+ * @returns 是否可颠倒
+ */
 function isTransposable(char: string): boolean {
   return /^[a-zA-Z]$/.test(char)
 }
 
+/**
+ * @description 逐码点产出动作，并在此处施加造错与纠错逻辑
+ * @param codes 码点序列
+ * @param context 布局、造错与统计上下文
+ * @returns 动作生成器
+ */
 function* iterateCodes(codes: string[], context: IterateContext): Generator<KeystrokeAction> {
   const typo = context.typo
 
@@ -184,9 +213,11 @@ function* iterateCodes(codes: string[], context: IterateContext): Generator<Keys
 }
 
 /**
- * 流式产出动作：不保存整个动作数组，长文本也只占常数内存。
- * 注意：若 `typo` 启用了随机性，调用方**必须**为"计数"和"产出"两次遍历
- * 提供同种子、同起点的独立 Rng，否则总数与实际动作数会不一致。
+ * @description 流式产出动作：不保存整个动作数组，长文本也只占常数内存；启用造错时，
+ * 调用方必须为"计数"与"产出"两次遍历提供同种子、同起点的独立 Rng，否则总数与实际动作数会不一致
+ * @param input 原始文本
+ * @param options 布局、Unicode 强制与造错设置
+ * @returns 动作生成器
  */
 export function* iterateActions(
   input: string,
@@ -200,6 +231,12 @@ export function* iterateActions(
   })
 }
 
+/**
+ * @description 一次性构建完整计划（保留动作）并汇总统计，供预览与自检使用
+ * @param input 原始文本
+ * @param options 布局、Unicode 强制与造错设置
+ * @returns 动作列表与统计
+ */
 export function buildPlan(input: string, options: PlanOptions = {}): TypingPlan {
   const { text, skipped } = normalizeText(input)
   const codes = toCodePoints(text)
@@ -232,7 +269,12 @@ export function buildPlan(input: string, options: PlanOptions = {}): TypingPlan 
   return { actions, stats }
 }
 
-/** 只统计动作数（不保留动作），用于进度估算。 */
+/**
+ * @description 只统计动作数（不保留动作），用于进度估算
+ * @param input 原始文本
+ * @param options 布局、Unicode 强制与造错设置
+ * @returns 动作总数
+ */
 export function countTypedActions(input: string, options: PlanOptions = {}): number {
   const { text } = normalizeText(input)
   const collector: PlanCollector = {

@@ -14,6 +14,12 @@ let session: TransferSession
 
 const OPTIONS = { encoding: 'hex' as const, chunkBytes: 256, maxFrameChars: 4096 }
 
+/**
+ * @description 生成确定性二进制内容
+ * @param size 字节数
+ * @param seed 随机种子
+ * @returns 二进制内容
+ */
 function makeSource(size = 1024, seed = 4): Buffer {
   const buffer = Buffer.allocUnsafe(size)
   let state = seed >>> 0

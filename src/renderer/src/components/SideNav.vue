@@ -1,10 +1,8 @@
 <script setup lang="ts" vapor>
 /**
- * 左侧导航（Windows 11 NavigationView 的左侧模式）。
- *
- * 层级只有一层：四个相互独立的目的地，没有子菜单。
- * 选中态用"左侧 3px 强调条 + 轻微填充"，而不是整块高亮——这是 Fluent 的选择指示方式。
+ * 左侧导航：四个平级页面入口，选中态为"左侧 3px 强调条 + 轻微填充"（Fluent 的选择指示方式）。
  */
+/** 导航项：路径、图标、名称与悬停提示 */
 const items = [
   { to: '/', icon: 'i-mdi-keyboard-outline', label: '输入', hint: '粘贴内容并开始模拟输入' },
   { to: '/logs', icon: 'i-mdi-text-box-search-outline', label: '日志', hint: '查看运行记录' },
@@ -12,6 +10,7 @@ const items = [
   { to: '/about', icon: 'i-mdi-information-outline', label: '关于', hint: '版本、更新与链接' }
 ]
 
+/** 是否有可用更新，用于在「关于」项上加提示点 */
 const { available } = useUpdate()
 </script>
 

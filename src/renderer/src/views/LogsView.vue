@@ -1,18 +1,20 @@
 <script setup lang="ts" vapor>
 /**
- * 日志页。
- *
- * 单独成页的原因：日志是"流水"型信息，条数不可控、需要筛选与复制，
- * 放在输入页会把主任务挤掉；放在这里则可以放心地给它整页空间。
+ * 日志页：整页承载"流水型信息"——条数不可控、需要筛选与复制，放在输入页会挤掉主任务。
  */
 const typing = useTyping()
 
+/** 日志级别筛选：全部 / 信息 / 警告 / 错误 */
 type Filter = 'all' | 'info' | 'warn' | 'error'
 
+/** 当前选中的筛选级别 */
 const filter = ref<Filter>('all')
+/** 是否跟随新日志自动滚到底部；用户手动滚动时自动暂停 */
 const autoScroll = ref(true)
+/** 日志列表容器，用于自动滚动 */
 const listEl = ref<HTMLElement | null>(null)
 
+/** 各筛选级别下的条数，用于给筛选按钮加计数 */
 const counts = computed(() => ({
   all: typing.logs.value.length,
   info: typing.logs.value.filter((entry) => entry.level === 'info').length,
@@ -20,12 +22,14 @@ const counts = computed(() => ({
   error: typing.logs.value.filter((entry) => entry.level === 'error').length
 }))
 
+/** 当前筛选条件下要显示的条目 */
 const visible = computed(() =>
   filter.value === 'all'
     ? typing.logs.value
     : typing.logs.value.filter((entry) => entry.level === filter.value)
 )
 
+/** 筛选按钮的定义（顺序即界面顺序） */
 const filters: Array<{ value: Filter; label: string }> = [
   { value: 'all', label: '全部' },
   { value: 'info', label: '信息' },
@@ -33,13 +37,14 @@ const filters: Array<{ value: Filter; label: string }> = [
   { value: 'error', label: '错误' }
 ]
 
+/** 级别到图标的映射 */
 const levelIcon: Record<string, string> = {
   info: 'i-mdi-information-outline',
   warn: 'i-mdi-alert-outline',
   error: 'i-mdi-alert-circle-outline'
 }
 
-/** 日志是流水信息，新条目进来后自动滚到底部，除非用户主动关掉了跟随 */
+/** @description 新日志进来后自动滚到底部（用户关掉跟随后不再打扰） */
 watch(
   () => typing.logs.value.length,
   async () => {
@@ -50,6 +55,15 @@ watch(
   }
 )
 
+/** @description 回到本页时补一次滚动：离开期间攒下的新日志不会再触发上面的 watch */
+onActivated(async () => {
+  if (!autoScroll.value) return
+  await nextTick()
+  const el = listEl.value
+  if (el) el.scrollTop = el.scrollHeight
+})
+
+/** @description 把当前全部日志（按时间、级别、内容三列）复制到剪贴板 */
 async function copyAll(): Promise<void> {
   const text = typing.logs.value
     .map((entry) => `${new Date(entry.at).toLocaleString()}\t${entry.level}\t${entry.message}`)

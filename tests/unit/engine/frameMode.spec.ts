@@ -27,6 +27,11 @@ const timing: TimingSettings = {
   burstPauseMs: 0
 }
 
+/**
+ * @description 构造引擎设置，未指定的字段取默认值
+ * @param overrides 需要覆盖的设置项
+ * @returns 完整的引擎设置
+ */
 function engineSettings(overrides: Partial<EngineSettings> = {}): EngineSettings {
   return {
     startDelayMs: 0,
@@ -46,7 +51,7 @@ function engineSettings(overrides: Partial<EngineSettings> = {}): EngineSettings
   }
 }
 
-/** 把下发的动作还原成"目标窗口里出现的文本"（用于按键模式断言）。 */
+/** @description 反向字符表：把 "vk+修饰键" 还原成字符，用于断言目标窗口里出现的文本 */
 const US_REVERSE = new Map<string, string>(
   Object.entries(LAYOUTS.us.charMap).map(([char, key]) => [
     `${key.vk}+${[...key.modifiers].sort().join(',')}`,
@@ -54,6 +59,11 @@ const US_REVERSE = new Map<string, string>(
   ])
 )
 
+/**
+ * @description 把宿主指令还原成目标窗口里会出现的文本，用于按键模式断言
+ * @param items 引擎下发的宿主指令
+ * @returns 还原后的文本
+ */
 function itemsToText(items: HostItem[]): string {
   let out = ''
   for (const item of items) {
@@ -76,6 +86,10 @@ interface Harness {
   logs: string[]
 }
 
+/**
+ * @description 组装引擎夹具：假驱动 + 虚拟时钟，并记录状态、进度与日志
+ * @returns 测试用的引擎夹具
+ */
 function createHarness(): Harness {
   const driver = new MockKeyboardDriver()
   const clock = createVirtualClock()
@@ -94,7 +108,7 @@ function createHarness(): Harness {
   return { engine, driver, clock, states, progress, logs }
 }
 
-/** 构造一个"3 片"的任务：帧文本刻意包含数字、大写与 + / =（hex 与 b64 的典型字符）。 */
+/** @description 三片数据帧，文本刻意包含数字、大写与 + / =（hex 与 b64 的典型字符） */
 const FRAMES = [
   '@TYPER1/D abc 0 3 4 0000 0000 hex AABB',
   '@TYPER1/D abc 1 3 4 0000 0000 hex CCDD',
@@ -103,6 +117,11 @@ const FRAMES = [
 const BEGIN = '@TYPER1/B abc12345 3 10 hex 4 demo 00'
 const END = '@TYPER1/E abc12345 3 10 00'
 
+/**
+ * @description 构造一个三片式文件传输任务
+ * @param overrides 需要覆盖的任务字段，如只发部分片或去掉首尾帧
+ * @returns 帧模式的任务描述
+ */
 function frameJob(
   overrides: Partial<Extract<TypingRequest, { kind: 'frames' }>> = {}
 ): Extract<TypingRequest, { kind: 'frames' }> {
@@ -119,7 +138,11 @@ function frameJob(
   }
 }
 
-/** 单行文本 + 行尾换行 = 需要"打"出去的字符数。 */
+/**
+ * @description 统计按行发送时实际要"打"出去的字符数（每行含行尾换行）
+ * @param lines 待发送的文本行
+ * @returns 总字符数
+ */
 function chars(lines: string[]): number {
   return lines.reduce((sum, line) => sum + line.length + 1, 0)
 }

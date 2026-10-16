@@ -1,4 +1,5 @@
 <script setup lang="ts" vapor>
+/** 状态栏版本信息：Electron / Chromium / Node，窄窗口下自动隐藏 Chromium */
 const versions = reactive({
   electron: '-',
   chrome: '-',

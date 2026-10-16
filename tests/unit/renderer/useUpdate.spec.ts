@@ -1,13 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
 
 /**
- * 更新中心的渲染侧状态。
- *
- * 主进程负责真正的检查/下载/校验，这里要保证的是：
- *  - 事件订阅只建立一次，状态与进度都能反映到界面
- *  - "有新版本""下载中""可安装"这几个判断不出错（侧边导航的提示点依赖它）
- *  - 动作失败时把原因留下来，而不是静默成功
- *
+ * 更新中心渲染侧状态：保证事件只订阅一次、状态与进度能反映到界面、
+ * "有新版本 / 下载中 / 可安装" 判断正确，且动作失败时留下原因。
  * composable 是模块级单例，因此每个用例用 resetModules 拿一份干净实例。
  */
 interface UpdatesApiStub {
@@ -31,6 +26,11 @@ const IDLE = {
   error: null
 }
 
+/**
+ * @description 安装一个 window.api.updates 桩，可推送给已注册的监听器
+ * @param overrides 覆盖默认桩方法的实现
+ * @returns 安装好的 updates API 桩
+ */
 function installApi(overrides: Record<string, unknown> = {}): UpdatesApiStub {
   const stateListeners: Array<(value: unknown) => void> = []
   const progressListeners: Array<(value: unknown) => void> = []
@@ -63,6 +63,10 @@ function installApi(overrides: Record<string, unknown> = {}): UpdatesApiStub {
   return api
 }
 
+/**
+ * @description 用一份干净的模块实例加载 useUpdate，避免模块级单例跨用例串状态
+ * @returns 新安装的 API 桩与该模块导出的 useUpdate
+ */
 async function loadUseUpdate(): Promise<{
   api: UpdatesApiStub
   useUpdate: typeof import('../../../src/renderer/src/composables/useUpdate').useUpdate

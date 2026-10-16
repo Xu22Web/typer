@@ -6,18 +6,14 @@ import { buildPlan } from '@main/typing/planner/plan'
 import { HOST_SCRIPT, launchTargetWindow, waitFor, type TargetWindow } from './helpers/system'
 
 /**
- * 真实键盘注入测试（opt-in）。
- *
- * 这是唯一会**真的往一个窗口打字**的测试，因此有两条硬性约束：
- *  1. 必须先确认目标窗口就是前台窗口，否则立即跳过 —— 绝不能把按键打到用户其它窗口上
- *  2. 目标是一个自建的 WinForms 窗口（把收到的字符写回文件），断言即文本比较
- *
- * 运行方式：`pnpm test:system`（或 `TYPIST_E2E=1 vitest run --project system`）
+ * 真实键盘注入测试（opt-in，TYPIST_E2E=1 或 `pnpm test:system`）：唯一会**真的往一个窗口打字**
+ * 的用例，因此必须先确认目标窗口就是前台窗口，否则立即跳过——绝不能把按键打到用户其它窗口上。
+ * 目标是一个自建的 WinForms 窗口（把收到的字符写回文件），断言即文本比较。
  */
 const enabled = process.env.TYPIST_E2E === '1'
 const describeE2E = enabled ? describe : describe.skip
 
-/** 混排：ASCII + Shift 组合符号 + 中文 + 全角标点 + emoji（代理对）。 */
+/** @description 混排样例：ASCII + Shift 组合符号 + 中文 + 全角标点 + emoji（代理对） */
 const SAMPLE_TEXT = 'Hello 世界!@# 中文，符号 😀'
 
 describeE2E('真实注入（需要前台焦点）', () => {
@@ -25,6 +21,10 @@ describeE2E('真实注入（需要前台焦点）', () => {
   let driver: WindowsSendInputDriver
   let focused = false
 
+  /**
+   * @description 在限定时间内等待目标窗口成为前台窗口
+   * @returns 是否已获得前台焦点
+   */
   const ensureFocus = async (): Promise<boolean> => {
     const deadline = Date.now() + 10_000
     while (Date.now() < deadline) {

@@ -2,10 +2,8 @@
 import type { HexPreviewRow } from '@shared/transfer/transfer'
 
 /**
- * 十六进制预览：偏移 + hex + ASCII。
- *
- * 只展示文件开头若干行（由主进程截取），目的是让用户确认"选对文件了"，
- * 而不是在这里做大文件查看器——那样既慢又没必要。
+ * 十六进制预览：偏移 + hex + ASCII，只展示主进程截取的文件开头若干行，
+ * 用于确认"选对文件了"，不做大文件查看器。
  */
 defineProps<{ rows: HexPreviewRow[] }>()
 </script>

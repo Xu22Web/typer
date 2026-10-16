@@ -2,7 +2,11 @@ import { describe, expect, it } from 'vitest'
 import { reactive, ref } from 'vue'
 import { toPlainPayload } from '@main/ipc/plainPayload'
 
-/** 结构化克隆正是 Electron IPC 序列化参数的方式，用它作为"能否跨进程"的判据。 */
+/**
+ * @description 用结构化克隆模拟 Electron IPC 的序列化，作为"能否跨进程"的判据
+ * @param value 待检验的值
+ * @returns 能通过结构化克隆时为 true
+ */
 function canCrossIpc(value: unknown): boolean {
   try {
     structuredClone(value)

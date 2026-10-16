@@ -15,9 +15,9 @@ export type InsertMode = 'keystroke' | 'paste' | 'auto'
 /**
  * 一次输入任务的来源。
  *
- * - `text`：现有路径，把文本按字符规划成动作（含错字、停顿等全部拟人特性）
- * - `frames`：文件传输路径，逐"帧"发送（每片一行），**不使用错字**（打错会破坏数据），
- *   并且支持只发送一部分片（续传 / 定点重传）
+ * `text` 是现有路径：把文本按字符规划成动作（含错字、停顿等全部拟人特性）；
+ * `frames` 是文件传输路径：逐"帧"发送（每片一行）、不使用错字（打错会破坏数据），
+ * 并支持只发送一部分片（续传 / 定点重传）。
  */
 export type TypingRequest =
   | { kind: 'text'; text: string }
@@ -94,10 +94,9 @@ const COUNTDOWN_TICK_MS = 100
 /**
  * 输入引擎：倒计时 → 分块下发动作 → 暂停/继续/中止。
  *
- * 设计要点：
- * - 驱动、时钟、随机源全部注入，因此可以用假时钟 + Mock 驱动做确定性测试
- * - 以 chunk 为单位下发，chunk 之间检查暂停/中止，"紧急停止"延迟 ≤ 一个 chunk
- * - 任何结束路径（完成/中止/异常）都会 `releaseAll`，避免修饰键粘住
+ * 驱动、时钟与随机源全部注入，因此可以用假时钟 + Mock 驱动做确定性测试；以 chunk 为单位下发，
+ * chunk 之间检查暂停/中止，使"紧急停止"延迟不超过一个 chunk；任何结束路径（完成/中止/异常）
+ * 都会 `releaseAll`，避免修饰键粘住。
  */
 export class TypingEngine {
   private readonly driver: KeyboardDriver
@@ -117,14 +116,20 @@ export class TypingEngine {
   /** 文件传输任务的片进度（文本任务为 null） */
   private frames: ProgressFrames | null = null
 
+  /**
+   * @description 保存注入的依赖（驱动、时钟、随机源与回调）
+   * @param deps 引擎依赖
+   */
   constructor(private readonly deps: EngineDeps) {
     this.driver = deps.driver
   }
 
+  /** @description 当前引擎状态 */
   get state(): EngineState {
     return this.stateValue
   }
 
+  /** @description 供 UI 渲染的状态快照（含已输入数与倒计时剩余） */
   get snapshot(): EngineSnapshot {
     return {
       state: this.stateValue,
@@ -134,11 +139,17 @@ export class TypingEngine {
     }
   }
 
+  /** @description 是否正在执行一次输入（含倒计时与暂停） */
   get isRunning(): boolean {
     return this.running
   }
 
-  /** 开始一次输入。重复调用会被拒绝（不会产生两条并行输入流）。 */
+  /**
+   * @description 开始一次输入；重复调用会被拒绝（不会产生两条并行输入流）
+   * @param request 任务来源，字符串等价于文本任务
+   * @param settings 引擎设置子集
+   * @returns 本次运行的结果（终态、计数、耗时与所用种子）
+   */
   async start(request: TypingRequest | string, settings: EngineSettings): Promise<RunResult> {
     if (this.disposed) throw new Error('引擎已释放')
     if (isBusy(this.stateValue)) {
@@ -205,6 +216,14 @@ export class TypingEngine {
     }
   }
 
+  /**
+   * @description 执行一次完整任务：倒计时 → 记录目标窗口 → 分派到文本或文件传输路径
+   * @param task 任务定义
+   * @param settings 引擎设置子集
+   * @param seed 本次使用的随机种子
+   * @param rngFactory 随机源工厂；"计数"与"产出"两次遍历必须各自新建同种子的实例
+   * @returns 本次运行的终态
+   */
   private async runOnce(
     task: TypingRequest,
     settings: EngineSettings,
@@ -238,7 +257,16 @@ export class TypingEngine {
     return this.runTextJob(task.text, settings, seed, rngFactory, guard, expectedFocus)
   }
 
-  /** 文本任务：统计动作总数 → 空文本短路 → 粘贴或逐块输入。 */
+  /**
+   * @description 文本任务：统计动作总数 → 空文本短路 → 粘贴或逐块输入
+   * @param text 待输入文本
+   * @param settings 引擎设置子集
+   * @param seed 本次使用的随机种子
+   * @param rngFactory 随机源工厂
+   * @param guard 焦点守护
+   * @param expectedFocus 倒计时前记录的目标窗口
+   * @returns 本次运行的终态
+   */
   private async runTextJob(
     text: string,
     settings: EngineSettings,
@@ -307,6 +335,10 @@ export class TypingEngine {
     const chunkSize = Math.max(1, settings.chunkSize)
     let chunk: ScheduledAction[] = []
 
+    /**
+     * @description 下发当前累积的一批动作（必要时先等待暂停结束并复核焦点）
+     * @returns 是否成功下发；false 表示已中止
+     */
     const flush = async (): Promise<boolean> => {
       if (chunk.length === 0) return true
       if (this.aborted) return false
@@ -353,13 +385,16 @@ export class TypingEngine {
   }
 
   /**
-   * 文件传输任务：逐帧发送（每片一行）。
-   *
-   * 与文本任务的三个关键差异：
-   * 1. **不打错字**：错字会直接破坏数据（这里是"传输"而不是"演示打字"）
-   * 2. **逐帧落定**：一片（一行）下发完毕再发下一片，片间可选额外停顿，
-   *    这样接收端总能在完整的一行上做校验
-   * 3. **按帧选注入方式**：长帧走剪贴板粘贴、短帧走真实按键（沿用 `insertMode` 的自动策略）
+   * @description 文件传输任务：逐帧发送（每片一行）；不打错字（错字会直接破坏数据），
+   * 一片下发完毕再发下一片且片间可加停顿（让接收端总在完整的一行上做校验），
+   * 每帧按长度选择粘贴或真实按键（沿用 `insertMode` 的自动策略）
+   * @param task 文件传输任务
+   * @param settings 引擎设置子集
+   * @param seed 本次使用的随机种子
+   * @param rngFactory 随机源工厂
+   * @param guard 焦点守护
+   * @param expectedFocus 倒计时前记录的目标窗口
+   * @returns 本次运行的终态
    */
   private async runFrameJob(
     task: Extract<TypingRequest, { kind: 'frames' }>,
@@ -396,6 +431,10 @@ export class TypingEngine {
     const pasteThreshold = Math.max(1, settings.autoPasteThreshold)
     const pasteIncludesNewline = settings.pasteFrameIncludesNewline !== false
 
+    /**
+     * @description 按节奏下发一段文本（不带行尾换行）
+     * @param text 要输入的文本
+     */
     const sendText = async (text: string): Promise<void> => {
       const scheduled: ScheduledAction[] = []
       for (const action of iterateActions(text, { ...planBase, typo: null })) {
@@ -406,7 +445,10 @@ export class TypingEngine {
       this.emitProgress(false)
     }
 
-    /** 发送一整帧（含行尾换行）。 */
+    /**
+     * @description 发送一整帧，并按长度选择粘贴或逐字符输入
+     * @param text 帧内容（不含行尾换行）
+     */
     const sendFrame = async (text: string): Promise<void> => {
       const paste =
         pastePerFrame || (settings.insertMode === 'auto' && text.length >= pasteThreshold)
@@ -423,6 +465,10 @@ export class TypingEngine {
       this.emitProgress(false)
     }
 
+    /**
+     * @description 复核前台窗口；窗口变化时记录警告，strict 模式下中止
+     * @returns 是否继续发送
+     */
     const verifyFocus = async (): Promise<boolean> => {
       const verdict = await guard.verify(expectedFocus)
       if (!verdict.changed) return true
@@ -490,6 +536,10 @@ export class TypingEngine {
     }
   }
 
+  /**
+   * @description 记下一片发送成功并刷新进度
+   * @param index 片号
+   */
   private markFrameDone(index: number): void {
     if (!this.frames) return
     this.frames = {
@@ -501,6 +551,11 @@ export class TypingEngine {
     this.emitProgress(false)
   }
 
+  /**
+   * @description 记下一片发送失败、写日志并刷新进度
+   * @param index 片号
+   * @param message 失败原因
+   */
   private markFrameFailed(index: number, message: string): void {
     if (this.frames) {
       this.frames = { ...this.frames, lastIndex: index, failed: this.frames.failed + 1 }
@@ -509,6 +564,7 @@ export class TypingEngine {
     this.emitProgress(false)
   }
 
+  /** @description 完成后自检是否有按键粘住，仅记录警告 */
   private async probeStuckKeys(): Promise<void> {
     try {
       const probe = await this.driver.probe()
@@ -525,12 +581,14 @@ export class TypingEngine {
     }
   }
 
+  /** @description 请求暂停；仅在输入中生效 */
   pause(): void {
     if (this.stateValue !== 'running') return
     this.paused = true
     this.setState('paused')
   }
 
+  /** @description 继续输入并唤醒正在等待的批次 */
   resume(): void {
     if (!this.paused) return
     this.paused = false
@@ -539,7 +597,10 @@ export class TypingEngine {
     for (const waiter of waiters) waiter()
   }
 
-  /** 中止输入（倒计时、输入中、暂停中均可调用）。 */
+  /**
+   * @description 中止输入（倒计时、输入中、暂停中均可调用）
+   * @param reason 记录到状态快照里的中止原因
+   */
   abort(reason = '用户中止'): void {
     if (!isBusy(this.stateValue)) return
     this.aborted = true
@@ -548,28 +609,42 @@ export class TypingEngine {
     this.resume()
   }
 
+  /** @description 中止当前任务并释放驱动 */
   async dispose(): Promise<void> {
     this.abort('引擎释放')
     this.disposed = true
     await this.driver.dispose()
   }
 
-  /** 读取当前前台窗口（供 UI 显示"将输入到哪个窗口"）。 */
+  /**
+   * @description 读取当前前台窗口（供 UI 显示"将输入到哪个窗口"）
+   * @returns 前台窗口的 hwnd / pid / 标题
+   */
   async foreground(): Promise<HostForegroundData> {
     return this.driver.foreground()
   }
 
+  /** @description 挂起当前批次，直到 resume 被调用 */
   private waitWhilePaused(): Promise<void> {
     return new Promise<void>((resolve) => {
       this.resumeWaiters.push(resolve)
     })
   }
 
+  /**
+   * @description 更新状态并通知订阅者
+   * @param state 新状态
+   * @param message 附加说明（中止/失败原因）
+   */
   private setState(state: EngineState, message?: string): void {
     this.stateValue = state
     this.deps.onState?.(message ? { ...this.snapshot, message } : this.snapshot)
   }
 
+  /**
+   * @description 按节流间隔上报进度；终态或关键节点可强制上报
+   * @param force 是否忽略节流立即上报
+   */
   private emitProgress(force: boolean): void {
     if (!this.deps.onProgress) return
     const now = this.deps.now()

@@ -1,7 +1,5 @@
 /**
- * 版本号比较（不引入依赖）。
- *
- * 只处理 GitHub Release 标签里会出现的形态：`v1.2.3`、`1.2.3`、`1.2.3-beta.4`。
+ * 版本号比较（不引入依赖）：只处理 Release 标签里会出现的形态 `v1.2.3` / `1.2.3` / `1.2.3-beta.4`。
  * 构建元数据（`+build.5`）按 semver 规范忽略，因为它不参与优先级比较。
  */
 
@@ -15,6 +13,11 @@ export interface ParsedVersion {
 
 const VERSION_PATTERN = /^v?(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:-([0-9A-Za-z.-]+))?/
 
+/**
+ * @description 解析版本号字符串（忽略构建元数据，缺失的小版本号按 0 处理）
+ * @param input 版本号或标签
+ * @returns 解析结果；格式非法时返回 null
+ */
 export function parseVersion(input: string): ParsedVersion | null {
   const match = VERSION_PATTERN.exec(input.trim().replace(/\+.*$/, ''))
   if (!match) return null
@@ -28,9 +31,10 @@ export function parseVersion(input: string): ParsedVersion | null {
 }
 
 /**
- * 比较两个版本：a > b 返回正数，a < b 返回负数，相等返回 0。
- *
- * 无法解析的版本视为最小，避免把奇怪的标签当成新版本推给用户。
+ * @description 按 semver 比较两个版本；无法解析的一方视为最小，避免把奇怪的标签当成新版本推给用户
+ * @param a 左版本
+ * @param b 右版本
+ * @returns a > b 为正数，a < b 为负数，相等为 0
  */
 export function compareVersions(a: string, b: string): number {
   const left = parseVersion(a)
@@ -69,11 +73,21 @@ export function compareVersions(a: string, b: string): number {
   return 0
 }
 
+/**
+ * @description 判断候选版本是否比当前版本更新
+ * @param candidate 候选版本
+ * @param current 当前版本
+ * @returns 是否更新
+ */
 export function isNewerVersion(candidate: string, current: string): boolean {
   return compareVersions(candidate, current) > 0
 }
 
-/** 去掉标签里的 `v` 前缀，用于界面显示。 */
+/**
+ * @description 去掉标签里的 `v` 前缀，用于界面显示
+ * @param tag 原始标签
+ * @returns 归一化版本号（无法解析时原样返回）
+ */
 export function normalizeVersion(tag: string): string {
   const parsed = parseVersion(tag)
   if (!parsed) return tag

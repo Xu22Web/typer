@@ -17,12 +17,16 @@ import {
 interface HarnessOptions {
   requestTimeoutMs?: number
   restoreClipboard?: boolean
-  /** 覆盖某个指令的应答（例如让 type 报告注入不足 / 延迟响应） */
+  /** @description 覆盖某个指令的应答，例如让 type 报告注入不足或延迟响应 */
   override?: (request: Record<string, unknown>) => AutoRespondOutcome | undefined
   dryRun?: boolean
 }
 
-/** 标准宿主应答：ping / type / releaseAll / foreground / probe / shutdown。 */
+/**
+ * @description 标准宿主应答，覆盖 ping / type / releaseAll / foreground / probe / shutdown
+ * @param request 驱动发出的请求
+ * @returns 对应的应答内容，未知指令返回 E_UNKNOWN_CMD
+ */
 function standardResponder(request: Record<string, unknown>): AutoRespondOutcome | undefined {
   switch (request.cmd) {
     case 'ping':
@@ -49,6 +53,11 @@ function standardResponder(request: Record<string, unknown>): AutoRespondOutcome
   }
 }
 
+/**
+ * @description 组装驱动、假宿主、假剪贴板，并提供取最近子进程与全部请求的便捷方法
+ * @param options 超时、剪贴板恢复、应答覆盖与 dry-run 开关
+ * @returns 测试用的驱动夹具
+ */
 function createHarness(options: HarnessOptions = {}): {
   driver: WindowsSendInputDriver
   spawn: FakeSpawn

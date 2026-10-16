@@ -1,13 +1,7 @@
 // Typer 文件传输「线格式」v1 的唯一实现。
-//
-// 为什么单独放在 tools/lib 下、用纯 JS 写：
-//   - 主进程（TypeScript）与 tools/ 下的独立脚本都要用它。脚本必须能直接 `node xxx.mjs` 运行，
-//     不能依赖构建产物；主进程直接 import 本文件（rollup 会打包进 out/main）。
-//   - 双方共用同一份编码/校验/分片实现，从根上避免"发送端与接收端实现漂移"。
-//   - 只用 node: 内置模块（node:crypto），零第三方依赖，Node >= 18 可运行。
-//
-// 帧一定是**单行、纯 ASCII、无空白**：目标通常是终端或串口，回车即提交，
-// 任何控制字符都会把数据搅乱，所以二进制必须先编码。
+// 用纯 JS 写在 tools/lib 下：主进程直接 import（rollup 会打包进 out/main），tools/ 下的脚本也必须能直接 `node xxx.mjs` 运行，不能依赖构建产物。
+// 只用 node: 内置模块、零第三方依赖，Node >= 18 可运行；双方共用同一份编码 / 校验 / 分片实现，从根上避免收发两端实现漂移。
+// 帧一定是单行、纯 ASCII、无空白：目标是终端或串口，回车即提交，任何控制字符都会把数据搅乱，所以二进制必须先编码。
 //
 // @typedef {'hex' | 'b64' | 'txt'} FrameEncoding
 
@@ -35,9 +29,10 @@ export const MAX_FRAME_CHARS = 1024 * 1024
 /** 协议层错误：带稳定的 `code`，便于上层分类与给出可操作建议。 */
 export class FrameError extends Error {
   /**
-   * @param {string} code 机器可读错误码（marker / field / crc / len / enc / overlong / job / range / empty）
-   * @param {string} message 面向用户的中文说明
-   * @param {string} [detail] 附加细节（不包含数据原文，避免把内容写进日志）
+   * @description 构造协议层错误
+   * @param code 机器可读错误码（marker / field / crc / len / enc / overlong / job / range / empty）
+   * @param message 面向用户的中文说明
+   * @param detail 附加细节（不包含数据原文，避免把内容写进日志）
    */
   constructor(code, message, detail) {
     super(message)
@@ -60,7 +55,11 @@ export const ERROR_HINTS = {
   empty: '内容为空'
 }
 
-/** 把各种二进制输入统一成 Uint8Array。 */
+/**
+ * @description 把各种二进制输入统一成 Uint8Array
+ * @param input 字节序列
+ * @returns 等价的 Uint8Array
+ */
 export function toBytes(input) {
   if (input instanceof Uint8Array) return input
   if (typeof input === 'string') return new TextEncoder().encode(input)
@@ -77,6 +76,10 @@ export function toBytes(input) {
 
 let crcTable = null
 
+/**
+ * @description 惰性构建并缓存 CRC32 查表
+ * @returns 256 项查表
+ */
 function getCrcTable() {
   if (crcTable) return crcTable
   const table = new Uint32Array(256)
@@ -92,12 +95,10 @@ function getCrcTable() {
 }
 
 /**
- * 标准 CRC32（IEEE 802.3，与 `zlib.crc32` 同值）。
- *
- * 自带实现而不用 `zlib.crc32`：后者 Node 20.15+ 才有，而脚本要能在 Node 18 上跑。
- *
- * @param {Uint8Array | string | ArrayBuffer} input
- * @returns {number} 无符号 32 位整数
+ * @description 标准 CRC32（IEEE 802.3，与 `zlib.crc32` 同值）；自带实现是因为 `zlib.crc32` 需要
+ * Node 20.15+，而脚本要能在 Node 18 上跑
+ * @param input 字节序列
+ * @returns 无符号 32 位整数
  */
 export function crc32(input) {
   const bytes = toBytes(input)
@@ -109,22 +110,38 @@ export function crc32(input) {
   return (value ^ 0xffffffff) >>> 0
 }
 
-/** @param {Uint8Array | string | ArrayBuffer} input @returns {string} 8 位小写 hex */
+/**
+ * @description 计算字节序列的 CRC32 文本
+ * @param input 字节序列
+ * @returns 8 位小写 hex
+ */
 export function crc32Hex(input) {
   return crc32(input).toString(16).padStart(8, '0')
 }
 
-/** @param {Uint8Array | string | ArrayBuffer} input @returns {string} 64 位小写 hex */
+/**
+ * @description 计算字节序列的 SHA-256 文本
+ * @param input 字节序列
+ * @returns 64 位小写 hex
+ */
 export function sha256Hex(input) {
   return createHash('sha256').update(toBytes(input)).digest('hex')
 }
 
-/** 片级强校验：SHA-256 的前 8 字节（16 位 hex）。与 CRC32 组合，兼顾"查错"与"防碰巧"。 */
+/**
+ * @description 片级强校验值：SHA-256 的前 8 字节；与 CRC32 组合，兼顾"查错"与"防碰巧"
+ * @param input 字节序列
+ * @returns 16 位小写 hex
+ */
 export function sha16Hex(input) {
   return createHash('sha256').update(toBytes(input)).digest('hex').slice(0, 16)
 }
 
-/** 随机 job id：8 位小写 hex。可注入随机源以便测试得到确定值。 */
+/**
+ * @description 生成随机 job id（8 位小写 hex）
+ * @param random 随机源（可注入以便测试得到确定值）
+ * @returns 8 位小写 hex
+ */
 export function randomJobId(random = Math.random) {
   let out = ''
   for (let index = 0; index < 8; index++) out += Math.floor(random() * 16).toString(16)
@@ -135,12 +152,21 @@ export function randomJobId(random = Math.random) {
 // 载荷编码
 // ---------------------------------------------------------------------------
 
-/** @param {unknown} value @returns {value is FrameEncoding} */
+/**
+ * @description 判断取值是否为受支持的载荷编码
+ * @param value 待判断的值
+ * @returns 是否为 FrameEncoding
+ */
 export function isEncoding(value) {
   return typeof value === 'string' && ENCODINGS.includes(value)
 }
 
-/** 字节 → 可安全输入的载荷字符串（hex 大写；b64 标准 base64）。`txt` 请用 escapeText。 */
+/**
+ * @description 字节 → 可安全输入的单行载荷字符串（hex 大写；b64 标准 base64）
+ * @param bytes 原始字节
+ * @param enc 目标编码（txt 请改用 escapeText）
+ * @returns 编码后的载荷
+ */
 export function encodeBytes(bytes, enc) {
   const input = toBytes(bytes)
   if (enc === 'hex') {
@@ -155,7 +181,13 @@ export function encodeBytes(bytes, enc) {
   throw new FrameError('enc', `不支持的编码 ${String(enc)}`)
 }
 
-/** 载荷字符串 → 字节。做严格校验，避免把"看起来像但其实是噪声"的内容解出错误结果。 */
+/**
+ * @description 载荷字符串 → 字节，并做严格校验；必须严格是因为 `Buffer.from` 对非法输入是
+ * "尽力而为"，不校验会把"看起来像但其实是噪声"的内容解出错误结果
+ * @param payload 单行载荷
+ * @param enc 载荷编码
+ * @returns 解码后的字节
+ */
 export function decodeBytes(payload, enc) {
   if (enc === 'hex') {
     if (payload.length % 2 !== 0) {
@@ -190,13 +222,11 @@ export function decodeBytes(payload, enc) {
 const TEXT_ESCAPES = { '\\': '\\\\', '\r': '\\r', '\n': '\\n', '\t': '\\t' }
 
 /**
- * 文本 → 单行转义载荷（`txt` 编码）。
- *
- * 必须转义的字符：
- *   - 反斜杠与 CR / LF / TAB：会破坏"单行"约束
- *   - **空格**：帧是空格分隔的，载荷里出现空格会把字段切错
- *   - 其它空白字符（NBSP、全角空格、U+2028…）与控制字符：会被解析端的 `trim()` 吃掉
- * CJK / emoji 原样保留（它们由 Unicode 报文注入，不会干扰终端，见 README）。
+ * @description 文本 → 单行转义载荷（`txt` 编码），按字符边界切分，CJK / emoji 原样保留；
+ * 必须转义的是反斜杠与 CR / LF / TAB（会破坏"单行"约束）、空格（会把帧字段切错）
+ * 以及会被解析端 `trim()` 吃掉的其它空白字符
+ * @param text 原文
+ * @returns 单行转义载荷
  */
 export function escapeText(text) {
   let out = ''
@@ -221,7 +251,11 @@ export function escapeText(text) {
   return out
 }
 
-/** 反转义。未知转义序列原样保留（宽容处理），非法 `\xNN` 会报错。 */
+/**
+ * @description 转义载荷还原成原文；未知转义序列原样保留（宽容处理），非法 `\xNN` / `\uXXXX` 会报错
+ * @param payload 单行转义载荷
+ * @returns 还原后的文本
+ */
 export function unescapeText(payload) {
   let out = ''
   for (let index = 0; index < payload.length; index++) {
@@ -282,19 +316,33 @@ export function unescapeText(payload) {
 // 帧的构造与解析
 // ---------------------------------------------------------------------------
 
+/**
+ * @description 校验 job 标识是否为合法任务 id
+ * @param job 任务 id
+ */
 function assertJobPart(job) {
   if (typeof job !== 'string' || !/^[0-9a-f]{4,16}$/.test(job)) {
     throw new FrameError('job', `job 标识不合法：${String(job)}`)
   }
 }
 
+/**
+ * @description 校验取值为非负整数且不超过上限
+ * @param value 待校验的值
+ * @param name 字段名（用于报错）
+ * @param max 允许的最大值
+ */
 function assertUint(value, name, max) {
   if (!Number.isInteger(value) || value < 0 || value > max) {
     throw new FrameError('range', `${name} 不合法：${String(value)}`)
   }
 }
 
-/** 开始帧：接收端据此知道任务规模与期望哈希，从而能边收边判、并且能提前建工作目录。 */
+/**
+ * @description 构造开始帧：接收端据此知道任务规模与期望哈希，从而能边收边判并提前建工作目录
+ * @param meta 开始帧字段
+ * @returns 单行帧文本
+ */
 export function buildBeginFrame(meta) {
   assertJobPart(meta.job)
   assertUint(meta.total, 'total', 0xffffffff)
@@ -317,7 +365,11 @@ export function buildBeginFrame(meta) {
   ].join(' ')
 }
 
-/** 数据帧：`payload` 必须是已经编码好的单行字符串。 */
+/**
+ * @description 构造数据帧
+ * @param meta 数据帧字段（payload 必须是已经编码好的单行字符串）
+ * @returns 单行帧文本
+ */
 export function buildDataFrame(meta) {
   assertJobPart(meta.job)
   assertUint(meta.seq, 'seq', 0xffffffff)
@@ -340,7 +392,11 @@ export function buildDataFrame(meta) {
   ].join(' ')
 }
 
-/** 结束帧：携带整文件哈希与大小，接收端只有在全部片都通过后才会用它做最终校验。 */
+/**
+ * @description 构造结束帧：携带整文件哈希与大小，接收端只有在全部片都通过后才会用它做最终校验
+ * @param meta 结束帧字段
+ * @returns 单行帧文本
+ */
 export function buildEndFrame(meta) {
   assertJobPart(meta.job)
   assertUint(meta.total, 'total', 0xffffffff)
@@ -351,7 +407,11 @@ export function buildEndFrame(meta) {
   return [MARKERS.end, meta.job, String(meta.total), String(meta.size), meta.sha256].join(' ')
 }
 
-/** 续传令牌：由接收端打印，操作者回填给 Typer（或脚本 `--only`）。 */
+/**
+ * @description 构造续传令牌：由接收端打印，操作者回填给 Typer（或脚本 `--only`）
+ * @param meta 续传字段
+ * @returns 单行令牌文本
+ */
 export function buildResumeToken(meta) {
   assertJobPart(meta.job)
   assertUint(meta.total, 'total', 0xffffffff)
@@ -361,22 +421,21 @@ export function buildResumeToken(meta) {
   return [MARKERS.resume, meta.job, String(meta.total), missing || '-'].join(' ')
 }
 
-/** 该行看起来是不是 Typer 帧（用于文本页识别"粘贴进来的是帧文本"）。 */
+/**
+ * @description 判断该行看起来是不是 Typer 帧（文本页据此识别"粘贴进来的是帧文本"）
+ * @param line 待判断的行
+ * @returns 是否为帧行
+ */
 export function isFrameLine(line) {
   const text = typeof line === 'string' ? line.trim() : ''
   return Object.values(MARKERS).some((marker) => text.startsWith(`${marker} `))
 }
 
 /**
- * 解析一行帧。
- *
- * 严格校验字段数量与取值；任何不符都抛 `FrameError`，由调用方决定"重传该片"还是"当作噪声忽略"。
- *
- * @param {string} line
- * @returns {{ kind: 'begin', version: number, job: string, total: number, size: number, enc: FrameEncoding, chunk: number, name: string | null, sha256: string }
- *   | { kind: 'data', version: number, job: string, seq: number, total: number, bytes: number, crc32: string, sha16: string, enc: FrameEncoding, payload: string }
- *   | { kind: 'end', version: number, job: string, total: number, size: number, sha256: string }
- *   | { kind: 'resume', version: number, job: string, total: number, missing: number[] }}
+ * @description 解析一行帧，严格校验字段数量与取值；任何不符都抛 `FrameError`，
+ * 由调用方决定"重传该片"还是"当作噪声忽略"
+ * @param line 单行帧文本
+ * @returns 解析结果（begin / data / end / resume 四种之一）
  */
 export function parseFrame(line) {
   const text = typeof line === 'string' ? line.replace(/[\r\n]+$/, '').trim() : ''
@@ -474,6 +533,12 @@ export function parseFrame(line) {
   throw new FrameError('marker', '无法识别的帧标记', marker.slice(0, 16))
 }
 
+/**
+ * @description 把十进制字段解析为安全整数
+ * @param text 字段原文
+ * @param name 字段名（用于报错）
+ * @returns 解析出的整数
+ */
 function readUint(text, name) {
   if (!/^\d{1,16}$/.test(text)) throw new FrameError('field', `${name} 字段不是十进制整数`)
   const value = Number(text)
@@ -481,6 +546,11 @@ function readUint(text, name) {
   return value
 }
 
+/**
+ * @description 还原开始帧里 base64url 编码的文件名
+ * @param encoded 编码后的文件名
+ * @returns 还原后的文件名（无名字时为 null）
+ */
 function decodeName(encoded) {
   try {
     const name = Buffer.from(encoded, 'base64url').toString('utf8')
@@ -490,7 +560,12 @@ function decodeName(encoded) {
   }
 }
 
-/** 校验数据帧的载荷与其声明的长度/校验和是否一致。 */
+/**
+ * @description 校验数据帧的载荷与其声明的长度 / crc32 / sha16 是否一致
+ * @param frame 已解析的数据帧
+ * @param bytes 载荷解码后的字节
+ * @returns 通过校验的字节
+ */
 export function verifyDataFrame(frame, bytes) {
   const data = toBytes(bytes)
   if (data.length !== frame.bytes) {
@@ -507,7 +582,13 @@ export function verifyDataFrame(frame, bytes) {
   return data
 }
 
-/** 校验整文件（大小 + SHA-256）。 */
+/**
+ * @description 校验整文件（大小 + SHA-256）
+ * @param bytes 整文件字节
+ * @param expectedSha256 期望的 SHA-256
+ * @param expectedSize 期望的字节数（省略则不校验大小）
+ * @returns 通过校验的字节
+ */
 export function verifyIntegrity(bytes, expectedSha256, expectedSize) {
   const data = toBytes(bytes)
   if (expectedSize !== undefined && data.length !== expectedSize) {
@@ -524,7 +605,12 @@ export function verifyIntegrity(bytes, expectedSha256, expectedSize) {
 // 分片规划
 // ---------------------------------------------------------------------------
 
-/** 总片数（空文件算 0 片）。 */
+/**
+ * @description 计算总片数（空文件算 0 片）
+ * @param size 文件字节数
+ * @param chunkBytes 每片字节数
+ * @returns 总片数
+ */
 export function chunkCount(size, chunkBytes) {
   if (!Number.isInteger(size) || size < 0) throw new FrameError('range', '文件大小不合法')
   if (!Number.isInteger(chunkBytes) || chunkBytes < 1 || chunkBytes > MAX_CHUNK_BYTES) {
@@ -533,7 +619,13 @@ export function chunkCount(size, chunkBytes) {
   return size === 0 ? 0 : Math.ceil(size / chunkBytes)
 }
 
-/** 第 `seq` 片在文件中的偏移与长度（不读取数据，便于大文件惰性发送）。 */
+/**
+ * @description 计算第 seq 片在文件中的偏移与长度（不读取数据，便于大文件惰性发送）
+ * @param size 文件字节数
+ * @param chunkBytes 每片字节数
+ * @param seq 片号
+ * @returns 该片的偏移与字节数
+ */
 export function chunkSlice(size, chunkBytes, seq) {
   const total = chunkCount(size, chunkBytes)
   if (!Number.isInteger(seq) || seq < 0 || seq >= total) {
@@ -544,12 +636,11 @@ export function chunkSlice(size, chunkBytes, seq) {
 }
 
 /**
- * 文本按**字符边界**切分（`txt` 编码用，避免把一个多字节字符劈成两片）。
- *
- * @param {string} text
- * @param {number} maxBytes 每片允许的最大字节数
- * @param {(chunk: string) => number} byteLength 计算某段文本在目标编码下的字节数
- * @returns {Array<{ text: string, bytes: number, chars: number }>}
+ * @description 文本按字符边界切分（`txt` 编码用，避免把一个多字节字符劈成两片）
+ * @param text 原文
+ * @param maxBytes 每片允许的最大字节数
+ * @param byteLength 计算某段文本在目标编码下的字节数
+ * @returns 分片列表（含每片文本、字节数与字符数）
  */
 export function planTextChunks(
   text,
@@ -579,9 +670,9 @@ export function planTextChunks(
 }
 
 /**
- * 估算一帧的字符数（用于校验 `maxFrameChars`）。
- *
- * txt 编码转义后的长度无法只靠字节数推出，因此允许调用方直接给出实际载荷长度。
+ * @description 估算一帧的字符数（用于校验 `maxFrameChars`）
+ * @param meta 帧字段（可给出 payloadChars，因为 txt 编码转义后的长度无法只靠字节数推出）
+ * @returns 估算的字符数
  */
 export function estimateDataFrameChars(meta) {
   const header =
@@ -616,7 +707,12 @@ export function estimateDataFrameChars(meta) {
 // 片号集合：续传与重传都靠它
 // ---------------------------------------------------------------------------
 
-/** `3,5,12-20` → `[3,5,12,…,20]`（升序、去重、越界报错）。 */
+/**
+ * @description 把片号集合文本解析成升序去重的数组
+ * @param text 形如 `3,5,12-20` 的文本
+ * @param total 片总数（给出时校验越界）
+ * @returns 升序去重的片号数组
+ */
 export function parseIndexList(text, total) {
   const indexes = new Set()
   const parts = String(text)
@@ -639,7 +735,12 @@ export function parseIndexList(text, total) {
   return [...indexes].sort((a, b) => a - b)
 }
 
-/** 片号集合 → 紧凑区间文本（`[3,5,12,13]` → `3,5,12-13`）。 */
+/**
+ * @description 把片号数组压成紧凑区间文本
+ * @param indexes 片号数组
+ * @param total 片总数（给出时校验越界）
+ * @returns 形如 `3,5,12-13` 的紧凑文本
+ */
 export function formatIndexList(indexes, total) {
   const sorted = [...new Set(indexes)].sort((a, b) => a - b)
   const parts = []
@@ -668,7 +769,12 @@ export function formatIndexList(indexes, total) {
   return parts.join(',')
 }
 
-/** 总片数 - 已完成片 → 缺失片（升序）。 */
+/**
+ * @description 计算缺失片号
+ * @param total 片总数
+ * @param done 已完成的片号
+ * @returns 升序的缺失片号
+ */
 export function missingIndexes(total, done) {
   const finished = new Set(done)
   const missing = []
@@ -678,7 +784,12 @@ export function missingIndexes(total, done) {
   return missing
 }
 
-/** 把 `from` / `only` 归一化成实际要发送的片号列表。 */
+/**
+ * @description 把 `from` / `only` 归一化成实际要发送的片号列表
+ * @param total 片总数
+ * @param options 起始片号与"只发指定片"设置
+ * @returns 升序的片号数组
+ */
 export function resolveIndexes(total, options = {}) {
   if (!Number.isInteger(total) || total < 0) throw new FrameError('range', 'total 不合法')
   if (options.only !== undefined && options.only !== null && String(options.only).length > 0) {
@@ -701,10 +812,10 @@ export function resolveIndexes(total, options = {}) {
 export const MAX_LINE_CHARS = MAX_FRAME_CHARS + 4096
 
 /**
- * 清理一行：去掉 bracketed-paste 标记（`ESC[200~` / `ESC[201~`）与首尾空白。
- *
- * 为什么必须清理：如果操作者把帧粘到启用了 bracketed paste 的 shell 提示符下，
- * 行首会多出 `ESC[200~`，不清掉就永远解析失败。
+ * @description 清理一行：去掉 bracketed-paste 标记（`ESC[200~` / `ESC[201~`）与首尾空白；
+ * 必须清理是因为把帧粘到启用了 bracketed paste 的 shell 提示符下，行首会多出 `ESC[200~`
+ * @param line 原始行
+ * @returns 清理后的行
  */
 export function sanitizeLine(line) {
   return (
@@ -718,15 +829,19 @@ export function sanitizeLine(line) {
 }
 
 /**
- * 行切分器：`\n`、`\r\n`、裸 `\r` 都当行尾（raw 模式下回车只产生 `\r`）。
- *
- * @returns {{ push: (chunk: string | Uint8Array) => string[], flush: () => string[] }}
+ * @description 行切分器：`\n`、`\r\n`、裸 `\r` 都当行尾（raw 模式下回车只产生 `\r`）
+ * @returns 带 push / flush 的切分器
  */
 export function createLineSplitter() {
   let buffer = ''
   let overflow = false
   const decoder = new TextDecoder('utf-8')
 
+  /**
+   * @description 把一段文本按行尾切开，返回完整行与残留尾巴
+   * @param text 待切分的文本
+   * @returns 完整行与未闭合的尾巴
+   */
   const drain = (text) => {
     const lines = []
     let start = 0

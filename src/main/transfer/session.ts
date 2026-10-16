@@ -23,10 +23,8 @@ export interface StartFramesOptions {
   from?: number
   /**
    * 接收端还缺哪些片（来自续传状态）；`null` / 省略表示"全新传输"。
-   *
-   * 由它来决定是否携带开始帧与结束帧：
-   * - 全新传输：两者都带（接收端据此建立任务并知道何时可以合并）
-   * - 续传补发：只有在这批片能把接收端补齐时才带结束帧，否则接收端会立刻报 #MISS
+   * 由它决定是否携带开始帧与结束帧：全新传输两者都带（接收端据此建立任务并知道何时可以合并）；
+   * 续传补发只有在这批片能把接收端补齐时才带结束帧，否则接收端会立刻报 #MISS。
    */
   resumeMissing?: number[] | null
   /** 显式覆盖开始/结束帧的发送（测试与高级用法） */
@@ -52,17 +50,35 @@ export class TransferSession {
   private preparing = false
   private canceled = false
 
+  /**
+   * @description 建立传输会话（同一时刻只持有一个任务）
+   * @param deps 准备进度与日志回调
+   */
   constructor(private readonly deps: TransferSessionDeps = {}) {}
 
+  /**
+   * @description 当前任务摘要（尚未选择文件时为 null）
+   * @returns 摘要或 null
+   */
   get summary(): TransferJobSummary | null {
     return this.current?.summary ?? null
   }
 
+  /**
+   * @description 是否正在准备（读取 / 哈希中）
+   * @returns 是否正在准备
+   */
   get isPreparing(): boolean {
     return this.preparing
   }
 
-  /** 准备任务（会替换掉上一个任务：同时只保留一份，避免句柄泄漏）。 */
+  /**
+   * @description 准备任务并替换掉上一个任务（同时只保留一份，避免句柄泄漏）
+   * @param path 文件路径
+   * @param options 传输选项（编码、片大小、帧长上限）
+   * @param config reuse 为 true 且是同一文件时复用上次哈希，避免重复读取大文件
+   * @returns 新任务的摘要
+   */
   async prepare(
     path: string,
     options: TransferPrepareOptions,
@@ -99,17 +115,25 @@ export class TransferSession {
     }
   }
 
-  /** 中止正在进行的准备（读取/哈希阶段会尽快退出）。 */
+  /** @description 中止正在进行的准备（读取 / 哈希阶段会尽快退出） */
   cancelPrepare(): void {
     this.canceled = true
   }
 
-  /** 解析并比对操作者带回来的续传状态。 */
+  /**
+   * @description 解析并比对操作者带回来的续传状态
+   * @param text 续传文本
+   * @returns 匹配结果
+   */
   matchResume(text: string): ResumeMatch {
     return matchResume(parseResumeState(text), this.requireJob().summary)
   }
 
-  /** 本次要发送的片与是否携带开始/结束帧。 */
+  /**
+   * @description 计算本次要发送的片与是否携带开始 / 结束帧
+   * @param options 片选择与帧开关（可显式覆盖）
+   * @returns 发送计划
+   */
   plan(options: StartFramesOptions = {}): FramePlan {
     const job = this.requireJob()
     const total = job.summary.total
@@ -130,7 +154,12 @@ export class TransferSession {
     }
   }
 
-  /** 把计划变成引擎能直接执行的任务（帧按需渲染 + 发送前自检）。 */
+  /**
+   * @description 把计划变成引擎能直接执行的任务（帧按需渲染 + 发送前自检）
+   * @param options 片选择与帧开关
+   * @param hooks 逐片结果回调
+   * @returns 引擎任务与发送计划
+   */
   createRequest(
     options: StartFramesOptions = {},
     hooks: { onFrame?: (index: number, ok: boolean, error?: string) => void } = {}
@@ -154,12 +183,20 @@ export class TransferSession {
     }
   }
 
+  /**
+   * @description 释放当前任务持有的文件句柄与内存
+   * @returns 释放完成后 resolve
+   */
   async dispose(): Promise<void> {
     const job = this.current
     this.current = null
     if (job) await job.dispose()
   }
 
+  /**
+   * @description 取得当前任务；没有任务时抛出面向用户的错误
+   * @returns 当前任务
+   */
   private requireJob(): PreparedTransfer {
     if (!this.current) {
       throw new TransferError('no-job', '还没有选择文件：请先在「文件」模式里选择要输入的文件')
@@ -169,14 +206,19 @@ export class TransferSession {
 }
 
 /**
- * 把 `tools/`（接收脚本与线格式文档）复制到用户选择的目录。
- *
- * 目标机没有 Node 包管理器，用户需要的是"能直接拷过去跑的文件"，所以这里按文件复制而不是打包成 zip。
+ * @description 把 tools/ 里的接收脚本与线格式文档逐个复制到目标目录（目标机没有包管理器，需要的是能直接拷过去跑的文件，所以不打包成 zip）
+ * @param toolsDir 源目录
+ * @param destination 目标目录
+ * @returns 已复制的相对路径列表
  */
 export function copyToolsTo(toolsDir: string, destination: string): string[] {
   mkdirSync(destination, { recursive: true })
   const copied: string[] = []
 
+  /**
+   * @description 递归复制一个子目录（相对路径为空串表示源根目录）
+   * @param relative 相对源目录的路径
+   */
   const walk = (relative: string): void => {
     const source = relative.length > 0 ? join(toolsDir, relative) : toolsDir
     for (const entry of readdirSync(source)) {

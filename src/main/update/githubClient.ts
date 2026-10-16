@@ -1,8 +1,6 @@
 /**
- * GitHub Release 客户端。
- *
- * 只依赖注入进来的 `fetch`，不直接引用 Electron，因此可以在单元测试里完整覆盖
- * （限流、无发布、无安装包、网络错误等分支）。
+ * GitHub Release 客户端：只依赖注入进来的 fetch，不直接引用 Electron，
+ * 因此限流、无发布、无安装包、网络错误等分支都能在单元测试里覆盖。
  */
 import type { ReleaseAssetInfo, ReleaseInfo } from './types'
 import { normalizeVersion, parseVersion } from './semver'
@@ -23,7 +21,13 @@ export interface GithubClientOptions {
 const DEFAULT_API_BASE = 'https://api.github.com'
 const DEFAULT_TIMEOUT_MS = 15_000
 
-/** 发布产物里挑选安装包的顺序：精确匹配 → 任意 setup.exe → 任意 exe。 */
+/**
+ * @description 从发布产物里挑选安装包，顺序为：精确匹配文件名 → 任意 setup.exe → 任意 exe
+ * @param assets 发布产物列表
+ * @param repo 仓库名
+ * @param version 归一化版本号
+ * @returns 选中的产物；没有合适产物时返回 null
+ */
 function pickInstallerAsset(
   assets: ReleaseAssetInfo[],
   repo: string,
@@ -43,6 +47,11 @@ function pickInstallerAsset(
   return assets.find((asset) => /\.exe$/i.test(asset.name)) ?? null
 }
 
+/**
+ * @description 从发布产物里挑选校验和清单（优先字面名 sha256sums，其次含 sha256 的 txt/sums）
+ * @param assets 发布产物列表
+ * @returns 选中的产物；没有时返回 null
+ */
 function pickChecksumAsset(assets: ReleaseAssetInfo[]): ReleaseAssetInfo | null {
   return (
     assets.find((asset) => /^sha256sums(\.txt|\.sha256|\.sums)?$/i.test(asset.name)) ??
@@ -69,6 +78,11 @@ interface GithubReleasePayload {
   assets?: unknown
 }
 
+/**
+ * @description 把 GitHub 的产物 JSON 收窄成本地类型（缺名字或缺下载地址视为无效产物）
+ * @param raw 原始产物 JSON
+ * @returns 产物信息；无效时返回 null
+ */
 function toAssetInfo(raw: GithubAssetPayload): ReleaseAssetInfo | null {
   const name = typeof raw.name === 'string' ? raw.name : null
   const url = typeof raw.browser_download_url === 'string' ? raw.browser_download_url : null
@@ -82,10 +96,9 @@ function toAssetInfo(raw: GithubAssetPayload): ReleaseAssetInfo | null {
 }
 
 /**
- * 读取最新正式版发布。
- *
- * 用 `/releases/latest` 而不是 `/releases`：前者由 GitHub 保证是"最新非预发布版"，
- * 我们不需要在客户端再实现一遍预发布过滤。
+ * @description 读取最新正式版发布；用 /releases/latest 而不是 /releases，因为 GitHub 保证前者是"最新非预发布版"，不必在客户端重复实现过滤
+ * @param options owner/repo、fetch 实现、UA 与可选的 apiBase / 超时
+ * @returns 归一化后的发布信息
  */
 export async function fetchLatestRelease(options: GithubClientOptions): Promise<ReleaseInfo> {
   const base = (options.apiBase ?? DEFAULT_API_BASE).replace(/\/$/, '')
@@ -136,7 +149,11 @@ export async function fetchLatestRelease(options: GithubClientOptions): Promise<
   }
 }
 
-/** 把 HTTP 失败翻译成能直接展示给用户的中文原因。 */
+/**
+ * @description 把 HTTP 失败翻译成能直接展示给用户的中文原因
+ * @param response 失败的响应
+ * @returns 中文原因
+ */
 async function describeHttpFailure(response: Response): Promise<string> {
   const status = response.status
 
@@ -162,7 +179,12 @@ async function describeHttpFailure(response: Response): Promise<string> {
   return `检查更新失败（HTTP ${status}${detail}）`
 }
 
-/** 读取校验和清单（纯文本）。 */
+/**
+ * @description 读取校验和清单等纯文本资源
+ * @param url 资源地址
+ * @param options fetch 实现、UA 与可选超时
+ * @returns 响应正文
+ */
 export async function fetchText(
   url: string,
   options: { fetch: FetchLike; userAgent: string; timeoutMs?: number }

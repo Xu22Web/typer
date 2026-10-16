@@ -2,15 +2,14 @@
 import { STATE_LABELS } from '@main/typing/engine/states'
 
 /**
- * 运行状态面板。
- *
- * 只放"输入过程中会看的数据"：状态、整体进度、动作计数、速度与剩余时间。
- * 目标窗口、日志、设置都不在这里——它们要么属于别的卡片，要么属于别的页面。
+ * 运行状态面板：只放输入过程中会看的数据——状态、整体进度、动作计数、速度与剩余时间。
  */
 const typing = useTyping()
 
+/** 进度百分比（0–100） */
 const percent = computed(() => Math.round((typing.progress.value?.percent ?? 0) * 100))
 
+/** 状态标签色：进行中 success、暂停 warning、失败 danger、其余 info */
 const tone = computed(() => {
   switch (typing.state.value) {
     case 'running':
@@ -25,8 +24,10 @@ const tone = computed(() => {
   }
 })
 
+/** 平均速度（动作/秒），保留一位小数 */
 const speed = computed(() => (typing.progress.value?.aps ?? 0).toFixed(1))
 
+/** 预计剩余时间文案；没有进度时为破折号 */
 const eta = computed(() => {
   const remaining = typing.progress.value?.remainingMs ?? 0
   if (remaining <= 0) return '—'
@@ -35,15 +36,17 @@ const eta = computed(() => {
   return `${Math.floor(seconds / 60)} 分 ${String(seconds % 60).padStart(2, '0')} 秒`
 })
 
+/** 已用时间（秒） */
 const elapsed = computed(() => Math.round((typing.progress.value?.elapsedMs ?? 0) / 1000))
 
+/** 摘要网格：速度 / 预计剩余 / 已用时 */
 const stats = computed(() => [
   { label: '速度', value: `${speed.value}/秒` },
   { label: '预计剩余', value: eta.value },
   { label: '已用时', value: `${elapsed.value} 秒` }
 ])
 
-/** 文件传输任务的"片"进度（文本任务没有这个维度）。 */
+/** 文件传输任务的"片"进度；文本任务没有这个维度（为 null） */
 const frames = computed(() => typing.progress.value?.frames ?? null)
 </script>
 

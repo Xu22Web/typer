@@ -49,7 +49,11 @@ export const PUNCTUATION_CHARS = new Set([
 
 export const MIN_DELAY_MS = 1
 
-/** 把速度设置换算成"每个字符的基础间隔"。 */
+/**
+ * @description 把速度设置换算成"每个字符的基础间隔"
+ * @param settings 节奏设置
+ * @returns 基础间隔毫秒数
+ */
 export function baseIntervalMsFor(settings: TimingSettings): number {
   switch (settings.speedMode) {
     case 'cps':
@@ -63,7 +67,12 @@ export function baseIntervalMsFor(settings: TimingSettings): number {
   }
 }
 
-/** 按当前设置与字符总数估算总耗时（用于 UI 预估，实际以真实输入为准）。 */
+/**
+ * @description 按当前设置与字符总数估算总耗时（用于 UI 预估，实际以真实输入为准）
+ * @param charCount 动作总数
+ * @param settings 节奏设置
+ * @returns 预计总耗时毫秒数
+ */
 export function estimateTotalMs(charCount: number, settings: TimingSettings): number {
   const base = baseIntervalMsFor(settings)
   const extra =
@@ -76,28 +85,38 @@ export function estimateTotalMs(charCount: number, settings: TimingSettings): nu
 /**
  * 节奏调度器：为每个动作计算"执行前应等待的毫秒数"。
  *
- * 说明：显式停顿（`delay` 动作）直接返回其 ms；代理对的第二个 UTF-16 码元
- * （`continues === true`）不额外计时，避免 emoji 被拉长一倍。
+ * 显式停顿（`delay` 动作）直接返回其 ms；代理对的第二个 UTF-16 码元（`continues === true`）
+ * 不额外计时，避免 emoji 被拉长一倍。
  */
 export class TimingScheduler {
   private typed = 0
   private lastWasNewline = false
 
+  /**
+   * @description 用节奏设置与随机源创建调度器
+   * @param settings 节奏设置
+   * @param rng 抖动采样用的随机源
+   */
   constructor(
     private readonly settings: TimingSettings,
     private readonly rng: Rng
   ) {}
 
+  /** @description 清空计数，复用于下一次运行 */
   reset(): void {
     this.typed = 0
     this.lastWasNewline = false
   }
 
-  /** 已计时的动作数。 */
+  /** @description 已计时的动作数 */
   get typedCount(): number {
     return this.typed
   }
 
+  /**
+   * @description 采样一次抖动值
+   * @returns 抖动毫秒数，可为负
+   */
   private sampleJitter(): number {
     const { jitterMs, distribution } = this.settings
     if (jitterMs <= 0) return 0
@@ -108,6 +127,11 @@ export class TimingScheduler {
     return (this.rng.next() * 2 - 1) * jitterMs
   }
 
+  /**
+   * @description 计算某动作执行前应等待的毫秒数（含标点/换行/成组停顿与抖动）
+   * @param action 待执行的动作
+   * @returns 延迟毫秒数，不小于 MIN_DELAY_MS
+   */
   delayFor(action: KeystrokeAction): number {
     if (action.kind === 'delay') return Math.max(0, Math.round(action.ms))
 
@@ -139,7 +163,7 @@ export class TimingScheduler {
     return Math.max(MIN_DELAY_MS, Math.round(delay))
   }
 
-  /** 供 UI 展示：当前生效的基础间隔。 */
+  /** @description 供 UI 展示：当前生效的基础间隔（已夹取到合法范围） */
   get baseIntervalMs(): number {
     return clamp(baseIntervalMsFor(this.settings), MIN_DELAY_MS, 60000)
   }

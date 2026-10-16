@@ -1,16 +1,13 @@
 <script setup lang="ts" vapor>
 import { STATE_LABELS } from '@main/typing/engine/states'
 
-/**
- * 底部状态栏。
- *
- * 把"引擎在做什么"放在窗口最底部常驻：这样即使用户切到日志页、设置页，
- * 也不会失去对输入任务的感知（这比把状态塞进输入页更不容易漏看）。
- */
+/** 底部状态栏：常驻显示引擎状态与进度，切到任何页面都不会失去对任务的感知 */
 const typing = useTyping()
 
+/** 进度百分比（0–100） */
 const percent = computed(() => Math.round((typing.progress.value?.percent ?? 0) * 100))
 
+/** 状态色标：进行中 ok、暂停 warn、失败 bad、其余不着色 */
 const tone = computed(() => {
   switch (typing.state.value) {
     case 'running':
@@ -25,6 +22,7 @@ const tone = computed(() => {
   }
 })
 
+/** 是否处于进行中（倒计时/输入/暂停），决定要不要显示百分比与目标窗口 */
 const running = computed(() => typing.isRunning.value)
 </script>
 

@@ -1,9 +1,6 @@
 /**
- * 设置的纯类型定义。
- *
- * 单独成文件的原因：preload 的类型声明（`src/preload/index.d.ts`）需要引用 `Settings`，
- * 而渲染进程的 tsconfig 不应该去解析主进程的实现代码。这里只放类型，
- * 且所有依赖都是纯类型模块（不含 electron / node 运行时依赖）。
+ * 设置的纯类型定义：只放类型，且依赖均为纯类型模块（不含 electron / node 运行时依赖），
+ * 供 preload 的类型声明引用而不必解析主进程实现。
  */
 import type { InsertMode } from '../typing/engine/TypingEngine'
 import type { FocusGuardMode } from '../typing/focus/focusGuard'

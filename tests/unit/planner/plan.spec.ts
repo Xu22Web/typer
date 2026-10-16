@@ -11,13 +11,27 @@ import { createRng } from '@main/typing/scheduling/rng'
 import { BACKSPACE_ACTION } from '@main/typing/scheduling/typo'
 import type { KeystrokeAction, KeyAction, UnicodeAction } from '@main/typing/planner/types'
 
+/**
+ * @description 过滤出动作流中的真实按键动作
+ * @param actions 待过滤的动作流
+ * @returns 真实按键动作数组
+ */
 const keysOf = (actions: KeystrokeAction[]): KeyAction[] =>
   actions.filter((action): action is KeyAction => action.kind === 'key')
 
+/**
+ * @description 过滤出动作流中的 Unicode 报文动作
+ * @param actions 待过滤的动作流
+ * @returns Unicode 动作数组
+ */
 const unicodeOf = (actions: KeystrokeAction[]): UnicodeAction[] =>
   actions.filter((action): action is UnicodeAction => action.kind === 'unicode')
 
-/** 取出动作流对应的字符（跳过显式停顿）。 */
+/**
+ * @description 取出动作流对应的字符（跳过显式停顿）
+ * @param actions 动作流
+ * @returns 与动作一一对应的字符数组
+ */
 const charsOf = (actions: KeystrokeAction[]): string[] =>
   actions.map((action) => (action.kind === 'delay' ? '' : action.char))
 
@@ -107,7 +121,7 @@ describe('buildPlan', () => {
     expect(plan.stats.cjk).toBe(2)
     expect(plan.stats.chars).toBe(5)
     expect(plan.stats.skipped['\u0000']).toBe(1)
-    // 'a' 'b' 'c' 在法语布局里都有收录，should 全部是真实按键
+    // 'a' 'b' 'c' 在法语布局里都有收录，应全部是真实按键
     expect(plan.stats.layoutFallbacks).toBe(0)
     expect(plan.stats.typed).toBe(5)
   })
@@ -183,6 +197,10 @@ describe('错字模拟', () => {
   })
 
   it('计数遍历与产出遍历使用同种子时总数一致', () => {
+    /**
+     * @description 构造一份固定种子的错字选项
+     * @returns 错字模拟配置
+     */
     const options = (): PlanOptions => ({
       typo: {
         rate: 0.5,
@@ -197,7 +215,11 @@ describe('错字模拟', () => {
   })
 })
 
-/** 简单模拟"在目标窗口里按键 + 退格"的净效果，用于验证错字纠正后的内容。 */
+/**
+ * @description 简单模拟"在目标窗口里按键 + 退格"的净效果，用于验证错字纠正后的内容
+ * @param actions 待应用的动作流
+ * @returns 应用退格后的净文本
+ */
 function applyBackspaces(actions: KeystrokeAction[]): string {
   let output = ''
   for (const action of actions) {

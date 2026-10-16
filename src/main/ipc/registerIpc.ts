@@ -94,6 +94,11 @@ export interface UpdateControls {
   state: () => UpdateState
 }
 
+/**
+ * @description 取出面向用户的错误文本：校验错误直接透传，其它错误取 message
+ * @param error 任意抛出物
+ * @returns 错误文本
+ */
 function toMessage(error: unknown): string {
   if (error instanceof IpcValidationError) return error.message
   if (error instanceof Error) return error.message
@@ -101,10 +106,8 @@ function toMessage(error: unknown): string {
 }
 
 /**
- * 把"没能落盘"转成错误抛出。
- *
- * 默认不落盘（隐私设置）不算失败，只有真正写盘失败才需要让界面看到，
- * 否则会出现"界面提示已保存、磁盘其实没变"的假成功。
+ * @description 把"没能落盘"转成错误抛出；按隐私设置有意跳过不算失败，否则会出现"界面提示已保存、磁盘其实没变"的假成功
+ * @param result 持久化结果
  */
 function assertPersisted(result: PersistResult): void {
   if (result.ok) return
@@ -112,11 +115,9 @@ function assertPersisted(result: PersistResult): void {
 }
 
 /**
- * 注册所有 IPC 处理器。
- *
- * 约定：
- * - 与业务无关的胶水（谁持有窗口、怎么广播）通过参数注入，方便测试
- * - 所有异常都转成可读中文消息；校验失败与执行失败都不应让主进程崩溃
+ * @description 注册所有 IPC 处理器；与业务无关的胶水（谁持有窗口、怎么广播）由参数注入，所有异常都转成可读中文消息而不让主进程崩溃
+ * @param options 依赖注入集合：ipcMain、设置、引擎与各可选 IPC 面
+ * @returns 已注册的频道名列表
  */
 export function registerIpcHandlers(options: RegisterIpcOptions): string[] {
   const {
@@ -134,6 +135,11 @@ export function registerIpcHandlers(options: RegisterIpcOptions): string[] {
   } = options
   const registered: string[] = []
 
+  /**
+   * @description 注册单个频道，并把处理器抛出的异常统一转成可读消息后重新抛出
+   * @param channel 频道名
+   * @param handler 实际处理器
+   */
   const register = (
     channel: string,
     handler: (event: unknown, ...args: unknown[]) => unknown | Promise<unknown>
@@ -330,7 +336,11 @@ export function registerIpcHandlers(options: RegisterIpcOptions): string[] {
   return registered
 }
 
-/** 引擎事件 → 渲染进程事件桥。 */
+/**
+ * @description 引擎事件 → 渲染进程事件桥
+ * @param broadcast 主进程内的广播函数
+ * @returns 引擎需要的三个事件回调
+ */
 export function createEngineEventBridge(broadcast: (channel: string, payload: unknown) => void): {
   onState: (snapshot: EngineSnapshot) => void
   onProgress: (snapshot: ProgressSnapshot) => void
@@ -344,10 +354,9 @@ export function createEngineEventBridge(broadcast: (channel: string, payload: un
 }
 
 /**
- * 更新服务事件 → 渲染进程事件桥。
- *
- * 「下载进度」单独一个频道：它每秒可能触发多次，和状态快照混在一起会让状态更新
- * 变得难以推理（也更容易触发界面上的无谓重绘）。
+ * @description 更新服务事件 → 渲染进程事件桥；下载进度单独一个频道，避免高频进度事件与状态快照混在一起
+ * @param broadcast 主进程内的广播函数
+ * @returns 更新服务需要的两个事件回调
  */
 export function createUpdateEventBridge(broadcast: (channel: string, payload: unknown) => void): {
   onState: (state: UpdateState) => void

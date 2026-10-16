@@ -37,7 +37,11 @@ export interface ProgressSnapshot {
   frames?: ProgressFrames
 }
 
-/** 进度与 ETA 计算：把手上的计数变成 UI 需要的指标。 */
+/**
+ * @description 进度与 ETA 计算：把手上的计数变成 UI 需要的指标
+ * @param input 已完成的动作数、总数、已用时间与阶段
+ * @returns 供界面直接渲染的进度快照
+ */
 export function computeProgress(input: ProgressInput): ProgressSnapshot {
   const { typed, total, elapsedMs, baseIntervalMs, stage } = input
   const safeTotal = Math.max(0, total)

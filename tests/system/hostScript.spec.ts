@@ -4,20 +4,26 @@ import { HostSession } from './helpers/hostSession'
 import { HOST_SCRIPT, runPowershell, TARGET_SCRIPT } from './helpers/system'
 
 /**
- * 系统测试（无副作用）：不产生任何真实按键。
- *
- * 覆盖：
- *  1. PowerShell 脚本语法（Windows PowerShell 5.1 的解析器）
- *  2. UTF-8 BOM（5.1 读取含中文的脚本必须靠 BOM 判定编码，否则会乱码报错）
- *  3. 关键实现细节的静态断言（SendInput / KEYEVENTF_UNICODE / 结构体尺寸）
- *  4. 真实启动宿主（会真的用 Add-Type 编译 C#）+ dry-run 协议往返
+ * 系统测试（无副作用，不产生任何真实按键）：覆盖脚本语法、UTF-8 BOM（Windows PowerShell
+ * 5.1 靠 BOM 判定编码，否则中文乱码）、关键实现细节的静态断言，以及真实启动宿主
+ * （会真的用 Add-Type 编译 C#）+ dry-run 协议往返。
  */
 const PS_SCRIPTS = [HOST_SCRIPT, TARGET_SCRIPT]
 
+/**
+ * @description 以 UTF-8 读入脚本源码
+ * @param path 脚本路径
+ * @returns 源码文本
+ */
 function readSource(path: string): string {
   return readFileSync(path, 'utf8')
 }
 
+/**
+ * @description 判断文件是否以 UTF-8 BOM 开头
+ * @param path 文件路径
+ * @returns 是否含 BOM
+ */
 function hasUtf8Bom(path: string): boolean {
   const bytes = readFileSync(path)
   return bytes.length >= 3 && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf

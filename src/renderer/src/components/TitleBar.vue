@@ -1,16 +1,13 @@
 <script setup lang="ts" vapor>
 /**
- * 自绘标题栏。
- *
- * 窗口是 `frame: false`，系统按钮不存在，因此这里承担三件事：
- * 1. 提供拖拽区域（`-webkit-app-region: drag`；空白处双击由系统接管为最大化）
- * 2. 承载品牌标识与当前页面标题，让"我在哪"始终可见
- * 3. 用自定义按钮替代最小化/最大化/关闭，视觉上与界面完全一致
+ * 自绘标题栏：窗口是 `frame: false`，这里提供拖拽区域（空白处双击由系统接管为最大化），
+ * 并承载品牌、当前页面标题与最小化/最大化/关闭按钮。
  */
 const { maximized, maximizedLabel, minimize, toggleMaximize, close } = useWindowState()
 
 const route = useRoute()
 
+/** 当前页面标题：取路由 meta.title，取不到时回落到品牌名 */
 const pageTitle = computed(() => {
   const matched = route.matched.at(-1)
   return (matched?.meta?.title as string | undefined) ?? 'Typer'

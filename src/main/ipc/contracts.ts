@@ -3,6 +3,10 @@ import type { TransferPrepareOptions } from '@shared/transfer/transfer'
 
 /** IPC 入参校验失败。消息会直接展示给用户，所以用中文写清楚。 */
 export class IpcValidationError extends Error {
+  /**
+   * @description 建立校验错误（消息会原样展示给用户，因此用中文书写）
+   * @param message 面向用户的错误说明
+   */
   constructor(message: string) {
     super(message)
     this.name = 'IpcValidationError'
@@ -16,6 +20,11 @@ export interface StartRequest {
   text: string
 }
 
+/**
+ * @description 校验"开始输入"的请求：文本必须是字符串且不超过长度上限
+ * @param payload 渲染进程传来的原始载荷
+ * @returns 归一化后的开始请求
+ */
 export function parseStartRequest(payload: unknown): StartRequest {
   if (typeof payload !== 'object' || payload === null) {
     throw new IpcValidationError('开始输入失败：请求参数格式错误')
@@ -32,6 +41,11 @@ export function parseStartRequest(payload: unknown): StartRequest {
   return { text }
 }
 
+/**
+ * @description 校验设置补丁：必须是非数组的普通对象
+ * @param payload 渲染进程传来的原始载荷
+ * @returns 原样返回的对象（字段合法性由设置 schema 负责）
+ */
 export function parseSettingsPayload(payload: unknown): Record<string, unknown> {
   if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) {
     throw new IpcValidationError('设置格式错误：应为对象')
@@ -44,6 +58,11 @@ export interface ImportRequest {
   charset?: ImportCharset
 }
 
+/**
+ * @description 校验"导入文本文件"的请求：路径非空、编码在白名单内
+ * @param payload 渲染进程传来的原始载荷
+ * @returns 归一化后的导入请求
+ */
 export function parseImportRequest(payload: unknown): ImportRequest {
   if (typeof payload !== 'object' || payload === null) {
     throw new IpcValidationError('导入失败：请求参数格式错误')
@@ -77,10 +96,9 @@ export interface TransferPrepareRequest {
 const TRANSFER_ENCODINGS: readonly string[] = ['hex', 'b64', 'txt']
 
 /**
- * 校验"准备文件传输"的请求。
- *
- * 片大小与帧长上限由主进程按 `TRANSFER_LIMITS` 夹取，这里只挡住明显非法的输入
- * （类型不对、编码不认识、路径为空），避免把脏数据带进准备阶段。
+ * @description 校验"准备文件传输"的请求；片大小与帧长上限由主进程按 `TRANSFER_LIMITS` 夹取，这里只挡住明显非法的输入
+ * @param payload 渲染进程传来的原始载荷
+ * @returns 归一化后的准备请求
  */
 export function parseTransferPrepareRequest(payload: unknown): TransferPrepareRequest {
   if (typeof payload !== 'object' || payload === null) {
@@ -116,6 +134,11 @@ export interface TransferFramesRequest {
   resumeMissing: number[] | null
 }
 
+/**
+ * @description 校验"某次发送哪些片"的请求，并校验续传缺失片号
+ * @param payload 渲染进程传来的原始载荷
+ * @returns 片选择条件（only / from / resumeMissing）
+ */
 export function parseTransferFramesRequest(payload: unknown): TransferFramesRequest {
   const raw = (typeof payload === 'object' && payload !== null ? payload : {}) as Record<
     string,
@@ -141,6 +164,11 @@ export function parseTransferFramesRequest(payload: unknown): TransferFramesRequ
   return { only, from, resumeMissing }
 }
 
+/**
+ * @description 校验续传输入：非空且体积受限（应是一行令牌或一份小报告）
+ * @param payload 候选续传内容
+ * @returns 去除首尾空白后的续传文本
+ */
 export function parseTransferResumeRequest(payload: unknown): string {
   const text = (payload as { text?: unknown } | undefined)?.text
   if (typeof text !== 'string' || text.trim().length === 0) {
@@ -152,6 +180,12 @@ export function parseTransferResumeRequest(payload: unknown): string {
   return text
 }
 
+/**
+ * @description 读取一个必须为正数的字段（非数或非正数一律当作非法输入）
+ * @param value 候选值
+ * @param name 字段的中文名，用于拼错误消息
+ * @returns 向下取整后的正整数
+ */
 function readPositive(value: unknown, name: string): number {
   if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
     throw new IpcValidationError(`${name}不合法：${String(value)}`)
@@ -165,10 +199,9 @@ export interface WindowStatePayload {
 }
 
 /**
- * 用默认浏览器打开链接。
- *
- * 只放行 http/https：渲染进程的任何输入都不应该能触发 `file:`、`ms-settings:` 之类
- * 协议处理器，否则一个被注入的链接就能变成"本地程序启动器"。
+ * @description 校验交给系统默认浏览器打开的外链；只放行 http/https，否则被注入的链接会变成"本地程序启动器"
+ * @param payload 候选地址
+ * @returns 规范化后的地址
  */
 export function parseExternalUrl(payload: unknown): string {
   if (typeof payload !== 'string' || payload.trim().length === 0) {

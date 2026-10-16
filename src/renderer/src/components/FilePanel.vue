@@ -11,28 +11,29 @@ import { estimateTransferMs } from '@shared/transfer/estimate'
 import { baseIntervalMsFor, estimateTotalMs } from '@main/typing/scheduling/timing'
 
 /**
- * 文件输入面板。
- *
- * 主任务只有一个：把选中的文件切成"每片一行"的帧，按需要补发/续传。
- * 因此这里只保留三块内容——文件与摘要（要发多少、要多久）、十六进制预览（确认选对文件了）、
- * 续传与重传（出错之后怎么办）；节奏与其它参数都在「设置」页。
+ * 文件输入面板：把选中的文件切成"每片一行"的帧并按需补发/续传。
+ * 面板只负责文件摘要、十六进制预览与续传重传，节奏与其它参数都在「设置」页。
  */
 const transfer = useTransfer()
 const typing = useTyping()
 const settingsStore = useSettings()
 
+/** 当前生效的设置（编码、片大小、帧长上限都从这里读） */
 const settings = settingsStore.settings
 
+/** 传给主进程的准备参数；设置尚未加载时用与 schema 一致的默认值 */
 const options = computed(() => ({
   encoding: (settings.value?.transfer.encoding ?? 'hex') as TransferEncoding,
   chunkBytes: settings.value?.transfer.chunkBytes ?? 1024,
   maxFrameChars: settings.value?.transfer.maxFrameChars ?? 4096
 }))
 
+/** 已准备的文件摘要 */
 const summary = transfer.summary
+/** 是否正在准备（哈希/分片） */
 const preparing = transfer.preparing
 
-/** 预计耗时：按实际注入方式估算（长帧会走粘贴，和逐字符按键完全不是一个量级）。 */
+/** 预计耗时：按实际注入方式估算（长帧走粘贴，和逐字符按键完全不是一个量级） */
 const estimate = computed(() => {
   const job = summary.value
   const current = settings.value
@@ -46,9 +47,10 @@ const estimate = computed(() => {
   })
 })
 
+/** 预计耗时（毫秒） */
 const estimatedMs = computed(() => estimate.value?.ms ?? 0)
 
-/** 纯按键模式下的耗时（用于"改用剪贴板"的建议文案，让对比有数字）。 */
+/** 纯按键模式下的耗时，用于"改用剪贴板"建议里做数字对比 */
 const keystrokeMs = computed(() => {
   const job = summary.value
   const timing = settings.value?.timing
@@ -56,28 +58,41 @@ const keystrokeMs = computed(() => {
   return estimateTotalMs(job.typedActions, timing)
 })
 
+/** 耗时长短对应的提示色 */
 const tone = computed(() => durationTone(estimatedMs.value))
 
+/** 当前编码的完整选项（用于标签与提示文案） */
 const encodingOption = computed(() =>
   TRANSFER_ENCODING_OPTIONS.find((option) => option.value === options.value.encoding)!
 )
 
+/** 当前片大小对应的预设 id */
 const chunkPreset = computed(() => transfer.presetIdFor(options.value.chunkBytes))
 
-/** 十六进制预览默认展开，信息密度低但"确认选对文件"很依赖它。 */
+/** 是否展开十六进制预览（默认折叠） */
 const showPreview = ref(false)
+/** 是否展开续传/重传区（默认折叠） */
 const showResume = ref(false)
 
+/** @description 打开文件选择框并准备分片 */
 async function pick(): Promise<void> {
   await transfer.pickAndPrepare(options.value)
 }
 
+/**
+ * @description 切换编码并立即按新编码重新准备（沿用同一文件）
+ * @param encoding 目标编码
+ */
 async function changeEncoding(encoding: TransferEncoding): Promise<void> {
   await settingsStore.update({ transfer: { encoding } })
   if (summary.value)
     await transfer.prepare(summary.value.path, { ...options.value, encoding }, true)
 }
 
+/**
+ * @description 切换片大小预设（片大小与帧长上限必须配套修改），并重新准备
+ * @param id 预设 id
+ */
 async function changePreset(id: string): Promise<void> {
   const preset = CHUNK_PRESETS.find((item) => item.id === id)
   if (!preset) return
@@ -86,13 +101,16 @@ async function changePreset(id: string): Promise<void> {
   if (summary.value) await transfer.prepare(summary.value.path, { ...options.value, ...next }, true)
 }
 
+/** 用户粘贴进来的续传状态文本 */
 const resumeInput = ref('')
 
+/** @description 用输入框里的续传文本载入接收端状态 */
 async function loadResume(): Promise<void> {
   if (resumeInput.value.trim().length === 0) return
   await transfer.applyResume(resumeInput.value)
 }
 
+/** @description 从文件导入续传状态（接收端写出的 resume.json） */
 async function pickResumeFile(): Promise<void> {
   const path = await window.api.files.pick()
   if (!path) return
@@ -105,7 +123,7 @@ async function pickResumeFile(): Promise<void> {
   }
 }
 
-/** 只发当前缺失片（续传最常见的一步）。 */
+/** @description 只发当前缺失的片（续传最常见的一步） */
 async function sendMissingOnly(): Promise<void> {
   const missing = transfer.resumeMissing.value
   if (!missing || missing.length === 0) return
@@ -113,6 +131,7 @@ async function sendMissingOnly(): Promise<void> {
   await transfer.refreshPlan()
 }
 
+/** 十六进制预览行（由主进程截取） */
 const previewRows = computed(() => summary.value?.preview ?? [])
 </script>
 

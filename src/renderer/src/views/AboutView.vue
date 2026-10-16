@@ -1,14 +1,14 @@
 <script setup lang="ts" vapor>
 /**
- * 关于页：应用身份 + 更新中心 + 外部链接 + 说明。
- *
- * "说明"部分（实现要点 / 已知限制 / 免责声明）默认折叠：
- * 它们是查阅型内容，不该和"检查更新"这种要动手的事争抢注意力。
+ * 关于页：应用身份 + 更新中心 + 外部链接 + 说明；
+ * 说明部分默认折叠，避免和"检查更新"这类要动手的事争抢注意力。
  */
+/** 应用身份（名称/版本/平台与是否受支持）；读取失败时为 null */
 const info = ref<{ name: string; version: string; platform: string; supported: boolean } | null>(
   null
 )
 
+/** 对外链接入口 */
 const links = [
   { icon: 'i-mdi-github', label: 'GitHub 仓库', url: 'https://github.com/Xu22Web/typer' },
   {
@@ -28,6 +28,7 @@ const links = [
   }
 ]
 
+/** 实现要点：让用户知道按键是怎么真的发出去的 */
 const highlights = [
   {
     icon: 'i-mdi-keyboard-settings-outline',
@@ -51,6 +52,7 @@ const highlights = [
   }
 ]
 
+/** 已知限制：说明注入不生效的典型场景，避免用户把环境限制当成程序缺陷 */
 const limitations = [
   '无法向"以管理员身份运行"的窗口注入按键（Windows UIPI 限制）——目标程序需与本体权限一致',
   '锁定屏幕、UAC 弹窗、安全桌面（Ctrl+Alt+Del 界面）无法注入',
@@ -60,6 +62,7 @@ const limitations = [
   '中文等字符使用 Unicode 注入，不经过输入法；但真实按键输入字母时，目标窗口若开着中文输入法可能被其截获'
 ]
 
+/** @description 读取应用身份信息（失败时页面上显示占位符） */
 onMounted(async () => {
   try {
     info.value = await window.api.getAppInfo()
@@ -68,6 +71,10 @@ onMounted(async () => {
   }
 })
 
+/**
+ * @description 用系统浏览器打开外部链接
+ * @param url 目标地址
+ */
 async function open(url: string): Promise<void> {
   try {
     await window.api.openExternal(url)
@@ -302,9 +309,7 @@ async function open(url: string): Promise<void> {
   }
 }
 
-/* 折叠面板的外观（卡片化、间距）在 main.css 里统一处理：
-   Element Plus 的折叠面板是"连体"结构，各 item 之间没有间距，逐个组件去 deep 覆盖容易漏。
-   这里只补充本页特有的一点：标题里的图标与文本间距。 */
+/* 折叠面板的"连体"外观（卡片化、间距）统一在 main.css 处理，这里只补本页的标题字重与箭头配色 */
 .more :deep(.el-collapse-item__header) {
   font-weight: 600;
 }

@@ -1,12 +1,7 @@
 /**
  * 更新服务：检查 → 下载 → 完整性校验 → 交给安装程序。
- *
- * 设计取舍：
- *  - **不做"静默自动安装"**。安装包是 NSIS 交互式安装向导，静默安装会在应用仍在运行时
- *    替换自身文件，风险大于收益；这里只负责把安装包准备到"可安装"状态，由用户确认后启动。
- *  - **校验失败就当失败**。发布缺少校验和时不自动安装（状态 `unverified`），
- *    界面改为提供浏览器下载入口，避免把"来源不明的可执行文件"直接推给用户。
- *  - 所有外部依赖（fetch、spawn、路径、时钟）都从参数注入，方便测试与替换。
+ * 不做静默自动安装（NSIS 向导需要用户确认，且静默替换自身文件风险太大）；校验失败或缺校验和时也一律不自动安装。
+ * 所有外部依赖（fetch、spawn、路径、时钟）都从参数注入，方便测试与替换。
  */
 import { existsSync } from 'node:fs'
 import { mkdir, rm, stat } from 'node:fs/promises'
@@ -71,6 +66,11 @@ const IDLE_STATE: UpdateState = {
 /** 主动检查的最小间隔：避免用户连点按钮时打满 GitHub 匿名接口的额度。 */
 const CHECK_THROTTLE_MS = 30_000
 
+/**
+ * @description 建立更新服务（状态保存在闭包里，通过回调推给界面）
+ * @param options 版本、仓库、fetch 实现、下载目录与各类回调
+ * @returns 更新服务
+ */
 export function createUpdateService(options: UpdateServiceOptions): UpdateService {
   const userAgent = options.userAgent ?? `Typer-updater/${options.currentVersion}`
   const timeoutMs = options.timeoutMs ?? 15_000
@@ -79,17 +79,30 @@ export function createUpdateService(options: UpdateServiceOptions): UpdateServic
   let lastCheck: UpdateCheckResult | null = null
   let controller: AbortController | null = null
 
+  /**
+   * @description 合并状态补丁并推给订阅者
+   * @param patch 状态补丁
+   */
   const publish = (patch: Partial<UpdateState>): void => {
     state = { ...state, ...patch }
     options.onState?.(state)
   }
 
+  /**
+   * @description 判断当前运行形态能否自更新
+   * @returns 不能更新时的原因；可以更新时返回 null
+   */
   const isUnsupported = (): string | null => {
     if (!options.isPackaged) return '开发模式下不支持自动更新（仅在安装版中可用）'
     if (!options.owner || !options.repo) return '未配置更新仓库地址'
     return null
   }
 
+  /**
+   * @description 检查是否有新版本；非强制调用会走 30 秒节流，任何失败都变成 status 而非抛错
+   * @param checkOptions force 为 true 时绕过节流
+   * @returns 检查结果
+   */
   async function check(checkOptions: { force?: boolean } = {}): Promise<UpdateCheckResult> {
     const unsupported = isUnsupported()
     if (unsupported) {
@@ -138,7 +151,10 @@ export function createUpdateService(options: UpdateServiceOptions): UpdateServic
     }
   }
 
-  /** 下载 + 校验，返回最终状态（不抛错，把失败原因写进 state）。 */
+  /**
+   * @description 下载 + 校验，返回最终状态（不抛错，把失败原因写进 state）
+   * @returns 最终状态
+   */
   async function download(): Promise<UpdateState> {
     if (state.status === 'downloading' || state.status === 'verifying') return state
     if (state.status === 'ready' && state.filePath && existsSync(state.filePath)) return state
@@ -253,7 +269,10 @@ export function createUpdateService(options: UpdateServiceOptions): UpdateServic
     }
   }
 
-  /** 启动安装程序并退出，让向导接管后续步骤。 */
+  /**
+   * @description 启动安装程序并退出，让向导接管后续步骤
+   * @returns 最终状态
+   */
   function install(): UpdateState {
     if (state.status !== 'ready' || !state.filePath) {
       publish({ status: 'failed', error: '没有通过校验的安装包，无法安装' })
@@ -278,10 +297,11 @@ export function createUpdateService(options: UpdateServiceOptions): UpdateServic
   }
 
   /**
-   * 确定用于校验的摘要。
-   *
-   * 优先级：发布附带的 SHA256SUMS.txt > GitHub 接口给出的 asset.digest。
-   * 清单优先是因为它由我们的发布流程生成，且能覆盖"GitHub 未计算摘要"的仓库。
+   * @description 确定用于校验的摘要：发布附带的 SHA256SUMS.txt 优先，其次才是 GitHub 接口给出的 asset.digest；清单拿不到时不因此判定失败
+   * @param latest 最新发布信息
+   * @param fileName 安装包文件名
+   * @param apiDigest GitHub 接口给出的摘要
+   * @returns 摘要与其来源；两者都没有时返回 null
    */
   async function resolveExpectedDigest(
     latest: ReleaseInfo,

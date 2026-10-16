@@ -56,11 +56,19 @@ interface ExposedApi {
   openExternal: (url: string) => Promise<unknown>
 }
 
+/**
+ * @description 取 preload 暴露到 window 上的 api 对象
+ * @returns 暴露给渲染进程的 api
+ */
 function getApi(): ExposedApi {
   return exposed.api as ExposedApi
 }
 
-/** 取第 index 次 invoke 调用的频道与载荷。 */
+/**
+ * @description 取第 index 次 invoke 调用的频道与载荷
+ * @param index invoke 调用的下标
+ * @returns 该次调用的频道与载荷
+ */
 function callAt(index = 0): { channel: string; payload: unknown } {
   const [channel, payload] = invoke.mock.calls[index] as [string, unknown]
   return { channel, payload }

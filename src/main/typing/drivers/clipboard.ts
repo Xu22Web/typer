@@ -20,10 +20,10 @@ export interface PasteResult {
 }
 
 /**
- * 剪贴板回退：长文本或目标程序不认 Unicode 报文时，用"写入剪贴板 + Ctrl+V"代替逐字输入。
- *
- * 关键约束：**无论成功还是失败都要恢复用户剪贴板**（`restoreClipboard=true` 时），
- * 否则会静默破坏用户正在使用的内容。
+ * @description 剪贴板回退：长文本或目标程序不认 Unicode 报文时，用"写入剪贴板 + Ctrl+V"代替逐字输入；
+ * 无论成功还是失败都要恢复用户剪贴板，否则会静默破坏用户正在使用的内容
+ * @param options 剪贴板读写、粘贴动作与恢复开关
+ * @returns 是否执行了剪贴板恢复
  */
 export async function pasteWithClipboard(options: PasteOptions): Promise<PasteResult> {
   const { clipboard, sendPaste, text, restoreClipboard } = options

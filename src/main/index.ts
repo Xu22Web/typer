@@ -50,12 +50,18 @@ let mainWindow: BrowserWindow | null = null
 let updates: UpdateService | null = null
 let transfer: TransferSession | null = null
 
+/**
+ * @description 把一条消息广播给所有未销毁的窗口
+ * @param channel 频道名
+ * @param payload 载荷
+ */
 function broadcast(channel: string, payload: unknown): void {
   for (const window of BrowserWindow.getAllWindows()) {
     if (!window.isDestroyed()) window.webContents.send(channel, payload)
   }
 }
 
+/** @description 创建主窗口：无边框自绘标题栏，并把最大化状态变化推给渲染进程 */
 function createWindow(): void {
   const window = new BrowserWindow({
     width: 1120,
@@ -87,7 +93,7 @@ function createWindow(): void {
     window.show()
   })
 
-  // 最大化状态变化时推给渲染进程，让标题栏按钮切换"最大化/还原"图标
+  /** @description 把窗口最大化状态推给渲染进程，让标题栏按钮切换"最大化/还原"图标 */
   const pushWindowState = (): void => {
     broadcast(IPC.eventWindowState, { maximized: window.isMaximized() })
   }
@@ -111,10 +117,15 @@ function createWindow(): void {
 }
 
 /**
- * 宿主不可用时的占位驱动：让界面能正常加载，并在用户点击"开始"时
- * 给出明确原因（而不是白屏或静默失败）。
+ * @description 宿主不可用时的占位驱动：让界面能正常加载，并在用户点击"开始"时给出明确原因（而不是白屏或静默失败）
+ * @param message 失败原因（会原样抛给界面）
+ * @returns 只会抛错的驱动
  */
 function createUnavailableDriver(message: string): KeyboardDriver {
+  /**
+   * @description 统一的失败实现：抛出宿主不可用的原因
+   * @returns 永不返回（总是抛出）
+   */
   const fail = async (): Promise<never> => {
     throw new Error(message)
   }
@@ -131,7 +142,10 @@ function createUnavailableDriver(message: string): KeyboardDriver {
   }
 }
 
-/** 选择要传输的文件：不做扩展名过滤（任意文件都要能传）。 */
+/**
+ * @description 选择要传输的文件：不做扩展名过滤（任意文件都要能传）
+ * @returns 文件路径；用户取消时返回 null
+ */
 async function pickTransferFile(): Promise<string | null> {
   const focused = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
   const options = {
@@ -146,7 +160,10 @@ async function pickTransferFile(): Promise<string | null> {
   return result.filePaths[0] ?? null
 }
 
-/** tools/ 在开发模式下位于仓库根目录，打包后位于 resources/ 下。 */
+/**
+ * @description 采集定位 tools/ 目录所需的运行形态信息（开发模式下位于仓库根目录，打包后位于 resources/ 下）
+ * @returns 运行形态与两个根路径
+ */
 function toolsLocatorContext(): { isPackaged: boolean; appPath: string; resourcesPath: string } {
   return {
     isPackaged: app.isPackaged,
@@ -155,7 +172,10 @@ function toolsLocatorContext(): { isPackaged: boolean; appPath: string; resource
   }
 }
 
-/** 把接收/分片脚本复制到用户选择的目录（目标机没有 npm，需要的正是这些可直接运行的文件）。 */
+/**
+ * @description 把接收/分片脚本复制到用户选择的目录（目标机没有 npm，需要的正是这些可直接运行的文件）
+ * @returns 导出后的目标目录；用户取消时返回 null
+ */
 async function exportTools(): Promise<string | null> {
   const focused = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
   const options = {
@@ -171,12 +191,22 @@ async function exportTools(): Promise<string | null> {
   return destination
 }
 
+/**
+ * @description 在系统文件管理器中打开脚本所在目录
+ * @returns 是否成功打开（找不到目录时返回 false）
+ */
 async function revealTools(): Promise<boolean> {
   const dir = resolveToolsDir(toolsLocatorContext())
   const error = await shell.openPath(dir)
   return error.length === 0
 }
 
+/**
+ * @description 读取并解码文本文件，同时施加体积上限
+ * @param filePath 文件路径
+ * @param charset 指定编码或 auto 探测
+ * @returns 导入结果（路径、文件名、文本、实际编码、字节数）
+ */
 async function importTextFile(
   filePath: string,
   charset: ImportCharset = 'auto'
@@ -200,6 +230,11 @@ async function importTextFile(
   }
 }
 
+/**
+ * @description 按当前平台与设置构建键盘驱动；非 Windows 或构建失败时退化为占位驱动
+ * @param store 设置存储（读取剪贴板恢复开关）
+ * @returns 键盘驱动
+ */
 function buildDriver(store: SettingsStore): KeyboardDriver {
   if (process.platform !== 'win32') {
     return createUnavailableDriver(
@@ -224,6 +259,10 @@ function buildDriver(store: SettingsStore): KeyboardDriver {
   }
 }
 
+/**
+ * @description 应用启动流程：加载设置、建立驱动与引擎、注册 IPC 与热键、开窗并按需检查更新
+ * @returns 启动流程走完后 resolve（启动期异常由调用方兜底）
+ */
 async function bootstrap(): Promise<void> {
   await app.whenReady()
 
@@ -411,11 +450,12 @@ void bootstrap().catch((error) => {
   )
 })
 
-// 本程序只支持 Windows，不需要 macOS 的"关闭窗口但保留进程"语义
+/** @description 窗口全部关闭即退出：本程序只支持 Windows，不需要 macOS 的"关闭窗口但保留进程"语义 */
 app.on('window-all-closed', () => {
   app.quit()
 })
 
+/** @description 退出前释放全局热键、引擎与传输会话 */
 app.on('before-quit', () => {
   disposeHotkeys({ register: () => false, unregisterAll: () => globalShortcut.unregisterAll() })
   void engine?.dispose().catch(() => {})

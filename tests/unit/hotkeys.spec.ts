@@ -9,6 +9,10 @@ interface Harness {
   failNext: boolean
 }
 
+/**
+ * @description 创建假热键注册器，可按需制造"被占用"与"注册抛错"
+ * @returns 注册器及其调用记录
+ */
 function createRegistrar(): Harness {
   const harness: Harness = {
     registered: new Map(),

@@ -1,15 +1,22 @@
 /**
- * IPC 错误信息清理。
- *
- * Electron 在渲染进程侧会给主进程抛出的错误套一层包装，例如：
- *   `Error invoking remote method 'settings:set': Error: 设置保存失败：EPERM …`
- * 这层包装对用户毫无意义，直接展示会让提示变得难读，所以在这里剥掉。
+ * IPC 错误信息清理：剥掉 Electron 在渲染进程侧给主进程错误套上的包装
+ * （`Error invoking remote method 'settings:set': Error: 设置保存失败：EPERM …`），只留对用户有意义的原文。
+ */
+
+/**
+ * @description 剥掉 Electron 的错误包装，得到可直接展示给用户的消息
+ * @param error 任意抛出物
+ * @returns 清理后的消息（为空时返回"未知错误"）
  */
 export function cleanIpcErrorMessage(error: unknown): string {
   return cleanMessage(error instanceof Error ? error.message : String(error))
 }
 
-/** 纯字符串版本，便于单测。 */
+/**
+ * @description 清理纯字符串形式的错误消息，便于单独测试
+ * @param raw 原始错误文本
+ * @returns 清理后的消息（为空时返回"未知错误"）
+ */
 export function cleanMessage(raw: string): string {
   let message = raw.trim()
 
@@ -26,7 +33,11 @@ export function cleanMessage(raw: string): string {
   return message.length > 0 ? message : '未知错误'
 }
 
-/** 统一把任意抛出物转成带清理后消息的 Error。 */
+/**
+ * @description 统一把任意抛出物转成带清理后消息的 Error
+ * @param error 任意抛出物
+ * @returns 新的 Error 实例
+ */
 export function toIpcError(error: unknown): Error {
   return new Error(cleanIpcErrorMessage(error))
 }

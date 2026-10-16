@@ -3,14 +3,9 @@ import { VK } from './common'
 import { US_LAYOUT } from './us'
 
 /**
- * 英式布局（en-GB，ISO 键盘）。
- *
- * 与 US 的差异（Windows 下 VK 语义）：
- * - `#` / `~` 在单独的键上（VK_OEM_8）
- * - Shift+2 = `"`，Shift+3 = `£`
- * - `'` / `@` 共键（VK_OEM_7）
- * - `\` / `|` 位于左侧（VK 仍是 VK_OEM_5）
- * - 数字 1 左边的键是 `` ` `` / `¬`
+ * @description 英式布局（en-GB，ISO 键盘）：与 US 的差异在于 `#` / `~` 位于单独的键（VK_OEM_8）、
+ * Shift+2 为 `"`、Shift+3 为 `£`、`'` / `@` 共键（VK_OEM_7）、`\` / `|` 位于左侧
+ * @returns 英式布局
  */
 export function createUkLayout(): KeyboardLayout {
   const builder = new LayoutBuilder()

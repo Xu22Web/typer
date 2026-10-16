@@ -9,12 +9,10 @@ export interface DecodeResult {
 }
 
 /**
- * 按指定编码解码文本文件。
- *
- * `auto` 的探测顺序：
- *   1. BOM（UTF-8 / UTF-16LE / UTF-16BE）
- *   2. 严格 UTF-8 解码成功 → utf8
- *   3. 否则按 GBK 处理（中文用户最常见的本地编码）
+ * @description 按指定编码解码文本文件；auto 模式依次尝试 BOM、严格 UTF-8，最后按 GBK 处理（中文用户最常见的本地编码）
+ * @param buffer 文件原始字节
+ * @param charset 指定编码或 auto
+ * @returns 解码结果（含实际使用的编码与是否带 BOM）
  */
 export function decodeText(buffer: Buffer, charset: ImportCharset = 'auto'): DecodeResult {
   if (charset === 'utf8') {
@@ -47,6 +45,12 @@ export function decodeText(buffer: Buffer, charset: ImportCharset = 'auto'): Dec
   return { text: iconv.decode(buffer, 'gbk'), charset: 'gbk', hadBom: false }
 }
 
+/**
+ * @description 按指定编码解码，并在有匹配 BOM 时剥掉 BOM
+ * @param buffer 文件原始字节
+ * @param charset 目标编码
+ * @returns 解码结果
+ */
 function stripBomAndDecode(buffer: Buffer, charset: 'utf8' | 'utf16le'): DecodeResult {
   const hasUtf8Bom =
     buffer.length >= 3 && buffer[0] === 0xef && buffer[1] === 0xbb && buffer[2] === 0xbf
@@ -66,7 +70,11 @@ function stripBomAndDecode(buffer: Buffer, charset: 'utf8' | 'utf16le'): DecodeR
   }
 }
 
-/** 严格 UTF-8 校验：出现非法序列即判定不是 UTF-8。 */
+/**
+ * @description 严格 UTF-8 校验：出现非法序列即判定不是 UTF-8（不做替换式解码）
+ * @param buffer 待校验字节
+ * @returns 是否是合法 UTF-8
+ */
 export function isValidUtf8(buffer: Buffer): boolean {
   let index = 0
   while (index < buffer.length) {

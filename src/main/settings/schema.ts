@@ -89,6 +89,14 @@ export const NUMERIC_BOUNDS = {
 
 type BoundsKey = keyof typeof NUMERIC_BOUNDS
 
+/**
+ * @description 读取数值字段并把越界值夹取到合法区间
+ * @param raw 原始对象
+ * @param key 字段名
+ * @param fallback 类型错误时的默认值
+ * @param bounds 合法区间
+ * @returns 夹取后的数值
+ */
 function readNumber(
   raw: Record<string, unknown>,
   key: string,
@@ -101,11 +109,26 @@ function readNumber(
   return Math.min(max, Math.max(min, value))
 }
 
+/**
+ * @description 读取布尔字段
+ * @param raw 原始对象
+ * @param key 字段名
+ * @param fallback 类型错误时的默认值
+ * @returns 布尔值
+ */
 function readBool(raw: Record<string, unknown>, key: string, fallback: boolean): boolean {
   const value = raw[key]
   return typeof value === 'boolean' ? value : fallback
 }
 
+/**
+ * @description 读取枚举字段，只接受白名单内的取值
+ * @param raw 原始对象
+ * @param key 字段名
+ * @param allowed 允许的取值
+ * @param fallback 不在白名单内时的默认值
+ * @returns 合法的枚举值
+ */
 function readEnum<T extends string>(
   raw: Record<string, unknown>,
   key: string,
@@ -118,17 +141,22 @@ function readEnum<T extends string>(
     : fallback
 }
 
+/**
+ * @description 读取字符串字段
+ * @param raw 原始对象
+ * @param key 字段名
+ * @param fallback 类型错误时的默认值
+ * @returns 字符串值
+ */
 function readString(raw: Record<string, unknown>, key: string, fallback: string): string {
   const value = raw[key]
   return typeof value === 'string' ? value : fallback
 }
 
 /**
- * 快捷键文案规范化。
- *
- * 本程序只有 Windows 版本，`Command` / `CommandOrControl` 两种写法都是"跨平台遗留"：
- * 前者在 Windows 上根本不存在，后者虽等价于 Ctrl，但读起来像要按 Command 键。
- * 老配置里可能残留这两种写法，这里统一成 `Ctrl`（Electron 的加速键解析同样接受）。
+ * @description 把快捷键文案里跨平台遗留的 `Command` / `CommandOrControl` 统一成 `Ctrl`
+ * @param accelerator 原始加速键文本
+ * @returns 规范化后的加速键文本
  */
 function normalizeAccelerator(accelerator: string): string {
   return accelerator
@@ -138,6 +166,11 @@ function normalizeAccelerator(accelerator: string): string {
     .replace(/\bCmd\b/gi, 'Ctrl')
 }
 
+/**
+ * @description 把未知值收窄成普通对象（非对象时给空对象）
+ * @param value 候选值
+ * @returns 普通对象
+ */
 function asRecord(value: unknown): Record<string, unknown> {
   return typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : {}
 }
@@ -153,9 +186,9 @@ const CHARSETS: readonly ImportCharset[] = ['auto', 'utf8', 'utf16le', 'gbk']
 const TRANSFER_ENCODING_VALUES: readonly TransferEncoding[] = ['hex', 'b64', 'txt']
 
 /**
- * 把任意（可能来自旧版本或被手工编辑过的）JSON 归一化为合法设置。
- *
- * 原则：**永不抛错**。类型错误回退默认值，超范围夹取，未知字段丢弃。
+ * @description 把任意（旧版本或被手工编辑过的）JSON 归一化为合法设置；类型错误回退默认值、超范围夹取、未知字段丢弃，且永不抛错
+ * @param raw 原始 JSON 值
+ * @returns 完整的合法设置
  */
 export function normalizeSettings(raw: unknown): Settings {
   const root = asRecord(raw)
@@ -321,7 +354,12 @@ export function normalizeSettings(raw: unknown): Settings {
   }
 }
 
-/** 深合并补丁（只用于合法字段），供设置界面局部更新。 */
+/**
+ * @description 深合并设置补丁（嵌套分组逐层合并），供设置界面局部更新
+ * @param base 当前设置
+ * @param patch 局部补丁
+ * @returns 合并并归一化后的设置
+ */
 export function mergeSettings(base: Settings, patch: unknown): Settings {
   const patchRecord = asRecord(patch)
   const merged = {
@@ -338,7 +376,11 @@ export function mergeSettings(base: Settings, patch: unknown): Settings {
   return normalizeSettings(merged)
 }
 
-/** 由完整设置派生引擎设置。 */
+/**
+ * @description 从完整设置里挑出引擎真正需要的字段
+ * @param settings 完整设置
+ * @returns 引擎设置
+ */
 export function toEngineSettings(settings: Settings): EngineSettings {
   return {
     startDelayMs: settings.startDelayMs,

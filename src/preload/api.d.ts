@@ -15,11 +15,7 @@ import type {
 /**
  * preload 暴露给渲染进程的 API 契约，以及 `window` 上的全局声明。
  *
- * 注意：这些声明**不能**放在 `src/preload/index.d.ts` 里。当同一个模块路径同时存在
- * `index.ts` 与 `index.d.ts` 时，TypeScript 只会把 `index.ts` 纳入程序、忽略 `index.d.ts`，
- * 于是 `declare global` 失效 —— 任何同时包含两者的 tsconfig（例如 tsconfig.test.json，
- * 它要编译渲染进程的 composables）都会报 `Property 'api' does not exist on type 'Window'`。
- * 因此单独放到没有 `.ts` 同名文件的 `api.d.ts`。
+ * 为什么必须放在没有同名 `.ts` 的 `api.d.ts`：同一模块路径同时存在 `index.ts` 与 `index.d.ts` 时 TypeScript 会忽略 `.d.ts`，`declare global` 随之失效，编译器报 `Property 'api' does not exist on type 'Window'`。
  */
 
 export interface RunSummary {

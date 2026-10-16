@@ -2,11 +2,10 @@ import { LayoutBuilder, type KeyboardLayout } from './types'
 import { addStandardLetters } from './common'
 
 /**
- * 德语布局（de-DE，QWERTZ）。
- *
- * 只收录**确定无误**的键位，其余（ö ä ü ß 以及 - _ + * # 等符号）一律回退到 Unicode 注入，
- * 结果同样正确。这样做的原因：德语符号位置在 Windows 各版本间与
- * "US 位置直觉"差异较大，凭推测填表反而会打错字符。
+ * @description 德语布局（de-DE，QWERTZ）：只收录确定无误的键位（字母含 y/z 互换、数字行与 , .），
+ * 其余（ö ä ü ß 以及 - _ + * # 等符号）一律回退到 Unicode 注入；德语符号在 Windows 各版本间的
+ * 物理位置与"US 位置直觉"差异较大，凭推测填表反而会打错字符
+ * @returns 德语布局
  */
 export function createDeLayout(): KeyboardLayout {
   const builder = new LayoutBuilder()

@@ -1,11 +1,8 @@
 /**
  * 键盘动作模型。
  *
- * 设计要点：真实按键（`key`）与 Unicode 报文（`unicode`）是两种互不相同的注入方式：
- * - `key`：目标窗口按**自己的键盘布局**把 `vk` 翻译成字符，因此同一 vk 在不同布局下
- *   会产生不同字符；中文等字符没有对应物理键位，无法用这种方式输入。
- * - `unicode`：直接投递一个 UTF-16 码元（`KEYEVENTF_UNICODE`），绕过布局与输入法，
- *   是 CJK / emoji 等字符唯一可靠的通用方式。
+ * 真实按键（`key`）由目标窗口按自己的布局把 `vk` 翻译成字符，同一 vk 在不同布局下会得到不同字符；
+ * Unicode 报文（`unicode`）直接投递 UTF-16 码元、绕过布局与输入法，是 CJK / emoji 等字符唯一可靠的通用方式。
  */
 export type Modifier = 'shift' | 'ctrl' | 'alt' | 'win'
 
@@ -23,10 +20,7 @@ export interface UnicodeAction {
   kind: 'unicode'
   codeUnit: number
   char: string
-  /**
-   * 该动作是同一个码点的后续码元（代理对的低半区）。
-   * 节奏调度器不会为它单独计时，并在进度统计里合并计数。
-   */
+  /** 该动作是同一个码点的后续码元（代理对的低半区）：调度器不为它单独计时，进度统计里合并计数 */
   continues?: boolean
 }
 

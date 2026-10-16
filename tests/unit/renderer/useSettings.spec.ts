@@ -10,6 +10,10 @@ interface ApiStub {
   reset: ReturnType<typeof vi.fn>
 }
 
+/**
+ * @description 安装一个 window.api.settings 桩并返回其 mock 方法
+ * @returns 主进程 settings API 的三个 mock
+ */
 function installWindowApi(): ApiStub {
   const set = vi.fn(async () => DEFAULT_SETTINGS)
   const get = vi.fn(async () => DEFAULT_SETTINGS)

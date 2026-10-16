@@ -33,6 +33,10 @@ const ROWS: ReadonlyArray<{ keys: string; offset: number; y: number }> = [
   { keys: 'zxcvbnm,./', offset: 1.25, y: 3 }
 ]
 
+/**
+ * @description 由物理键盘行构建邻接表（用"行 + 错位偏移"建模，避免手写 26 份）
+ * @returns 字符 → 相邻字符
+ */
 function buildAdjacency(): Record<string, string[]> {
   const positions = new Map<string, { x: number; y: number }>()
 
@@ -136,8 +140,11 @@ export const LOOKALIKE_CHARS: Readonly<Record<string, readonly string[]>> = {
 }
 
 /**
- * 为某个字符挑一个"看起来像打错"的替代字符。
- * 返回 `null` 表示该字符不适合造错（例如 emoji 与生僻字），此时不打错。
+ * @description 为某个字符挑一个"看起来像打错"的替代字符；emoji 与生僻字等不适合造错的字符返回 null
+ * @param char 原字符
+ * @param style 造错风格
+ * @param rng 随机源
+ * @returns 替代字符，无可选时返回 null
  */
 export function pickTypoChar(char: string, style: TypoStyle, rng: Rng): string | null {
   if (style === 'adjacent') {
@@ -160,11 +167,20 @@ export function pickTypoChar(char: string, style: TypoStyle, rng: Rng): string |
   return null
 }
 
+/**
+ * @description 按 rate 概率决定本字符是否造错
+ * @param options 造错设置（含随机源）
+ * @returns 是否应当造错
+ */
 export function shouldMakeTypo(options: TypoOptions): boolean {
   return options.rate > 0 && options.rng.bool(options.rate)
 }
 
-/** 仅测试/调试用：暴露邻接表构建结果，便于断言。 */
+/**
+ * @description 仅测试/调试用：暴露邻接表构建结果，便于断言
+ * @param char 待查询字符
+ * @returns 该字符的相邻字符；未收录时为空数组
+ */
 export function adjacencyOf(char: string): readonly string[] {
   return ADJACENT_KEYS[char] ?? []
 }

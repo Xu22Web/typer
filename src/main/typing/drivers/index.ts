@@ -25,10 +25,10 @@ export interface CreateDriverOptions {
 }
 
 /**
- * 驱动工厂。
- *
- * 测试里直接构造 `MockKeyboardDriver`；这里只负责"真实运行"所需的装配，
- * 因此平台判断与非 Windows 报错也集中在此处，便于断言。
+ * @description 驱动工厂：只做"真实运行"所需的装配（测试直接构造 `MockKeyboardDriver`），
+ * 平台判断与非 Windows 报错也集中在此，便于断言
+ * @param options 平台、剪贴板、宿主定位与注入选项
+ * @returns Windows 键盘注入驱动
  */
 export function createDriver(options: CreateDriverOptions): KeyboardDriver {
   if (!isSupportedPlatform(options.platform)) {

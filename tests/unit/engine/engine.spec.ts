@@ -23,6 +23,11 @@ const timing: TimingSettings = {
   burstPauseMs: 0
 }
 
+/**
+ * @description 构造引擎设置，未指定的字段取默认值
+ * @param overrides 需要覆盖的设置项
+ * @returns 完整的引擎设置
+ */
 function engineSettings(overrides: Partial<EngineSettings> = {}): EngineSettings {
   return {
     startDelayMs: 0,
@@ -49,6 +54,11 @@ interface Harness {
   logs: string[]
 }
 
+/**
+ * @description 组装引擎夹具：可注入驱动与虚拟时钟，并记录状态、进度与日志
+ * @param options 需要注入的驱动或时钟
+ * @returns 测试用的引擎夹具
+ */
 function createHarness(
   options: {
     driver?: MockKeyboardDriver
@@ -74,7 +84,10 @@ function createHarness(
   return { engine, driver, clock, states, progress, logs }
 }
 
-/** 用于把下发事件还原成"目标窗口里出现的文本"（应用退格），校验净效果。 */
+/**
+ * @description 由键位表建立 "vk+修饰键" → 字符 的反查表
+ * @returns 用于还原按键输出的映射
+ */
 function buildUsReverseMap(): Map<string, string> {
   const map = new Map<string, string>()
   for (const [char, key] of Object.entries(LAYOUTS.us.charMap)) {
@@ -86,6 +99,11 @@ function buildUsReverseMap(): Map<string, string> {
 
 const US_REVERSE = buildUsReverseMap()
 
+/**
+ * @description 把下发事件还原成目标窗口里出现的文本，并应用退格，校验净效果
+ * @param items 引擎下发的宿主指令
+ * @returns 还原后的文本
+ */
 function applyBackspaces(items: HostItem[]): string {
   let output = ''
   for (const item of items) {

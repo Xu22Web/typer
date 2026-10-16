@@ -2,8 +2,8 @@ import { LayoutBuilder, type KeyboardLayout } from './types'
 import { VK, addStandardLetters, addUsDigitRow } from './common'
 
 /**
- * 美式布局（Windows 默认 en-US）。
- * 这是唯一"完整覆盖 95 个可打印 ASCII"的布局，也是默认布局。
+ * @description 美式布局（Windows 默认 en-US）：唯一完整覆盖 95 个可打印 ASCII 的布局
+ * @returns 美式布局
  */
 export function createUsLayout(): KeyboardLayout {
   const builder = new LayoutBuilder()

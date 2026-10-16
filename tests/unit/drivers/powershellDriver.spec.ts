@@ -3,9 +3,17 @@ import { ProcessLinesClient } from '@main/typing/drivers/powershellDriver'
 import { ProtocolError } from '@main/typing/drivers/protocol'
 import { createFakeSpawn } from '../../helpers/fakes'
 
-/** request() 会先 await ensureRunning()，因此写入发生在下一个微任务，测试需要先冲刷一次。 */
+/**
+ * @description 冲刷一次事件循环：request() 会先 await ensureRunning()，写入发生在下一个微任务
+ * @returns 下一轮宏任务时解析的 Promise
+ */
 const flush = (): Promise<void> => new Promise((resolve) => setImmediate(resolve))
 
+/**
+ * @description 组装一个注入假 spawn 的宿主客户端，并收集日志
+ * @param options 超时与最大重启次数的覆盖值
+ * @returns 客户端、假 spawn 与日志数组
+ */
 function createClient(options: { requestTimeoutMs?: number; maxRestarts?: number } = {}): {
   client: ProcessLinesClient
   spawn: ReturnType<typeof createFakeSpawn>

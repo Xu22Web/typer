@@ -35,6 +35,11 @@ import {
 export class TransferError extends Error {
   readonly code: string
 
+  /**
+   * @description 建立准备阶段错误
+   * @param code 机器可读的错误码
+   * @param message 面向用户的错误说明
+   */
   constructor(code: string, message: string) {
     super(message)
     this.name = 'TransferError'
@@ -72,16 +77,33 @@ export interface PreparedTransfer {
 const HASH_CHUNK_BYTES = 1 << 20
 const UTF8_HINT_BYTES = 64 * 1024
 
+/**
+ * @description 把数值夹取到闭区间内（非有限数取区间下界）
+ * @param value 原始值
+ * @param range 合法区间 [min, max]
+ * @returns 夹取后的值
+ */
 function clamp(value: number, range: readonly [number, number]): number {
   const [min, max] = range
   return Math.min(max, Math.max(min, Number.isFinite(value) ? value : min))
 }
 
+/**
+ * @description 询问依赖是否已被要求取消
+ * @param deps 准备阶段依赖
+ * @returns 是否应中止
+ */
 function canceled(deps: PrepareDeps): boolean {
   return deps.shouldCancel?.() === true
 }
 
-/** 流式读取文件并计算 SHA-256（大文件不会一次读进内存）。 */
+/**
+ * @description 流式读取文件并计算 SHA-256（大文件不会一次读进内存，且可被取消）
+ * @param path 文件路径
+ * @param size 文件字节数
+ * @param deps 进度与取消钩子
+ * @returns 十六进制摘要
+ */
 async function hashFile(path: string, size: number, deps: PrepareDeps): Promise<string> {
   const hash = createHash('sha256')
   if (size === 0) return hash.digest('hex')
@@ -104,7 +126,12 @@ async function hashFile(path: string, size: number, deps: PrepareDeps): Promise<
   return hash.digest('hex')
 }
 
-/** 读取文件开头的若干字节（预览与 UTF-8 提示都用它，避免为大文件做无谓的全量读取）。 */
+/**
+ * @description 读取文件开头的若干字节，避免为大文件做无谓的全量读取
+ * @param path 文件路径
+ * @param length 期望读取的字节数
+ * @returns 实际读到的头部字节
+ */
 async function readHead(path: string, length: number): Promise<Buffer> {
   if (length <= 0) return Buffer.alloc(0)
   const handle = await open(path, 'r')
@@ -117,7 +144,11 @@ async function readHead(path: string, length: number): Promise<Buffer> {
   }
 }
 
-/** 前若干行的十六进制预览（偏移 + hex + ASCII），满足"看一眼二进制内容"的需求。 */
+/**
+ * @description 生成前若干行的十六进制预览（偏移 + hex + ASCII）
+ * @param bytes 文件头部字节
+ * @returns 预览行（最多 HEX_PREVIEW_ROWS 行）
+ */
 function buildPreview(bytes: Buffer): HexPreviewRow[] {
   const rows: HexPreviewRow[] = []
   for (let offset = 0; offset < bytes.length; offset += 16) {
@@ -137,7 +168,11 @@ function buildPreview(bytes: Buffer): HexPreviewRow[] {
   return rows
 }
 
-/** 代理对（emoji 等）会拆成两个 Unicode 报文，动作数要按码点算。 */
+/**
+ * @description 统计需要额外计数的代理对数量（emoji 等会拆成两个 Unicode 报文，动作数要按码点算）
+ * @param text 待统计文本
+ * @returns 额外动作数
+ */
 function astralCount(text: string): number {
   let extra = 0
   for (const char of text) {
@@ -146,7 +181,12 @@ function astralCount(text: string): number {
   return extra
 }
 
-/** `hex` / `b64` 的载荷字符数（与 frame.mjs 的估算口径一致）。 */
+/**
+ * @description 估算给定字节数在某种载荷编码下会变成多少字符（与 frame.mjs 的口径一致）
+ * @param bytes 原始字节数
+ * @param encoding 载荷编码
+ * @returns 载荷字符数
+ */
 function encodedChars(bytes: number, encoding: TransferPrepareOptions['encoding']): number {
   if (encoding === 'hex') return bytes * 2
   if (encoding === 'b64') return Math.ceil(bytes / 3) * 4
@@ -167,11 +207,9 @@ export interface PrepareTransferInput {
 }
 
 /**
- * 准备一个文件传输任务：校验参数 → 哈希整文件 → 建立分片表 → 给出摘要。
- *
- * 之所以坚持"先算整文件哈希"：接收端只有用同一哈希校验合并结果，才算真正证明"传过去的文件
- * 逐字节一致"。这一步是流式的、可取消的；把它做成可选会直接削弱完整性保证（协议里开始帧与
- * 结束帧都必须带 sha256）。
+ * @description 准备一个文件传输任务：校验参数 → 哈希整文件 → 建立分片表 → 给出摘要；整文件哈希不可跳过，否则接收端无法证明合并结果逐字节一致
+ * @param input 文件路径、传输选项、可复用的哈希与进度/取消钩子
+ * @returns 可用的传输任务（数据帧按需渲染）
  */
 export async function prepareTransfer(input: PrepareTransferInput): Promise<PreparedTransfer> {
   const deps = input.deps ?? {}
@@ -279,6 +317,13 @@ export async function prepareTransfer(input: PrepareTransferInput): Promise<Prep
   )
 }
 
+/**
+ * @description 读取整个文件并按字符边界切片（仅 txt 编码使用，需要文本驻留内存）
+ * @param path 文件路径
+ * @param chunkBytes 每片目标的字节数
+ * @param hasBom 文件是否带 BOM（带 BOM 直接拒绝：字节与文本不再是同一份数据）
+ * @returns 分片数组（含每片的文本、字节数与字符数）
+ */
 async function planTextChunksForFile(
   path: string,
   chunkBytes: number,
@@ -320,7 +365,11 @@ interface FrameStatsInput {
   textChunks: Array<{ text: string; bytes: number; chars: number }> | null
 }
 
-/** 逐帧累加字符数 / 动作数，并在这里就把"帧太长"的问题挡掉。 */
+/**
+ * @description 逐帧累加字符数与动作数，并在这里就把"帧太长"的问题挡掉
+ * @param input 分片表与帧长上限
+ * @returns 总字符数、总动作数与最长帧字符数
+ */
 function collectFrameStats(input: FrameStatsInput): {
   frameChars: number
   typedActions: number
@@ -366,6 +415,11 @@ function collectFrameStats(input: FrameStatsInput): {
   return { frameChars, typedActions, peakFrameChars }
 }
 
+/**
+ * @description 按帧长上限反推建议的片大小（用作报错提示里的修复建议）
+ * @param input 分片表与帧长上限
+ * @returns 建议的片字节数
+ */
 function suggestChunkBytes(input: FrameStatsInput): number {
   const overhead = input.encoding === 'hex' ? 2 : input.encoding === 'b64' ? 4 / 3 : 1
   return Math.max(1, Math.floor((input.maxFrameChars - 64) / overhead))
@@ -378,6 +432,13 @@ interface PreparedInternals {
   endText: string
 }
 
+/**
+ * @description 组装传输任务实现；文件句柄延迟打开并复用，避免为每个数据帧反复 open
+ * @param summary 摘要（同时暴露给界面）
+ * @param internals 渲染所需的开始/结束帧与分片表
+ * @param stamp 准备时读到的文件指纹
+ * @returns 传输任务
+ */
 function createPreparedTransfer(
   summary: TransferJobSummary,
   internals: PreparedInternals,
@@ -385,11 +446,20 @@ function createPreparedTransfer(
 ): PreparedTransfer {
   let handle: Awaited<ReturnType<typeof open>> | null = null
 
+  /**
+   * @description 惰性打开文件句柄并复用（最多打开一次）
+   * @returns 已打开的文件句柄
+   */
   const openOnce = async (): Promise<Awaited<ReturnType<typeof open>>> => {
     handle ??= await open(internals.path, 'r')
     return handle
   }
 
+  /**
+   * @description 取某一片的原始字节数与载荷字符数
+   * @param index 片号
+   * @returns 该片的字节数与载荷字符数
+   */
   const payloadOf = (index: number): { bytes: number; payloadChars: number } => {
     if (internals.textChunks === null) {
       const bytes = chunkSlice(summary.size, summary.chunkBytes, index).bytes
@@ -400,6 +470,10 @@ function createPreparedTransfer(
     return { bytes: chunk.bytes, payloadChars: escapeText(chunk.text).length }
   }
 
+  /**
+   * @description 断言片号在有效范围内
+   * @param index 片号
+   */
   const assertIndex = (index: number): void => {
     if (!Number.isInteger(index) || index < 0 || index >= summary.total) {
       throw new FrameError('range', `片号超出范围：${index}（共 ${summary.total} 片）`)
@@ -409,9 +483,22 @@ function createPreparedTransfer(
   return {
     summary,
     stamp,
+    /**
+     * @description 开始帧文本（接收端据此建立任务、校验规模与整文件哈希）
+     * @returns 开始帧单行文本
+     */
     beginFrame: () => internals.beginText,
+    /**
+     * @description 结束帧文本（携带整文件哈希，接收端靠它做最终校验）
+     * @returns 结束帧单行文本
+     */
     endFrame: () => internals.endText,
 
+    /**
+     * @description 某一帧的字符数（用于进度与耗时预估）
+     * @param index 片号
+     * @returns 该帧的字符数
+     */
     frameChars(index: number): number {
       assertIndex(index)
       const { bytes, payloadChars } = payloadOf(index)
@@ -426,6 +513,11 @@ function createPreparedTransfer(
       return header + payloadChars
     },
 
+    /**
+     * @description 渲染某一数据帧，并在返回前用同一套解析器自检长度 / CRC32 / 强校验
+     * @param index 片号
+     * @returns 该帧的单行文本
+     */
     async renderFrame(index: number): Promise<string> {
       assertIndex(index)
 
@@ -474,6 +566,10 @@ function createPreparedTransfer(
       return line
     },
 
+    /**
+     * @description 关闭文件句柄并释放驻留的文本分片
+     * @returns 释放完成后 resolve
+     */
     async dispose(): Promise<void> {
       if (handle) {
         await handle.close()
@@ -484,12 +580,20 @@ function createPreparedTransfer(
   }
 }
 
-/** 判断一段文本是否是"帧文本"（用于文本页提示可切换为逐帧节奏发送）。 */
+/**
+ * @description 判断一段文本是否是"帧文本"（用于文本页提示可切换为逐帧节奏发送）
+ * @param text 待判断文本
+ * @returns 是否是帧文本
+ */
 export function looksLikeFrameText(text: string): boolean {
   return text.trimStart().startsWith('@TYPER1/')
 }
 
-/** 统计帧文本里的非空行数（逐帧发送时的总帧数）。 */
+/**
+ * @description 统计帧文本里的非空行数（逐帧发送时的总帧数）
+ * @param text 帧文本
+ * @returns 非空行数
+ */
 export function countFrameLines(text: string): number {
   return text.split(/\r\n|\r|\n/).filter((line) => line.trim().length > 0).length
 }

@@ -2,10 +2,9 @@ import { LayoutBuilder, type KeyboardLayout } from './types'
 import { VK, addStandardLetters } from './common'
 
 /**
- * 西班牙语布局（es-ES）。
- *
- * 与 US 基本一致：字母 + 数字行（Shift 后为 ! " · $ % & / ( ) =），
- * 另有 `ñ` / `Ñ`（VK_OEM_1）。其余符号（¿ ¡ ´ ¨ ç 等）走 Unicode 注入。
+ * @description 西班牙语布局（es-ES）：与 US 基本一致（字母 + 数字行），另收录 `ñ` / `Ñ`；
+ * 其余符号（¿ ¡ ´ ¨ ç 等）走 Unicode 注入
+ * @returns 西班牙语布局
  */
 export function createEsLayout(): KeyboardLayout {
   const builder = new LayoutBuilder()

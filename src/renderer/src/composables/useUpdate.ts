@@ -4,11 +4,7 @@ import type { UpdateCheckResult, UpdateProgress, UpdateState } from '@main/updat
 
 /**
  * 更新中心状态（模块级单例，页面与侧边导航共享同一份）。
- *
- * 主进程负责检查/下载/校验/安装，这里只做三件事：
- *  - 订阅状态与进度事件（下载进度是高频事件，单独走一个频道）
- *  - 把"下载中/已就绪/校验失败"等状态整理成界面直接可用的判断
- *  - 提供动作入口，并把"忙碌"状态暴露出去，避免重复点击
+ * 主进程负责检查/下载/校验/安装，这里只订阅状态与进度、整理成界面可用的判断，并提供动作入口。
  */
 const IDLE_STATE: UpdateState = {
   status: 'idle',
@@ -19,14 +15,21 @@ const IDLE_STATE: UpdateState = {
   error: null
 }
 
+/** 最近一次检查结果；null 表示尚未查到 */
 const check = ref<UpdateCheckResult | null>(null)
+/** 主进程推送的更新状态（下载/校验/就绪/失败） */
 const state = ref<UpdateState>({ ...IDLE_STATE })
+/** 下载进度（高频事件，单独走一个频道） */
 const progress = ref<UpdateProgress | null>(null)
+/** 是否正在检查更新 */
 const checking = ref(false)
+/** 最近一次失败原因，空串表示无错误 */
 const error = ref('')
 
+/** 是否已订阅主进程事件，避免重复绑定 */
 let wired = false
 
+/** @description 首次调用时订阅主进程的状态与进度推送 */
 function wire(): void {
   if (wired) return
   wired = true
@@ -42,7 +45,7 @@ function wire(): void {
   })
 }
 
-/** 拉取主进程的当前更新状态（例如切换页面后重新进入）。 */
+/** @description 主动拉取一次主进程的当前更新状态（例如重新进入页面时） */
 async function sync(): Promise<void> {
   try {
     state.value = await window.api.updates.state()
@@ -51,6 +54,11 @@ async function sync(): Promise<void> {
   }
 }
 
+/**
+ * @description 请求主进程检查更新
+ * @param force 是否忽略节流强制检查
+ * @returns 检查结果；请求失败时为 null（原因见 error）
+ */
 async function runCheck(force = false): Promise<UpdateCheckResult | null> {
   checking.value = true
   error.value = ''
@@ -66,6 +74,10 @@ async function runCheck(force = false): Promise<UpdateCheckResult | null> {
   }
 }
 
+/**
+ * @description 更新中心读写：暴露状态、进度与检查/下载/取消/安装动作
+ * @returns 更新状态与操作入口
+ */
 export function useUpdate(): {
   check: Ref<UpdateCheckResult | null>
   state: Ref<UpdateState>

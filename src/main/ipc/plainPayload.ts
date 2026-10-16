@@ -1,18 +1,25 @@
 /**
- * 跨 IPC 载荷净化。
+ * 跨 IPC 载荷净化：递归复制成纯对象 / 纯数组，只保留可结构化克隆的值类型。
  *
- * 背景：Electron 的 `ipcRenderer.invoke` 与 `contextBridge` 都用 V8 的结构化克隆
- * 序列化参数，而**结构化克隆无法克隆 Proxy**。渲染进程里的 Vue `ref` / `reactive`
- * 返回的正是 Proxy，直接把它交给 `window.api.*` 会抛出
- * `An object could not be cloned`，导致整个调用失败（设置保存就是这样被打断的）。
- *
- * 因此凡是把渲染进程的数据送过 IPC 的地方，都要先经过本函数：
- * 递归复制成纯对象 / 纯数组，只保留可克隆的值类型。
+ * 结构化克隆无法克隆 Proxy，而 Vue 的 `ref` / `reactive` 返回的正是 Proxy，
+ * 直接把它送过 IPC 会抛 `An object could not be cloned`，因此渲染进程数据过 IPC 前都要先经过这里。
+ */
+
+/**
+ * @description 把可能含 Vue 响应式代理的值复制成可被结构化克隆的纯数据
+ * @param value 任意待发送的值
+ * @returns 与入参同类型的纯数据副本
  */
 export function toPlainPayload<T>(value: T): T {
   return copy(value, new WeakMap()) as T
 }
 
+/**
+ * @description 递归复制实现；`seen` 负责切断循环引用
+ * @param value 待复制的值
+ * @param seen 已复制对象的映射
+ * @returns 复制结果
+ */
 function copy(value: unknown, seen: WeakMap<object, unknown>): unknown {
   if (value === null) return null
 

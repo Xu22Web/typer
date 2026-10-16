@@ -21,12 +21,24 @@ afterEach(async () => {
   rmSync(work, { recursive: true, force: true })
 })
 
+/**
+ * @description 把内容写进测试临时目录并返回路径
+ * @param name 文件名
+ * @param data 文件内容
+ * @returns 文件绝对路径
+ */
 function writeSource(name: string, data: Buffer | string): string {
   const path = join(work, name)
   writeFileSync(path, data)
   return path
 }
 
+/**
+ * @description 生成确定性二进制内容，并穿插 0x00 以覆盖二进制边界
+ * @param size 字节数
+ * @param seed 随机种子
+ * @returns 二进制内容
+ */
 function binary(size: number, seed = 3): Buffer {
   const buffer = Buffer.allocUnsafe(size)
   let state = seed >>> 0
@@ -37,6 +49,13 @@ function binary(size: number, seed = 3): Buffer {
   return buffer
 }
 
+/**
+ * @description 用默认选项准备一次传输，并登记到 afterEach 的释放列表
+ * @param path 源文件路径
+ * @param overrides 覆盖默认选项
+ * @param deps 进度回调与取消检查
+ * @returns 准备好的传输任务
+ */
 async function prepare(
   path: string,
   overrides: Partial<{

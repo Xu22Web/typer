@@ -1,13 +1,7 @@
 <script setup lang="ts" vapor>
 /**
- * 更新中心。
- *
- * 交互按"一件事只有一个主按钮"来排：
- *   可用新版本 → 下载更新（主）
- *   下载中     → 取消（次）
- *   已通过校验 → 安装并重启（主）
- * 状态文案始终说明"现在处于哪一步、下一步会发生什么"，
- * 并且把完整性校验结果明明白白地展示出来（包括校验来源与摘要前缀）。
+ * 更新中心：检查 → 下载 → 校验 → 安装，同一时刻只突出一个主按钮，
+ * 并如实展示完整性校验的来源与摘要。
  */
 const {
   check,
@@ -28,8 +22,10 @@ const {
   install
 } = useUpdate()
 
+/** 更新说明（release notes）是否展开 */
 const notesVisible = ref(false)
 
+/** 发布日期文案；缺失或解析失败时为空串 */
 const published = computed(() => {
   const raw = result.value?.latest?.publishedAt
   if (!raw) return ''
@@ -37,14 +33,17 @@ const published = computed(() => {
   return Number.isNaN(date.getTime()) ? '' : date.toLocaleDateString()
 })
 
+/** 安装包体积文案 */
 const sizeLabel = computed(() => {
   const bytes = result.value?.latest?.asset?.size ?? 0
   if (bytes <= 0) return ''
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`
 })
 
+/** 下载进度百分比（0–100） */
 const progressPercent = computed(() => Math.round((progress.value?.percent ?? 0) * 100))
 
+/** 已下载 / 总大小文案 */
 const transferred = computed(() => {
   const received = progress.value?.received ?? 0
   const total = progress.value?.total ?? 0
@@ -52,6 +51,7 @@ const transferred = computed(() => {
   return total > 0 ? `${mb(received)} / ${mb(total)} MB` : `${mb(received)} MB`
 })
 
+/** 下载速度文案（不足 1 MB/s 时用 KB/s） */
 const speedLabel = computed(() => {
   const speed = progress.value?.bytesPerSecond ?? 0
   if (speed <= 0) return ''
@@ -60,6 +60,7 @@ const speedLabel = computed(() => {
     : `${Math.round(speed / 1024)} KB/s`
 })
 
+/** SHA-256 摘要的缩写形式（首 12 位 + 末 8 位） */
 const digestShort = computed(() => {
   const digest = state.value.sha256
   return digest ? `${digest.slice(0, 12)}…${digest.slice(-8)}` : ''
@@ -83,23 +84,26 @@ const statusText = computed(() => {
   return check.value.message ?? '检查更新失败。'
 })
 
+/** 状态色标：失败 bad、就绪或有新版本 ok、其余不着色 */
 const tone = computed(() => {
   if (state.value.status === 'failed' || check.value?.status === 'error') return 'bad'
   if (state.value.status === 'ready' || available.value) return 'ok'
   return ''
 })
 
+/** @description 进入页面时若还没有检查结果就补一次检查（外壳可能已经查过） */
 onMounted(() => {
-  // 外壳已经触发过一次检查，这里只负责把结果反映到页面上
   if (!check.value && !checking.value) void runCheck()
 })
 
+/** @description 手动强制检查更新，并按结果给出提示 */
 async function checkNow(): Promise<void> {
   const result = await runCheck(true)
   if (result?.status === 'up-to-date') ElMessage.success('已是最新版本')
   else if (result?.status === 'error') ElMessage.error(result.message ?? '检查更新失败')
 }
 
+/** @description 用系统浏览器打开发布页（手动下载的兜底路径） */
 function openDownloadPage(): void {
   const url = result.value?.latest?.pageUrl
   if (url) void window.api.openExternal(url)

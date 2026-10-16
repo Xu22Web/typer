@@ -14,6 +14,11 @@ export interface ToolsLocatorContext {
 const RELATIVE_DIR = ['tools'] as const
 const PROBE_FILE = 'typer-recv.mjs'
 
+/**
+ * @description 按运行形态给出 tools/ 的候选位置（打包后优先 resources，开发时优先项目根目录）
+ * @param context 运行形态与两个根路径
+ * @returns 候选目录列表（按优先级排序）
+ */
 export function toolsDirCandidates(context: ToolsLocatorContext): string[] {
   const { isPackaged, appPath, resourcesPath } = context
   const ordered = isPackaged ? [resourcesPath, appPath] : [appPath, resourcesPath]
@@ -23,6 +28,10 @@ export function toolsDirCandidates(context: ToolsLocatorContext): string[] {
 export class ToolsDirNotFoundError extends Error {
   readonly candidates: string[]
 
+  /**
+   * @description 建立错误并附带全部候选路径，便于用户自查
+   * @param candidates 已尝试过的候选目录
+   */
   constructor(candidates: string[]) {
     super(
       `找不到文件传输脚本目录（应以 ${PROBE_FILE} 为准），已尝试：\n` +
@@ -33,7 +42,11 @@ export class ToolsDirNotFoundError extends Error {
   }
 }
 
-/** 定位 tools/ 目录（用 `typer-recv.mjs` 作为存在性探针）。 */
+/**
+ * @description 定位 tools/ 目录（用 typer-recv.mjs 作为存在性探针）
+ * @param context 运行形态与两个根路径
+ * @returns 命中的目录
+ */
 export function resolveToolsDir(context: ToolsLocatorContext): string {
   const exists = context.exists ?? existsSync
   const candidates = toolsDirCandidates(context)

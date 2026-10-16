@@ -51,8 +51,9 @@ const FS_ERROR_HINTS: ReadonlyArray<{ test: RegExp; hint: string }> = [
 ]
 
 /**
- * 把底层文件系统错误翻成可读原因。
- * 原始文本仍会写进日志，界面只展示这段说明，避免出现一长串英文 errno 路径。
+ * @description 把底层文件系统错误翻成可读原因；原始文本仍会写进日志，界面只展示这段说明，避免出现一长串英文 errno 路径
+ * @param raw 原始错误文本
+ * @returns 中文原因（无法归类时原样返回）
  */
 export function describeFsFailure(raw: string): string {
   const matched = FS_ERROR_HINTS.find((item) => item.test.test(raw))
@@ -63,11 +64,9 @@ export function describeFsFailure(raw: string): string {
 /**
  * 设置持久化。
  *
- * 关键点：
- * - **原子写**：先写临时文件再 rename，避免进程中断留下半个 JSON
- * - **损坏回退**：JSON 解析失败时把原文件另存为 `.corrupt`，然后回退默认值
- * - **永不抛错**：读写失败只记录日志，不能让设置问题阻断输入功能
- * - `privacy.persistSettings = false` 时不写盘（只保留内存态）
+ * 写入是原子的（先写临时文件再 rename，避免进程中断留下半个 JSON）；JSON 解析失败时把原文件
+ * 另存为 `.corrupt` 并回退默认值；读写失败只记录日志、绝不抛错，不能让设置问题阻断输入功能；
+ * `privacy.persistSettings = false` 时完全不动磁盘（只保留内存态）。
  */
 export class SettingsStore {
   private readonly filePath: string
@@ -77,6 +76,10 @@ export class SettingsStore {
   private current: Settings
   private loaded = false
 
+  /**
+   * @description 建立设置存储（此时不读盘，首次读取由 load / ensureLoaded 触发）
+   * @param options 文件路径、文件系统实现与日志回调
+   */
   constructor(options: SettingsStoreOptions) {
     this.filePath = options.filePath
     this.fs = options.fs ?? nodeSettingsFs
@@ -84,15 +87,26 @@ export class SettingsStore {
     this.current = { ...DEFAULT_SETTINGS }
   }
 
+  /**
+   * @description 设置文件的完整路径
+   * @returns 文件路径
+   */
   get file(): string {
     return this.filePath
   }
 
+  /**
+   * @description 当前内存中的设置快照
+   * @returns 当前设置
+   */
   get(): Settings {
     return this.current
   }
 
-  /** 读取设置；文件不存在或损坏时回退默认值。 */
+  /**
+   * @description 读取设置；文件不存在、读取失败或 JSON 损坏时回退默认值（损坏文件先另存备份）
+   * @returns 读取到的设置
+   */
   load(): Settings {
     this.loaded = true
     if (!this.fs.existsSync(this.filePath)) {
@@ -129,7 +143,11 @@ export class SettingsStore {
     return this.current
   }
 
-  /** 局部更新并持久化。返回结果里包含是否真的落盘，供调用方决定如何提示。 */
+  /**
+   * @description 局部更新并持久化；结果里带上是否真的落盘，供调用方决定如何提示
+   * @param patch 局部补丁
+   * @returns 持久化结果 + 更新后的设置
+   */
   update(patch: unknown): SettingsUpdateResult {
     this.ensureLoaded()
     this.current = mergeSettings(this.current, patch)
@@ -138,7 +156,11 @@ export class SettingsStore {
     return { ...result, settings: this.current }
   }
 
-  /** 覆盖全部设置并持久化（用于设置界面"保存"）。 */
+  /**
+   * @description 覆盖全部设置并持久化（设置界面的"保存"）
+   * @param next 新的完整设置
+   * @returns 持久化结果 + 更新后的设置
+   */
   save(next: unknown): SettingsUpdateResult {
     this.ensureLoaded()
     this.current = normalizeSettings(next)
@@ -147,6 +169,10 @@ export class SettingsStore {
     return { ...result, settings: this.current }
   }
 
+  /**
+   * @description 恢复默认设置并持久化
+   * @returns 持久化结果 + 默认设置
+   */
   reset(): SettingsUpdateResult {
     this.ensureLoaded()
     this.current = { ...DEFAULT_SETTINGS }
@@ -155,6 +181,11 @@ export class SettingsStore {
     return { ...result, settings: this.current }
   }
 
+  /**
+   * @description 订阅设置变更
+   * @param listener 变更回调
+   * @returns 取消订阅的函数
+   */
   subscribe(listener: SettingsListener): () => void {
     this.listeners.add(listener)
     return () => {
@@ -162,10 +193,15 @@ export class SettingsStore {
     }
   }
 
+  /** @description 首次使用时惰性读盘 */
   private ensureLoaded(): void {
     if (!this.loaded) this.load()
   }
 
+  /**
+   * @description 原子写入设置文件：先写临时文件再 rename，避免进程中断留下半个 JSON
+   * @returns 持久化结果
+   */
   private persist(): PersistResult {
     if (!this.current.privacy.persistSettings) {
       // 按隐私设置有意不落盘，不算失败
@@ -187,6 +223,10 @@ export class SettingsStore {
     }
   }
 
+  /**
+   * @description 把损坏的设置文件另存为 `.corrupt`，便于事后排查
+   * @param raw 原始文件内容
+   */
   private backupCorrupt(raw: string): void {
     try {
       this.fs.writeFileSync(`${this.filePath}.corrupt`, raw, 'utf8')
@@ -195,6 +235,7 @@ export class SettingsStore {
     }
   }
 
+  /** @description 通知所有订阅者；单个订阅者抛错只记日志，不影响其余订阅者 */
   private notify(): void {
     for (const listener of this.listeners) {
       try {

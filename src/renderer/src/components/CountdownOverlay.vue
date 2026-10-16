@@ -1,15 +1,14 @@
 <script setup lang="ts" vapor>
 /**
- * 全局倒计时遮罩。
- *
- * 放在应用外壳而不是输入页：倒计时期间用户可能已经切到别的页面查看设置，
- * 遮罩必须照样出现（而且要能取消），否则"什么时候开始打字"就失去了提示。
+ * 全局倒计时遮罩：放在应用外壳而不是输入页，倒计时期间切到别的页面也照样出现，且随时可取消。
  */
 const typing = useTyping()
 const { settings } = useSettings()
 
+/** 只在倒计时阶段显示遮罩 */
 const visible = computed(() => typing.state.value === 'countdown')
 
+/** 剩余秒数（向上取整，0 表示马上开始） */
 const seconds = computed(() =>
   Math.max(0, Math.ceil((typing.progress.value?.countdownRemainingMs ?? 0) / 1000))
 )

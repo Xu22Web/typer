@@ -1,13 +1,8 @@
 <script setup lang="ts" vapor>
-/**
- * 应用外壳：标题栏 / 左侧导航 / 内容区 / 状态栏。
- *
- * 这里同时负责两件"全局"的事：
- *  - 挂载全局倒计时遮罩（跨页面可见）
- *  - 启动一次更新检查（节流由主进程负责），让侧边导航能给出"有新版本"提示
- */
+/** 应用外壳：标题栏 / 左侧导航 / 内容区 / 状态栏 / 全局倒计时遮罩 */
 const { init } = useUpdate()
 
+/** @description 启动一次更新检查（节流由主进程负责），供侧边导航显示"有新版本"提示 */
 onMounted(() => {
   void init()
 })
@@ -21,7 +16,11 @@ onMounted(() => {
 
     <main class="main">
       <div class="content">
-        <RouterView />
+        <RouterView v-slot="{ Component }">
+          <KeepAlive>
+            <component :is="Component" />
+          </KeepAlive>
+        </RouterView>
       </div>
     </main>
   </div>

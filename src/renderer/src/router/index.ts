@@ -1,5 +1,6 @@
 import { createRouter, createWebHashHistory } from 'vue-router'
 
+/** 路由表：四个页面共用同一套外壳，历史用 hash（打包后走 file:// 协议） */
 const router = createRouter({
   history: createWebHashHistory(),
   linkActiveClass: 'active',

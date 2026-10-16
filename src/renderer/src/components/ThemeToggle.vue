@@ -1,4 +1,5 @@
 <script setup lang="ts" vapor>
+/** 主题切换按钮：图标随当前主题变化，点击位置作为揭示动画的圆心 */
 const { isDark, toggle } = useTheme()
 </script>
 
@@ -31,13 +32,12 @@ const { isDark, toggle } = useTheme()
     background-color 0.2s;
 }
 
-/* `--surface-hover` 是别名里不存在的 token，写在这里等于没有悬停反馈 */
+/* 悬停反馈用控件填充色，避免与标题栏其它图标按钮不一致 */
 .toggle:hover {
   color: var(--text-1);
   background: var(--ctrl-fill);
 }
 
-/* 图标尺寸原来靠 UnoCSS 的 `text-lg` 工具类，工具类本身不可依赖，这里显式声明 */
 .icon {
   font-size: 16px;
   transition: transform 0.3s ease;

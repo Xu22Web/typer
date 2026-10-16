@@ -1,12 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
 
 /**
- * 自绘标题栏的窗口状态。
- *
- * 窗口是无边框的，最大化状态可能被窗口管理器改掉（双击标题栏、Win+↑、拖到屏幕边缘），
- * 因此按钮图标必须跟随主进程推送，而不是自己记一个布尔值。
- *
- * composable 是模块级单例（只订阅一次），所以每个用例都用 resetModules 拿一份干净的实例。
+ * 自绘标题栏的窗口状态：最大化状态可能被窗口管理器改掉（双击标题栏、Win+↑、
+ * 拖到屏幕边缘），因此按钮图标必须跟随主进程推送而非自己记布尔值。
+ * composable 是模块级单例，因此每个用例都用 resetModules 拿一份干净实例。
  */
 interface WindowApiStub {
   minimize: ReturnType<typeof vi.fn>
@@ -17,6 +14,10 @@ interface WindowApiStub {
   emit: (maximized: boolean) => void
 }
 
+/**
+ * @description 用一份干净的模块实例加载 useWindowState，并装好 window.api.window 桩
+ * @returns 装好的 API 桩与该模块导出的 useWindowState
+ */
 async function loadUseWindowState(): Promise<{
   api: WindowApiStub
   useWindowState: typeof import('../../../src/renderer/src/composables/useWindowState').useWindowState

@@ -30,7 +30,11 @@ afterEach(async () => {
   rmSync(work, { recursive: true, force: true })
 })
 
-/** 造一份与当前任务匹配的接收端报告。 */
+/**
+ * @description 造一份与当前任务匹配的接收端报告
+ * @param overrides 需要覆盖的报告字段
+ * @returns 报告 JSON 文本
+ */
 function report(overrides: Partial<Record<string, unknown>> = {}): string {
   return JSON.stringify({
     reportVersion: 1,
@@ -91,6 +95,11 @@ describe('parseResumeState', () => {
 })
 
 describe('matchResume', () => {
+  /**
+   * @description 造一份与当前任务匹配的续传状态
+   * @param overrides 需要覆盖的状态字段
+   * @returns 续传状态
+   */
   const state = (overrides: Partial<ResumeState> = {}): ResumeState => ({
     job: job.summary.job,
     total: job.summary.total,

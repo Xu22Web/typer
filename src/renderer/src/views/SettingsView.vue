@@ -9,38 +9,40 @@ import {
 } from '@shared/transfer/transfer'
 
 /**
- * 设置页。
- *
- * 从抽屉改成整页：设置项有七组、几十个字段，抽屉里只能来回滚动，
- * 整页可以按组分区、给每个开关写清"它到底影响什么"，也才放得下保存条。
- *
- * 交互约定：
- *  - 编辑草稿，显式保存；有改动才启用保存按钮，离开时不会被静默丢弃
- *  - 保存失败**保留草稿**并显示原因（不假装成功）
- *  - 保存成功用主进程归一化后的值回填（越界值会被夹取，界面与生效值保持一致）
+ * 设置页：按组分区编辑草稿并显式保存（有改动才启用保存按钮，失败保留草稿并给出原因，
+ * 保存成功用主进程归一化后的值回填，保证界面与生效值一致）。
  */
 const { settings, error, load, update, reset } = useSettings()
 
+/** 编辑中的设置草稿；null 表示设置尚未加载 */
 const draft = ref<Settings | null>(null)
+/** 是否正在提交保存 */
 const saving = ref(false)
+/** 保存失败的原因，空串表示无错误 */
 const saveError = ref('')
+/** 是否正在恢复默认设置 */
 const restoring = ref(false)
 
+/** 片大小与帧长上限的边界值（与主进程共用同一份定义） */
 const limits = TRANSFER_LIMITS
 const typing = useTyping()
 
-/** 当前片大小对应的预设（不在预设里则归为"自定义"）。 */
+/** 当前片大小对应的预设（不在预设里则归为"自定义"） */
 const presetId = computed(() => {
   const bytes = draft.value?.transfer.chunkBytes ?? 0
   return CHUNK_PRESETS.find((preset) => preset.chunkBytes === bytes)?.id ?? ''
 })
 
+/** 当前编码的说明文案 */
 const encodingHint = computed(() => {
   const value = draft.value?.transfer.encoding ?? 'hex'
   return TRANSFER_ENCODING_OPTIONS.find((option) => option.value === value)?.description ?? ''
 })
 
-/** 预设同时决定片大小与帧长上限（两者必须配套，否则会互相打架）。 */
+/**
+ * @description 应用片大小预设；预设同时决定片大小与帧长上限（两者必须配套）
+ * @param id 预设 id
+ */
 function applyChunkPreset(id: string): void {
   const preset = CHUNK_PRESETS.find((item) => item.id === id)
   if (!preset || !draft.value) return
@@ -48,6 +50,7 @@ function applyChunkPreset(id: string): void {
   draft.value.transfer.maxFrameChars = preset.maxFrameChars
 }
 
+/** @description 把接收脚本导出到用户选择的位置 */
 async function exportTools(): Promise<void> {
   try {
     const destination = await window.api.transfer.exportTools()
@@ -57,6 +60,7 @@ async function exportTools(): Promise<void> {
   }
 }
 
+/** @description 在文件管理器里打开随包分发的接收脚本目录 */
 async function revealTools(): Promise<void> {
   try {
     await window.api.transfer.revealTools()
@@ -66,22 +70,49 @@ async function revealTools(): Promise<void> {
   }
 }
 
+/**
+ * 草稿最近一次与设置对齐时的内容快照。
+ * 用它（而不是实时设置）判断"用户改过没有"：设置可能被别处改掉（文件面板会直接更新 transfer），
+ * 拿草稿跟实时设置比会把外部改动误判成"用户有未保存改动"。
+ */
+const syncedDraft = ref('')
+
+/** @description 把草稿与当前设置对齐（挂载、保存后、放弃改动、恢复默认、被缓存后回到前台） */
+function syncDraft(): void {
+  const next = settings.value ? structuredClone(toPlainPayload(settings.value)) : null
+  draft.value = next
+  syncedDraft.value = next ? JSON.stringify(toPlainPayload(next)) : ''
+}
+
+/** 用户是否改过草稿；有改动才允许保存/放弃 */
 const dirty = computed(() => {
-  if (!draft.value || !settings.value) return false
-  return JSON.stringify(toPlainPayload(draft.value)) !== JSON.stringify(settings.value)
+  if (!draft.value) return false
+  return JSON.stringify(toPlainPayload(draft.value)) !== syncedDraft.value
 })
 
+/** @description 首次进入时读取设置并把草稿对齐到最新值 */
 onMounted(async () => {
   await load()
-  draft.value = settings.value ? structuredClone(toPlainPayload(settings.value)) : null
+  syncDraft()
 })
 
-/** 主进程给出的原因通常已带"设置保存失败"前缀，这里避免重复拼接。 */
+/** @description 页面被缓存后回到前台：无改动则跟上别处对设置的改动，有改动则原样保留 */
+onActivated(() => {
+  if (dirty.value) return
+  syncDraft()
+})
+
+/**
+ * @description 给主进程返回的失败原因补上统一前缀（避免重复拼接）
+ * @param message 主进程给出的原因
+ * @returns 可直接展示的错误文案
+ */
 function describeFailure(message: string | undefined): string {
   const text = (message ?? '').trim() || '未知原因'
   return text.includes('设置保存失败') ? text : `设置保存失败：${text}`
 }
 
+/** @description 提交草稿；失败时保留草稿并提示原因，成功后按主进程归一化的值回填 */
 async function save(): Promise<void> {
   if (!draft.value) return
   saving.value = true
@@ -93,18 +124,20 @@ async function save(): Promise<void> {
       ElMessage.error(saveError.value)
       return
     }
-    if (settings.value) draft.value = structuredClone(toPlainPayload(settings.value))
+    if (settings.value) syncDraft()
     ElMessage.success('设置已保存')
   } finally {
     saving.value = false
   }
 }
 
+/** @description 放弃未保存的改动，草稿回到当前设置 */
 function discard(): void {
-  draft.value = settings.value ? structuredClone(toPlainPayload(settings.value)) : null
+  syncDraft()
   saveError.value = ''
 }
 
+/** @description 恢复默认设置并用主进程归一化后的值重建草稿 */
 async function restoreDefaults(): Promise<void> {
   restoring.value = true
   saveError.value = ''
@@ -115,7 +148,7 @@ async function restoreDefaults(): Promise<void> {
       ElMessage.error(saveError.value)
       return
     }
-    draft.value = settings.value ? structuredClone(toPlainPayload(settings.value)) : null
+    syncDraft()
     ElMessage.success('已恢复默认设置')
   } finally {
     restoring.value = false

@@ -1,14 +1,8 @@
 #!/usr/bin/env node
 // Typer 接收端：从标准输入逐行读取帧 → 逐片校验 → 原子落盘 → 断点续传 → 合并 → 校验整文件。
-//
-// 设计目标：目标机只要有 Node >= 18 就能跑，**不需要 npm install**（只依赖 node: 内置模块）。
-//
-// 用法见 tools/README.md；`node typer-recv.mjs --help` 也会打印同样的说明。
-//
-// 关键约束（决定了实现方式）：
-//   - 输入是键盘/剪贴板"打"进来的，可能丢字符、被终端截断、混入回显 → 每片必须自校验
-//   - 终端可能是行缓冲（行宽有限）→ TTY 下默认切 raw 模式，并支持 `--cooked`
-//   - 大文件不能一次读进内存 → 逐片落盘、合并时流式哈希
+// 目标机只要有 Node >= 18 就能跑，不需要 npm install（只依赖 node: 内置模块）；用法见 tools/README.md。
+// 关键约束：输入是键盘 / 剪贴板"打"进来的，可能丢字符或被行缓冲截断，因此每片必须自校验、TTY 下默认切 raw 模式。
+// 大文件不一次读进内存：逐片落盘，合并时流式哈希。
 
 import { createHash } from 'node:crypto'
 import { once } from 'node:events'
@@ -73,7 +67,11 @@ const HELP = `Typer 文件接收端（逐片校验 + 断点续传 + 合并校验
 退出码：0 成功并校验通过 / 2 数据不全 / 3 完整性校验失败 / 4 参数或 IO 错误
 `
 
-/** 解析 `--key value`、`--key=value`、`-k value` 与布尔开关。 */
+/**
+ * @description 解析 `--key value`、`--key=value`、`-k value` 与布尔开关
+ * @param argv 参数数组
+ * @returns 选项表
+ */
 function parseArgs(argv) {
   /** @type {Record<string, string | boolean>} */
   const options = {}
@@ -127,11 +125,17 @@ if (options.selftest) {
 }
 
 /**
- * 内置自检：确认这台机器上的 Node 至少能正确完成"编码 → 校验 → 解码 → 片号解析"。
- * 目标机环境不可控（老版本 Node、异常 locale），先跑一遍能省掉大量无谓的排查。
+ * @description 内置自检：确认这台机器上的 Node 至少能正确完成"编码 → 校验 → 解码 → 片号解析"；
+ * 目标机环境不可控（老版本 Node、异常 locale），先跑一遍能省掉大量无谓排查
+ * @returns 退出码（0 全部通过，3 有失败项）
  */
 function runSelfTest() {
   const checks = []
+  /**
+   * @description 记录一项自检结果
+   * @param name 检查项名称
+   * @param condition 是否通过
+   */
   const check = (name, condition) => {
     checks.push({ name, ok: Boolean(condition) })
   }
@@ -165,12 +169,22 @@ function runSelfTest() {
   return failed.length === 0 ? EXIT.OK : EXIT.BAD
 }
 
+/**
+ * @description 把字节编码成十六进制文本（自检用，不依赖被测实现本身）
+ * @param bytes 字节序列
+ * @returns 大写十六进制文本
+ */
 function crc32SafeEncode(bytes) {
   let out = ''
   for (const byte of bytes) out += byte.toString(16).padStart(2, '0').toUpperCase()
   return out
 }
 
+/**
+ * @description 把字节编码成 base64 文本（自检用）
+ * @param bytes 字节序列
+ * @returns base64 文本
+ */
 function encodeB64(bytes) {
   return Buffer.from(bytes).toString('base64')
 }
@@ -182,10 +196,18 @@ function encodeB64(bytes) {
 const ackTarget =
   options.ack === 'none' ? null : options.ack === 'stderr' ? process.stderr : process.stdout
 
+/**
+ * @description 按 --ack 设置输出一行回执
+ * @param line 回执内容
+ */
 function ack(line) {
   if (ackTarget) ackTarget.write(`${line}\n`)
 }
 
+/**
+ * @description 输出一行诊断信息到标准错误
+ * @param line 信息内容
+ */
 function info(line) {
   process.stderr.write(`${line}\n`)
 }
@@ -215,20 +237,41 @@ let noiseLines = 0
 let receivedFrames = 0
 let lastReportAt = 0
 
+/**
+ * @description 生成分片文件名（带 crc，存在即可校验，无需额外 sidecar）
+ * @param seq 片号
+ * @param crc 该片 crc32 文本
+ * @returns 分片文件名
+ */
 function partName(seq, crc) {
   return `part-${String(seq).padStart(seqWidth, '0')}-${crc}.bin`
 }
 
+/**
+ * @description 生成分片文件的完整路径
+ * @param seq 片号
+ * @param crc 该片 crc32 文本
+ * @returns 分片文件路径
+ */
 function partPath(seq, crc) {
   return join(dir, partName(seq, crc))
 }
 
+/**
+ * @description 计算第 seq 片应有的字节数
+ * @param seq 片号
+ * @returns 字节数；txt 模式片长由字符决定、无法反推，返回 null
+ */
 function expectedBytes(seq) {
-  // txt 模式按**字符边界**切片，片长由字符决定，无法用字节数反推（只能校验上界）
+  // txt 模式按字符边界切片，片长由字符决定，无法用字节数反推（只能校验上界）
   if (meta.enc === 'txt') return null
   return chunkSlice(meta.size, meta.chunk, seq).bytes
 }
 
+/**
+ * @description 校验数据帧声明的片长度是否符合预期
+ * @param frame 已解析的数据帧
+ */
 function assertChunkLength(frame) {
   const expected = expectedBytes(frame.seq)
   if (expected === null) {
@@ -242,6 +285,10 @@ function assertChunkLength(frame) {
   }
 }
 
+/**
+ * @description 读取工作目录里的 meta.json
+ * @returns 元信息对象；不存在或损坏时返回 null
+ */
 function loadMeta() {
   const metaPath = join(dir, 'meta.json')
   if (!existsSync(metaPath)) return null
@@ -254,6 +301,7 @@ function loadMeta() {
   return null
 }
 
+/** @description 把当前任务元信息写入工作目录的 meta.json */
 function saveMeta() {
   mkdirSync(dir, { recursive: true })
   writeFileSync(
@@ -278,6 +326,10 @@ function saveMeta() {
   )
 }
 
+/**
+ * @description 写续传报告（默认节流，避免每片都落盘）
+ * @param force 是否忽略节流立即写入
+ */
 function writeReport(force = false) {
   if (!reportPath || !meta) return
   const now = Date.now()
@@ -309,6 +361,12 @@ function writeReport(force = false) {
   }
 }
 
+/**
+ * @description 应用任务元信息；已有任务时校验 job 是否一致
+ * @param next 新的元信息
+ * @param fromDisk 是否来自磁盘恢复（false 时回写 meta.json）
+ * @returns 是否首次建立任务
+ */
 function applyMeta(next, { fromDisk }) {
   if (meta) {
     if (meta.job !== next.job) {
@@ -326,8 +384,9 @@ function applyMeta(next, { fromDisk }) {
 }
 
 /**
- * 扫描已有分片：文件名里带 CRC，因此"存在即可校验"，无需额外 sidecar。
- * 校验不通过的旧分片会被删除，避免把坏数据当成已完成。
+ * @description 扫描已有分片并纳入续传状态；文件名里带 CRC，因此"存在即可校验"、无需 sidecar，
+ * 校验不通过的旧分片会被删除，避免把坏数据当成已完成
+ * @returns 保留的已完成片数
  */
 function scanExistingParts() {
   if (!resume || !existsSync(dir)) return 0
@@ -360,6 +419,10 @@ function scanExistingParts() {
 // 单帧处理
 // ---------------------------------------------------------------------------
 
+/**
+ * @description 处理开始帧：建立任务并列出缺失片
+ * @param frame 已解析的开始帧
+ */
 function handleBegin(frame) {
   const fresh = applyMeta(
     {
@@ -389,6 +452,10 @@ function handleBegin(frame) {
   writeReport(true)
 }
 
+/**
+ * @description 处理数据帧：校验后原子落盘
+ * @param frame 已解析的数据帧
+ */
 function handleData(frame) {
   receivedFrames += 1
 
@@ -446,6 +513,11 @@ function handleData(frame) {
   writeReport()
 }
 
+/**
+ * @description 把数据帧载荷解码为字节
+ * @param frame 已解析的数据帧
+ * @returns 解码后的字节
+ */
 function decodeDataPayload(frame) {
   if (frame.enc === 'txt') return Buffer.from(unescapeText(frame.payload), charset)
   return decodeBytes(frame.payload, frame.enc)
@@ -455,6 +527,10 @@ function decodeDataPayload(frame) {
 // 合并与最终校验
 // ---------------------------------------------------------------------------
 
+/**
+ * @description 合并分片并做整文件校验
+ * @returns 退出码
+ */
 async function mergeAndVerify() {
   const missingList = missingIndexes(meta.total, [...done])
   if (missingList.length > 0) {
@@ -535,6 +611,10 @@ async function mergeAndVerify() {
 // 主循环
 // ---------------------------------------------------------------------------
 
+/**
+ * @description 处理一行输入：解析成帧并按类型分发，无法解析的行按噪声忽略
+ * @param rawLine 原始行
+ */
 function handleLine(rawLine) {
   const line = sanitizeLine(rawLine)
   if (line.length === 0) return
@@ -582,9 +662,18 @@ function handleLine(rawLine) {
 
 let pendingEnd = null
 
+/**
+ * @description 主循环：先挂监听再读输入、分发帧，最后合并校验
+ * @returns 退出码
+ */
 async function run() {
   const splitter = createLineSplitter()
 
+  /**
+   * @description 逐行处理，并判断是否已收到结束帧
+   * @param lines 待处理的行
+   * @returns 是否应停止读取
+   */
   const consume = (lines) => {
     for (const line of lines) {
       handleLine(line)
@@ -606,6 +695,10 @@ async function run() {
     process.stdin.setEncoding('utf8')
   }
 
+  /**
+   * @description 输入流回调：处理 Ctrl+C / Ctrl+D 与普通数据
+   * @param chunk 输入数据块
+   */
   const onData = (chunk) => {
     const text = typeof chunk === 'string' ? chunk : chunk.toString('utf8')
     if (text.includes('\u0003')) {
@@ -627,6 +720,7 @@ async function run() {
   source.resume()
 
   await new Promise((resolvePromise) => {
+    /** @description 结束等待 */
     const finish = () => resolvePromise()
     source.on('end', finish)
     source.on('close', finish)

@@ -6,10 +6,8 @@ import { DEFAULT_SETTINGS } from '@main/settings/schema'
 import { SettingsStore, describeFsFailure } from '@main/settings/store'
 
 /**
- * 用**真实文件系统**验证设置持久化。
- *
- * 内存文件系统的单测无法覆盖 Windows 上的真实行为（目录创建、临时文件 + rename 覆盖），
- * 而"保存没生效"往往正好出在这些环节。
+ * 用真实文件系统验证设置持久化：内存 fs 无法覆盖 Windows 上的目录创建与
+ * 临时文件 + rename 覆盖，而"保存没生效"往往正好出在这些环节。
  */
 describe('SettingsStore 真实落盘', () => {
   let dir: string
@@ -22,6 +20,10 @@ describe('SettingsStore 真实落盘', () => {
     rmSync(dir, { recursive: true, force: true })
   })
 
+  /**
+   * @description 生成一个尚不存在的多级设置文件路径
+   * @returns 设置文件绝对路径
+   */
   const filePath = (): string => join(dir, 'nested', 'deeper', 'settings.json')
 
   it('首次保存会创建缺失的目录并写出文件', () => {

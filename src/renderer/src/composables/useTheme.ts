@@ -1,11 +1,16 @@
 import { useThemeStore } from '@renderer/store/theme'
 import type { ComputedRef } from 'vue'
 
+/**
+ * @description 把主题写到根元素上，供 CSS 变量与 Element Plus 深色变量选择
+ * @param dark 是否深色
+ */
 function applyTheme(dark: boolean): void {
   document.documentElement.classList.toggle('dark', dark)
   document.documentElement.classList.toggle('light', !dark)
 }
 
+/** @description 把持久化的主题应用到根元素；在挂载前调用可避免首帧闪烁 */
 export function setupTheme(): void {
   applyTheme(useThemeStore().dark)
 }
@@ -13,20 +18,18 @@ export function setupTheme(): void {
 /** 正在播放的扩散过渡；用户连点时用它避免两段动画互相打架。 */
 let active: ViewTransition | null = null
 
+/**
+ * @description 系统是否要求减弱动效
+ * @returns 是否应跳过过渡动画
+ */
 function prefersReducedMotion(): boolean {
   return matchMedia('(prefers-reduced-motion: reduce)').matches
 }
 
 /**
- * 从圆心向外扩散的圆形揭示动画。
- *
- * 几个刻意的选择：
- * - **以触发按钮的中心为圆心**，而不是点击坐标：切换是"这个按钮干的"，
- *   从按钮往外扩散更符合因果直觉，也不会因为点在按钮边缘而偏心。
- * - **半径取到最远的那个角**：否则扩散会在角落留下没被覆盖的死区。
- * - **只对 `::view-transition-new(root)` 施加 clip-path**，并配合 main.css 关掉
- *   默认交叉淡入，效果是"新主题从一个圆里长出来"，而不是两层半透明糊在一起。
- * - **连点直接落定**：上一段还在跑时不再嵌套启动，避免闪烁与卡顿。
+ * @description 以触发按钮为圆心向外扩散的圆形揭示动画：半径取到最远的角，避免角落留下死区；
+ * 只对 ::view-transition-new(root) 施加 clip-path，让新主题"从一个圆里长出来"
+ * @param origin 圆心坐标
  */
 function reveal(origin: { x: number; y: number }): void {
   const radius = Math.hypot(
@@ -48,15 +51,21 @@ function reveal(origin: { x: number; y: number }): void {
   )
 }
 
+/** @description 主题读写：返回当前是否深色，以及带圆形揭示过渡的切换函数 */
 export function useTheme(): {
   isDark: ComputedRef<boolean>
   toggle: (event: MouseEvent) => Promise<void>
 } {
   const store = useThemeStore()
 
+  /**
+   * @description 切换主题；支持 View Transition 时以点击元素为圆心做圆形揭示
+   * @param event 触发切换的鼠标事件（用于取圆心）
+   */
   async function toggle(event: MouseEvent): Promise<void> {
     const dark = !store.dark
 
+    /** @description 提交主题：写 store 并立即应用到根元素 */
     const commit = (): void => {
       store.dark = dark
       applyTheme(dark)

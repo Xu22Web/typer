@@ -71,6 +71,11 @@ export const TIMING_PRESETS: readonly TimingPreset[] = [
   }
 ]
 
+/**
+ * @description 按 id 取节奏预设
+ * @param id 预设 id
+ * @returns 预设；未知 id 时为 undefined
+ */
 export function getTimingPreset(id: TimingPreset['id']): TimingPreset | undefined {
   return TIMING_PRESETS.find((preset) => preset.id === id)
 }

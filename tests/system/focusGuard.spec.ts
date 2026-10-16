@@ -5,10 +5,8 @@ import { WindowsSendInputDriver } from '@main/typing/drivers/WindowsSendInputDri
 import { HOST_SCRIPT, launchTargetWindow, waitFor, type TargetWindow } from './helpers/system'
 
 /**
- * 焦点守护的系统级验证（opt-in）：确认 `foreground` 命令返回的
- * hwnd/pid/title 与实际前台窗口一致 —— 这是"窗口变了就停止输入"的前提。
- *
- * 只做查询，不注入任何按键。
+ * 焦点守护的系统级验证（opt-in，需 TYPIST_E2E=1）：确认 `foreground` 返回的
+ * hwnd/pid/title 与实际前台窗口一致——这是"窗口变了就停止输入"的前提。只查询不注入按键。
  */
 const enabled = process.env.TYPIST_E2E === '1'
 const describeE2E = enabled ? describe : describe.skip

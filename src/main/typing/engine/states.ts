@@ -11,14 +11,25 @@ export interface EngineSnapshot {
   message?: string
 }
 
+/**
+ * @description 判断是否处于"进行中"状态（可被中止/暂停）
+ * @param state 引擎状态
+ * @returns 是否仍在倒计时、输入或暂停中
+ */
 export function isBusy(state: EngineState): boolean {
   return state === 'countdown' || state === 'running' || state === 'paused'
 }
 
+/**
+ * @description 判断是否已到达终态（不会再有新的进度）
+ * @param state 引擎状态
+ * @returns 是否已完成 / 已中止 / 已失败
+ */
 export function isTerminal(state: EngineState): boolean {
   return state === 'completed' || state === 'aborted' || state === 'failed'
 }
 
+/** 引擎状态 → 界面展示文案。 */
 export const STATE_LABELS: Readonly<Record<EngineState, string>> = {
   idle: '待机',
   countdown: '倒计时中',

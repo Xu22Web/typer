@@ -5,6 +5,12 @@ import { createMemoryFs } from '../../helpers/fakes'
 
 const FILE = 'C:\\userData\\settings.json'
 
+/**
+ * @description 用内存 fs 造一个 SettingsStore，并收集它写出的日志
+ * @param fs 内存文件系统
+ * @param filePath 设置文件路径
+ * @returns store 与收集到的日志行
+ */
 function createStore(
   fs: ReturnType<typeof createMemoryFs>,
   filePath = FILE

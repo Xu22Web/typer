@@ -12,7 +12,7 @@ import type { UpdateCheckResult, UpdateState } from '@main/update/types'
 import { createFakeIpcMain, createMemoryFs } from '../../helpers/fakes'
 import { createVirtualClock } from '../../helpers/virtualClock'
 
-/** 记录调用顺序的假窗口控制，用来断言 IPC → 窗口操作的映射。 */
+/** @description 假窗口控制，记录调用顺序以断言 IPC → 窗口操作的映射 */
 interface FakeWindowControls {
   calls: string[]
   maximize: boolean
@@ -22,6 +22,11 @@ interface FakeWindowControls {
   isMaximized: () => boolean
 }
 
+/**
+ * @description 创建假窗口控制
+ * @param maximized 初始最大化状态
+ * @returns 记录调用的假窗口控制
+ */
 function createFakeWindowControls(maximized = false): FakeWindowControls {
   const controls: FakeWindowControls = {
     calls: [],
@@ -37,7 +42,7 @@ function createFakeWindowControls(maximized = false): FakeWindowControls {
   return controls
 }
 
-/** 记录调用的假更新服务，用来断言 IPC → 更新动作的映射。 */
+/** @description 假更新服务，用来断言 IPC → 更新动作的映射 */
 interface FakeUpdates {
   check: (options?: { force?: boolean }) => Promise<UpdateCheckResult>
   download: () => Promise<UpdateState>
@@ -55,6 +60,10 @@ const IDLE_UPDATE_STATE: UpdateState = {
   error: null
 }
 
+/**
+ * @description 创建假更新服务，各动作返回固定状态
+ * @returns 假更新服务
+ */
 function createFakeUpdates(): FakeUpdates {
   return {
     check: async () => ({
@@ -70,6 +79,11 @@ function createFakeUpdates(): FakeUpdates {
   }
 }
 
+/**
+ * @description 组装 IPC 夹具：假 ipcMain、引擎、设置存储与可选的窗口/更新服务
+ * @param overrides 是否启用窗口控制与更新服务，以及导入失败、打开外链等注入点
+ * @returns 测试用的 IPC 夹具
+ */
 function createHarness(
   overrides: {
     importFileError?: Error

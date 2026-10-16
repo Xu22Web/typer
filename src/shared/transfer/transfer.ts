@@ -1,8 +1,6 @@
 /**
  * 文件传输的**纯**类型与常量（主进程、preload、渲染进程共用）。
- *
- * 这里刻意不引用任何 node: 模块或主进程实现：渲染进程要据此渲染选项与限制，
- * 而线格式（编解码 / 校验）的唯一实现在 `tools/lib/frame.mjs`（只有主进程与脚本用）。
+ * 刻意不引用任何 `node:` 模块，因为渲染进程要据此渲染选项；线格式（编解码 / 校验）的唯一实现在 `tools/lib/frame.mjs`。
  */
 
 /** 载荷编码（与线格式的 `enc` 字段一致）。 */
@@ -175,7 +173,11 @@ export interface ResumeMatch {
   warnings: string[]
 }
 
-/** 把字节数格式化成人类可读文本（纯函数，界面与日志共用）。 */
+/**
+ * @description 把字节数格式化成人类可读文本（纯函数，界面与日志共用）
+ * @param bytes 字节数
+ * @returns 人类可读的文本（非法输入返回破折号）
+ */
 export function formatBytes(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes < 0) return '—'
   if (bytes < 1024) return `${bytes} B`
@@ -189,7 +191,11 @@ export function formatBytes(bytes: number): string {
   return `${value >= 100 ? Math.round(value) : value.toFixed(1)} ${units[index]}`
 }
 
-/** 把毫秒格式化成"预计耗时"（粗粒度即可，用于提示用户量级）。 */
+/**
+ * @description 把毫秒格式化成粗粒度的预计耗时（用于提示用户量级）
+ * @param ms 毫秒数
+ * @returns 人类可读的耗时文本（非法输入返回破折号）
+ */
 export function formatDuration(ms: number): string {
   if (!Number.isFinite(ms) || ms <= 0) return '—'
   const seconds = Math.round(ms / 1000)
@@ -200,7 +206,11 @@ export function formatDuration(ms: number): string {
   return `${hours} 小时 ${String(minutes % 60).padStart(2, '0')} 分`
 }
 
-/** 耗时量级分级：界面据此决定提示强度（黄/红）。 */
+/**
+ * @description 按耗时量级给出提示强度（界面据此决定黄 / 红）
+ * @param ms 毫秒数
+ * @returns 提示强度分级
+ */
 export function durationTone(ms: number): 'ok' | 'warn' | 'danger' {
   if (ms > 60 * 60 * 1000) return 'danger'
   if (ms > 10 * 60 * 1000) return 'warn'

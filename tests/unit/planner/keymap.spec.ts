@@ -10,7 +10,7 @@ import {
   validateLayout
 } from '@main/typing/planner/keymap'
 
-/** US 布局上 95 个可打印 ASCII 字符。 */
+/** @description US 布局上 95 个可打印 ASCII 字符 */
 const PRINTABLE_ASCII = Array.from({ length: 95 }, (_, index) => String.fromCharCode(0x20 + index))
 
 describe('键位表完整性', () => {
@@ -35,6 +35,12 @@ describe('键位表完整性', () => {
 
 describe('US 布局的关键映射', () => {
   const us = LAYOUTS.us
+  /**
+   * @description 断言某字符在 US 布局下映射到指定的基准键与修饰键
+   * @param char 待查字符
+   * @param vk 期望的虚拟键码
+   * @param modifiers 期望的修饰键列表
+   */
   const expectKey = (char: string, vk: number, modifiers: string[]): void => {
     expect(lookupLayoutKey(us, char), `${char} 未收录`).toEqual({ vk, modifiers })
   }
