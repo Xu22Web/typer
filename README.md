@@ -217,7 +217,7 @@ src/renderer/src/
 
 resources/icon.svg             # 图标源文件（灰色屏幕 + 彩色键盘磁贴）
 scripts/generate-icons.mjs     # SVG → 多尺寸 PNG / ICO / 预览图
-scripts/build-tools.mjs        # 接收端单文件打包（esbuild，target node16）+ Node 16 API 自检
+scripts/build-tools.mjs        # 接收端单文件打包（esbuild，target node16，压缩）+ Node 16 API 自检
 scripts/typing-host.ps1        # 输入宿主（打包时通过 extraResources 分发）
 tools/typer-recv.ts            # 接收端源码：逐片校验 / 断点续传 / 合并 / 整文件校验（TS）
 tools/typer-recv.mjs           # ↑ 的构建产物（单文件 ESM，随包分发到 resources/tools）

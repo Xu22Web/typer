@@ -2,7 +2,8 @@
 // 目标机（用户要"把文件从本机传到另一台机器"）通常没有 npm / 没有构建环境，因此产物必须：
 //   · 单文件自包含（除 node: 内置模块外不引入任何第三方依赖）；
 //   · 兼容 Node 16（很多老机器只有 Node 16），所以构建后要自检有没有用到更高版本才有的 API；
-//   · 能直接 `node typer-recv.mjs` 跑（ESM，靠 .mjs 扩展名让 Node 按模块解析）。
+//   · 能直接 `node typer-recv.mjs` 跑（ESM，靠 .mjs 扩展名让 Node 按模块解析）；
+//   · 尽量小：这份产物会作为文本被 Typer"打"进目标终端，体积直接决定输入耗时。
 // 用 `pnpm build:tools` 运行（dev / build / test 脚本已自动串联）。
 import { readFileSync, statSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
@@ -15,21 +16,14 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const entry = join(root, 'tools', 'typer-recv.ts')
 const outfile = join(root, 'tools', 'typer-recv.mjs')
 
-/** 产物必须是 .mjs 才能被 Node 当作 ESM 解析；这段话会被原样写进产物顶部，方便用户直接照着用。 */
+/**
+ * 产物头部说明，会被原样写进产物顶部。刻意保持极短：这段文字也会被用户"打"进目标终端，
+ * 只交代无法从代码里看出来的两件事——它是构建产物、以及必须保留 .mjs 扩展名。
+ */
 const BANNER = [
   '#!/usr/bin/env node',
-  '// Typer 文件接收端（file receiver）——单文件构建产物，请勿手工编辑，源码与改动请见 tools/typer-recv.ts。',
-  '//',
-  '// 用途：在目标机上零依赖接收 Typer 通过键盘 / 剪贴板"打"过来的文件分片，自动断点续传、',
-  '// 校验并合并出完整文件。不需要 npm install：除 Node 内置模块外没有任何第三方依赖，Node >= 16 即可运行。',
-  '//',
-  '// 使用方式：',
-  '//   1) 必须保存为 .mjs 扩展名（例如 typer-recv.mjs）：node 才会按 ES Module 解析该文件；',
-  '//      若改名为 .js，则需要把它放在含 {"type":"module"} 的 package.json 目录下，否则会报语法错误。',
-  '//   2) node typer-recv.mjs --help      查看完整参数说明',
-  '//   3) node typer-recv.mjs --selftest  先跑一遍自检（不联网、不落盘），确认环境可用',
-  '//',
-  '// 详细流程与常见问题见随包分发的 tools/README.md。'
+  '// Typer 文件接收端（构建产物，勿手改；源码与改动见 tools/typer-recv.ts）。',
+  '// 需保留 .mjs 扩展名（Node 按扩展名解析 ESM），Node >= 16。用法：node typer-recv.mjs --help / --selftest'
 ].join('\n')
 
 /**
@@ -85,7 +79,8 @@ async function main() {
     platform: 'node',
     format: 'esm',
     target: 'node16',
-    minify: false,
+    // 压缩：产物要作为文本打进目标终端，体积就是输入耗时
+    minify: true,
     sourcemap: false,
     legalComments: 'none',
     banner: { js: BANNER }

@@ -11,9 +11,9 @@ node typer-recv.mjs --help        # 查看全部选项
 node typer-recv.mjs --selftest    # 校验 CRC / 编码 / 转义 / 片号解析是否正常
 ```
 
-> 本目录里的 `.mjs` 是**构建产物**（源码 `typer-recv.ts`，由 `npm run build:tools` 用 esbuild 打成单文件）。
-> 发到目标机时请保留 `.mjs` 扩展名：Node 靠扩展名识别 ESM，改名成 `.js` 后需要同目录有
-> `{"type":"module"}` 的 `package.json` 才能运行。
+> 本目录里的 `.mjs` 是**构建产物**（源码 `typer-recv.ts`，由 `npm run build:tools` 用 esbuild 打成
+> 压缩过的单文件）。发到目标机时请保留 `.mjs` 扩展名：Node 靠扩展名识别 ESM，改名成 `.js` 后需要
+> 同目录有 `{"type":"module"}` 的 `package.json` 才能运行。
 
 ---
 
@@ -130,10 +130,14 @@ node typer-recv.mjs -o received.bin --token
 ## 6. 开发
 
 ```bash
-npm run build:tools    # tools/typer-recv.ts → tools/typer-recv.mjs（esbuild，target node16）
+npm run build:tools    # tools/typer-recv.ts → tools/typer-recv.mjs（esbuild，target node16，压缩输出）
 npm run test:system    # 先构建，再用真实子进程跑接收端做端到端验证
 ```
 
 改动 `src/main/util/frame.ts`（线格式）或 `tools/typer-recv.ts`（接收端）后都要重新构建。
 接收端代码必须留在 **Node 16 可用的 API 范围**内：`scripts/build-tools.mjs` 在构建后会扫描
 `structuredClone`、`Array#at` 等不可用 API，命中即构建失败。
+
+产物是**压缩过**的单文件（约 24 KB）：它会被 Typer 当作文本"打"进目标终端，
+体积直接决定在串口 / 远控这类只能逐字符输入的链路上要花多久，所以不开 sourcemap、
+不保留注释，未用到的线格式函数也会被 tree-shake 掉。
