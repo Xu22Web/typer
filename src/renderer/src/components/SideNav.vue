@@ -19,10 +19,10 @@ const { available } = useUpdate()
     <ul class="list">
       <li v-for="item in items" :key="item.to">
         <RouterLink class="item" :to="item.to" :title="item.hint">
-          <span class="nav-indicator" />
-          <span class="icon" :class="item.icon" />
-          <span class="label">{{ item.label }}</span>
-          <span
+          <div class="nav-indicator" />
+          <div class="icon" :class="item.icon" />
+          <div class="label">{{ item.label }}</div>
+          <div
             v-if="item.to === '/about' && available"
             class="badge"
             title="有新版本可用"

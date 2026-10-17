@@ -206,7 +206,10 @@ export class TransferSession {
 }
 
 /**
- * @description 判断文件是否属于"要发给用户的构建产物 / 说明文档 / 启动脚本"（.ts 源码与 .d.mts 类型声明留在仓库里，用户拿到也没用）
+ * @description 判断文件是否属于"要发给用户的构建产物 / 说明文档 / 启动脚本"（tools/ 里的 .ts 源码留在仓库里，用户拿到也没用）
+ *
+ * 这份清单必须与 `electron-builder.yml` 里 `extraResources` 给 tools/ 的 filter 保持一致：
+ * 导出目录要与安装包内的 resources/tools/ 是同一套文件，两处清单漂移会让二者对不上。
  * @param name 文件名（不含目录）
  * @returns 是否应复制
  */

@@ -28,7 +28,7 @@ const run = promisify(execFile)
 const root = resolve(fileURLToPath(new URL('.', import.meta.url)), '..', '..')
 
 /**
- * @description 定位接收端构建产物；产物由 `npm run build:tools`（源码 tools/typer-recv.ts）打包生成，
+ * @description 定位接收端构建产物；产物由 `pnpm build:tools`（源码 tools/typer-recv.ts）打包生成，
  * 缺失时必须明确报错——静默跳过会让"接收端坏了"看起来像"测试通过"
  * @param name 产物文件名
  * @returns 产物绝对路径
@@ -37,7 +37,7 @@ function toolPath(name: string): string {
   const path = join(root, 'tools', name)
   if (!existsSync(path)) {
     throw new Error(
-      `缺少接收端构建产物 ${path}：请先运行 npm run build:tools（由 tools/typer-recv.ts 打包生成）`
+      `缺少接收端构建产物 ${path}：请先运行 pnpm build:tools（由 tools/typer-recv.ts 打包生成）`
     )
   }
   return path
@@ -512,7 +512,11 @@ describe('应用与接收端的一致性（同一文件、同一参数）', () =
    */
   async function framesFromApp(
     path: string,
-    options: { encoding: 'hex' | 'b64' | 'txt'; chunkBytes: number; maxFrameChars: number },
+    options: {
+      encoding: 'hex' | 'b64' | 'txt' | 'gzb64'
+      chunkBytes: number
+      maxFrameChars: number
+    },
     only?: number[]
   ): Promise<{ job: PreparedTransfer; lines: string[] }> {
     const job = await prepareTransfer({ path, options })
@@ -564,6 +568,35 @@ describe('应用与接收端的一致性（同一文件、同一参数）', () =
     expect(result.stderr).toBe('')
     expect(result.code).toBe(0)
     expect(readFileSync(join(work, 'txt.out')).equals(buffer)).toBe(true)
+    await app.job.dispose()
+  })
+
+  it('gzb64（压缩）编码的应用帧也能逐字节还原，且线上字符数显著更少', async () => {
+    const source = Buffer.from(
+      '压缩传输自检：文件、代码与 JSON 都能被压到很小。\n'.repeat(200),
+      'utf8'
+    )
+    writeFileSync(join(work, 'zip-src.txt'), source)
+
+    const app = await framesFromApp(join(work, 'zip-src.txt'), {
+      encoding: 'gzb64',
+      chunkBytes: 1024,
+      maxFrameChars: 4096
+    })
+    writeSubset('gz-frames.txt', app.lines)
+
+    const result = await runTool(
+      RECV,
+      ['--in', 'gz-frames.txt', '-o', 'gz.out', '-d', 'gz-work', '--quiet'],
+      work
+    )
+    expect(result.stderr).toBe('')
+    expect(result.code).toBe(0)
+    expect(readFileSync(join(work, 'gz.out')).equals(source)).toBe(true)
+
+    // 同一份数据用十六进制要 2 倍字符，压缩后应远少于原始字节数
+    expect(app.job.summary.frameChars).toBeLessThan(source.length)
+    expect(app.job.summary.wireBytes).toBeLessThan(source.length / 2)
     await app.job.dispose()
   })
 

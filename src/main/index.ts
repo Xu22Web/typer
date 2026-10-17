@@ -1,17 +1,8 @@
-import {
-  app,
-  BrowserWindow,
-  clipboard,
-  dialog,
-  globalShortcut,
-  ipcMain,
-  Menu,
-  net,
-  shell
-} from 'electron'
+import { app, BrowserWindow, dialog, globalShortcut, ipcMain, Menu, net, shell } from 'electron'
 import { spawn } from 'node:child_process'
 import { readFile } from 'node:fs/promises'
 import { basename, join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 
@@ -23,19 +14,22 @@ import {
   type ImportResult
 } from './ipc/registerIpc'
 import { SettingsStore } from './settings/store'
-import type { ImportCharset } from './settings/types'
+import type { ImportCharset, Settings } from './settings/types'
 import { copyToolsTo, TransferSession } from './transfer/session'
 import { readToolScript } from './transfer/toolScript'
 import { resolveToolsDir } from './transfer/toolsLocator'
 import { createDriver, type KeyboardDriver } from './typing/drivers'
 import { resolveHostScriptPath } from './typing/drivers/hostLocator'
 import { TypingEngine } from './typing/engine/TypingEngine'
+import { isBusy, isTerminal, type EngineState } from './typing/engine/states'
 import { disposeHotkeys, registerHotkeys } from './typing/hotkeys'
 import { createUpdateService, type UpdateService } from './update/updateService'
 import { realNow, realSleep } from './util/clock'
 import { createLogger } from './util/logger'
 import { settingsFilePath, updateDownloadDir } from './util/paths'
 import { decodeText } from './util/textFile'
+import { createFloatingWindow, type FloatingWindowController } from './window/floatingWindow'
+import type { FloatPlacement } from './window/floatDock'
 
 /** 导入文件的体积上限；更大的内容请自行裁剪后再粘贴。 */
 const MAX_IMPORT_BYTES = 20 * 1024 * 1024
@@ -50,6 +44,7 @@ let driver: KeyboardDriver | null = null
 let mainWindow: BrowserWindow | null = null
 let updates: UpdateService | null = null
 let transfer: TransferSession | null = null
+let floating: FloatingWindowController | null = null
 
 /**
  * @description 把一条消息广播给所有未销毁的窗口
@@ -60,6 +55,54 @@ function broadcast(channel: string, payload: unknown): void {
   for (const window of BrowserWindow.getAllWindows()) {
     if (!window.isDestroyed()) window.webContents.send(channel, payload)
   }
+}
+
+/**
+ * @description 进度浮窗页面地址：开发模式指向 dev server 的 float.html，打包后指向产物里的 float.html
+ * @returns 可直接交给 BrowserWindow.loadURL 的地址
+ */
+function floatingPageUrl(): string {
+  const devServer = is.dev ? process.env['ELECTRON_RENDERER_URL'] : undefined
+  if (devServer) return `${devServer.replace(/\/+$/, '')}/float.html`
+  return pathToFileURL(join(__dirname, '../renderer/float.html')).href
+}
+
+/**
+ * @description 运行期同步进度浮窗：进行中最小化主窗口并显示浮窗，终态收起浮窗并召回主窗口
+ * @param state 引擎状态
+ */
+function syncFloatingWindow(state: EngineState): void {
+  if (isBusy(state)) {
+    const window = mainWindow
+    if (window && !window.isDestroyed() && !window.isMinimized()) window.minimize()
+    floating?.show()
+    return
+  }
+
+  if (!isTerminal(state)) return
+
+  floating?.hide()
+  const window = mainWindow
+  if (!window || window.isDestroyed()) return
+  if (window.isMinimized()) window.restore()
+  window.show()
+  window.focus()
+}
+
+/** @description 设置里的浮窗摆放 → 控制器使用的摆放 */
+function toFloatPlacement(floating: Settings['floating']): FloatPlacement {
+  if (floating.mode === 'floating') {
+    return { mode: 'floating', x: floating.x, y: floating.y }
+  }
+  return { mode: 'docked', edge: floating.edge, offset: floating.offset }
+}
+
+/** @description 控制器使用的摆放 → 设置里的浮窗摆放 */
+function fromFloatPlacement(placement: FloatPlacement): Settings['floating'] {
+  if (placement.mode === 'floating') {
+    return { mode: 'floating', edge: 'right', offset: 0, x: placement.x, y: placement.y }
+  }
+  return { mode: 'docked', edge: placement.edge, offset: placement.offset, x: 0, y: 0 }
 }
 
 /** @description 创建主窗口：无边框自绘标题栏，并把最大化状态变化推给渲染进程 */
@@ -103,6 +146,8 @@ function createWindow(): void {
 
   window.on('closed', () => {
     if (mainWindow === window) mainWindow = null
+    // 主窗口关闭后浮窗没有要"召回"的目标，一并销毁
+    floating?.dispose()
   })
 
   window.webContents.setWindowOpenHandler((details) => {
@@ -138,7 +183,6 @@ function createUnavailableDriver(message: string): KeyboardDriver {
     releaseAll: async () => {},
     foreground: async () => ({ hwnd: 0, pid: 0, title: '' }),
     probe: async () => ({ stuckKeys: [] }),
-    paste: fail,
     dispose: async () => {}
   }
 }
@@ -233,10 +277,9 @@ async function importTextFile(
 
 /**
  * @description 按当前平台与设置构建键盘驱动；非 Windows 或构建失败时退化为占位驱动
- * @param store 设置存储（读取剪贴板恢复开关）
  * @returns 键盘驱动
  */
-function buildDriver(store: SettingsStore): KeyboardDriver {
+function buildDriver(): KeyboardDriver {
   if (process.platform !== 'win32') {
     return createUnavailableDriver(
       `当前系统（${process.platform}）暂不支持键盘注入：本程序目前仅支持 Windows`
@@ -246,13 +289,11 @@ function buildDriver(store: SettingsStore): KeyboardDriver {
   try {
     return createDriver({
       platform: process.platform,
-      clipboard,
       locator: {
         isPackaged: app.isPackaged,
         appPath: app.getAppPath(),
         resourcesPath: process.resourcesPath
       },
-      restoreClipboard: store.get().clipboard.restore,
       onLog: (level, message) => logger[level](message)
     })
   } catch (error) {
@@ -293,7 +334,20 @@ async function bootstrap(): Promise<void> {
     logger.error(error instanceof Error ? error.message : String(error))
   }
 
-  driver = buildDriver(store)
+  driver = buildDriver()
+
+  // 进度浮窗：跟随引擎状态显示/收起；摆放（贴边细条或自由浮动）跨重启记住
+  floating = createFloatingWindow({
+    preloadPath: join(__dirname, '../preload/index.js'),
+    pageUrl: floatingPageUrl(),
+    initialPlacement: toFloatPlacement(store.get().floating),
+    onPlacementChange: (placement) => {
+      const result = store.update({ floating: fromFloatPlacement(placement) })
+      if (!result.ok) logger.warn(`浮窗位置保存失败：${result.error ?? '未知原因'}`)
+    },
+    onState: (payload) => broadcast(IPC.eventFloatState, payload),
+    onLog: (level, message) => logger[level](`进度浮窗：${message}`)
+  })
 
   const bridge = createEngineEventBridge(broadcast)
   // 文件传输会话：准备进度要实时推给界面（大文件哈希可能持续数秒）
@@ -306,7 +360,10 @@ async function bootstrap(): Promise<void> {
     driver,
     sleep: realSleep,
     now: realNow,
-    onState: bridge.onState,
+    onState: (snapshot) => {
+      bridge.onState(snapshot)
+      syncFloatingWindow(snapshot.state)
+    },
     onProgress: bridge.onProgress,
     onLog: (level, message) => {
       logger[level](message)
@@ -372,7 +429,14 @@ async function bootstrap(): Promise<void> {
         else window.maximize()
       },
       close: () => mainWindow?.close(),
-      isMaximized: () => mainWindow?.isMaximized() ?? false
+      isMaximized: () => mainWindow?.isMaximized() ?? false,
+      focusMain: () => {
+        const window = mainWindow
+        if (!window || window.isDestroyed()) return
+        if (window.isMinimized()) window.restore()
+        window.show()
+        window.focus()
+      }
     },
     updates: updates ?? undefined,
     transfer: {
@@ -388,6 +452,14 @@ async function bootstrap(): Promise<void> {
     },
     openExternal: async (url) => {
       await shell.openExternal(url)
+    },
+    float: {
+      expand: () => floating?.expand(),
+      collapse: () => floating?.collapse(),
+      dragBy: (dx, dy) => floating?.dragBy(dx, dy),
+      drop: () => floating?.drop(),
+      dock: () => floating?.dock(),
+      setInteractive: (interactive) => floating?.setInteractive(interactive)
     },
     logger
   })
@@ -457,9 +529,10 @@ app.on('window-all-closed', () => {
   app.quit()
 })
 
-/** @description 退出前释放全局热键、引擎与传输会话 */
+/** @description 退出前释放全局热键、引擎、传输会话与浮窗 */
 app.on('before-quit', () => {
   disposeHotkeys({ register: () => false, unregisterAll: () => globalShortcut.unregisterAll() })
   void engine?.dispose().catch(() => {})
   void transfer?.dispose().catch(() => {})
+  floating?.dispose()
 })

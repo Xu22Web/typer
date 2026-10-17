@@ -27,19 +27,19 @@ const ring = computed(() => {
     <div v-if="visible" class="overlay">
       <div class="progress-ring" :style="{ backgroundImage: ring }">
         <div class="inner">
-          <span class="count mono">{{ seconds }}</span>
-          <span class="unit">秒后开始</span>
+          <div class="count mono">{{ seconds }}</div>
+          <div class="unit">秒后开始</div>
         </div>
       </div>
 
-      <p class="title">请切换到目标窗口</p>
-      <p class="target">
-        <span class="i-mdi-target" />
-        {{ typing.targetWindow.value }}
-      </p>
+      <div class="title">请切换到目标窗口</div>
+      <div class="target">
+        <div class="i-mdi-target" />
+        <div>{{ typing.targetWindow.value }}</div>
+      </div>
 
       <ElButton type="danger" plain @click="typing.stop()">
-        <span class="i-mdi-close" /> 取消输入
+        <span class="i-mdi-close" /><span>取消输入</span>
       </ElButton>
     </div>
   </Transition>
@@ -103,7 +103,7 @@ const ring = computed(() => {
 }
 
 .target {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   gap: 6px;
   font-size: 13px;

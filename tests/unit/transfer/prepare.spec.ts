@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { inflateRawSync } from 'node:zlib'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { parseFrame, unescapeText } from '@main/util/frame'
 import { TransferError, prepareTransfer } from '@main/transfer/prepare'
@@ -59,7 +60,7 @@ function binary(size: number, seed = 3): Buffer {
 async function prepare(
   path: string,
   overrides: Partial<{
-    encoding: 'hex' | 'b64' | 'txt'
+    encoding: 'hex' | 'b64' | 'txt' | 'gzb64'
     chunkBytes: number
     maxFrameChars: number
   }> = {},
@@ -183,6 +184,67 @@ describe('prepareTransfer · 逐片渲染', () => {
     if (first.kind !== 'data' || last.kind !== 'data') throw new Error('应为数据帧')
     expect(first.payload.length).toBe(4096 * 2)
     expect(last.bytes).toBe(4096)
+  })
+})
+
+describe('prepareTransfer · 压缩编码 gzb64', () => {
+  it('每片先压缩再 Base64：帧声明的长度与校验都按压缩后字节，解压后逐字节一致', async () => {
+    const text = '压缩传输自检：文件、代码与 JSON 都能显著变小。\n'.repeat(60)
+    const source = Buffer.from(text, 'utf8')
+    const job = await prepare(writeSource('note.txt', source), {
+      encoding: 'gzb64',
+      chunkBytes: 256,
+      maxFrameChars: 4096
+    })
+
+    expect(job.summary.encoding).toBe('gzb64')
+    expect(job.summary.wireBytes).toBeLessThan(source.length / 2)
+    // 线上字符数远少于十六进制（2 倍）甚至原始字节数
+    expect(job.summary.frameChars).toBeLessThan(source.length)
+
+    const rebuilt: Buffer[] = []
+    for (let index = 0; index < job.summary.total; index++) {
+      const line = await job.renderFrame(index)
+      const frame = parseFrame(line)
+      if (frame.kind !== 'data') throw new Error('应为数据帧')
+      const wire = Buffer.from(frame.payload, 'base64')
+      expect(wire.length).toBe(frame.bytes)
+      expect(job.frameChars(index)).toBe(line.length)
+      rebuilt.push(inflateRawSync(wire))
+    }
+    expect(Buffer.concat(rebuilt).equals(source)).toBe(true)
+  })
+
+  it('不可压缩数据（随机字节）也能逐字节还原，且不会超帧长上限', async () => {
+    const source = binary(4096, 21)
+    const job = await prepare(writeSource('rand.bin', source), {
+      encoding: 'gzb64',
+      chunkBytes: 1024,
+      maxFrameChars: 4096
+    })
+
+    expect(job.summary.total).toBe(4)
+    expect(job.summary.wireBytes).toBeGreaterThanOrEqual(source.length)
+    const rebuilt: Buffer[] = []
+    for (let index = 0; index < job.summary.total; index++) {
+      const frame = parseFrame(await job.renderFrame(index))
+      if (frame.kind !== 'data') throw new Error('应为数据帧')
+      rebuilt.push(inflateRawSync(Buffer.from(frame.payload, 'base64')))
+    }
+    expect(Buffer.concat(rebuilt).equals(source)).toBe(true)
+  })
+
+  it('空文件与单字节文件同样成立', async () => {
+    const emptyJob = await prepare(writeSource('empty.bin', Buffer.alloc(0)), { encoding: 'gzb64' })
+    expect(emptyJob.summary.total).toBe(0)
+    expect(emptyJob.summary.wireBytes).toBe(0)
+
+    const tinyJob = await prepare(writeSource('tiny.bin', Buffer.from([0x41])), {
+      encoding: 'gzb64'
+    })
+    const frame = parseFrame(await tinyJob.renderFrame(0))
+    if (frame.kind !== 'data') throw new Error('应为数据帧')
+    expect(inflateRawSync(Buffer.from(frame.payload, 'base64'))).toEqual(Buffer.from([0x41]))
   })
 })
 

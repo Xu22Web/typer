@@ -113,19 +113,23 @@ function openDownloadPage(): void {
 <template>
   <section class="card update">
     <div class="card-head">
-      <h2 class="card-title"><span class="icon i-mdi-cloud-download-outline" /> 版本与更新</h2>
+      <h2 class="card-title">
+        <span class="icon i-mdi-cloud-download-outline" /><span>版本与更新</span>
+      </h2>
       <div class="spacer" />
-      <span class="chip" :class="{ accent: available }">
-        <span class="dot" :class="tone" />
-        当前 <strong>{{ currentVersion || '—' }}</strong>
-        <template v-if="latestVersion && available">
-          → 最新 <strong>{{ latestVersion }}</strong>
-        </template>
-      </span>
+      <div class="chip" :class="{ accent: available }">
+        <div class="dot" :class="tone" />
+        <div>
+          当前 <strong>{{ currentVersion || '—' }}</strong>
+          <template v-if="latestVersion && available">
+            → 最新 <strong>{{ latestVersion }}</strong>
+          </template>
+        </div>
+      </div>
     </div>
 
     <p class="status">
-      {{ statusText }}
+      <span>{{ statusText }}</span>
       <span v-if="published" class="muted">（{{ published }} 发布）</span>
     </p>
 
@@ -133,75 +137,78 @@ function openDownloadPage(): void {
     <div v-if="downloading || state.status === 'verifying'" class="progress">
       <ElProgress :percentage="progressPercent" :show-text="false" :stroke-width="6" />
       <div class="progress-meta mono">
-        <span>{{ transferred }}</span>
-        <span v-if="speedLabel">· {{ speedLabel }}</span>
-        <span class="spacer" />
-        <span>{{ progressPercent }}%</span>
+        <div>{{ transferred }}</div>
+        <div v-if="speedLabel">· {{ speedLabel }}</div>
+        <div class="spacer" />
+        <div>{{ progressPercent }}%</div>
       </div>
     </div>
 
     <!-- 校验结果 -->
     <div v-if="state.status === 'ready' || state.status === 'unverified'" class="verify">
-      <span
+      <div
         class="chip"
         :class="{ accent: state.status === 'ready', warn: state.status === 'unverified' }"
       >
-        <span
+        <div
           :class="state.status === 'ready' ? 'i-mdi-shield-check' : 'i-mdi-shield-alert-outline'"
         />
-        {{ state.status === 'ready' ? verifiedLabel || 'SHA-256 校验通过' : '未提供校验和' }}
-      </span>
+        <div>
+          {{ state.status === 'ready' ? verifiedLabel || 'SHA-256 校验通过' : '未提供校验和' }}
+        </div>
+      </div>
       <code v-if="digestShort" class="digest" :title="state.sha256 ?? ''"
         >SHA-256 {{ digestShort }}</code
       >
     </div>
 
-    <p v-if="error" class="error">
-      <span class="i-mdi-alert-circle-outline" />
-      {{ error }}
-    </p>
+    <div v-if="error" class="error">
+      <div class="i-mdi-alert-circle-outline" />
+      <div>{{ error }}</div>
+    </div>
 
     <!-- 发布说明 -->
     <template v-if="available && result?.latest?.notes">
       <div class="notes-head">
         <button class="notes-toggle" type="button" @click="notesVisible = !notesVisible">
-          <span :class="notesVisible ? 'i-mdi-chevron-up' : 'i-mdi-chevron-down'" />
-          更新内容
+          <span :class="notesVisible ? 'i-mdi-chevron-up' : 'i-mdi-chevron-down'" /><span
+            >更新内容</span
+          >
         </button>
-        <span v-if="sizeLabel" class="muted">安装包 {{ sizeLabel }}</span>
+        <div v-if="sizeLabel" class="muted">安装包 {{ sizeLabel }}</div>
       </div>
       <pre v-if="notesVisible" class="notes">{{ result.latest.notes }}</pre>
     </template>
 
     <div class="actions">
       <ElButton :loading="checking" :disabled="busy" @click="checkNow()">
-        <span class="i-mdi-refresh" /> 检查更新
+        <span class="i-mdi-refresh" /><span>检查更新</span>
       </ElButton>
 
       <template v-if="downloading">
         <ElButton type="danger" plain @click="cancel()">
-          <span class="i-mdi-close" /> 取消下载
+          <span class="i-mdi-close" /><span>取消下载</span>
         </ElButton>
       </template>
 
       <template v-else-if="state.status === 'ready'">
         <ElButton type="primary" @click="install()">
-          <span class="i-mdi-download" /> 安装并重启
+          <span class="i-mdi-download" /><span>安装并重启</span>
         </ElButton>
       </template>
 
       <template v-else-if="available">
         <ElButton type="primary" :disabled="!result?.latest?.asset" @click="download()">
-          <span class="i-mdi-download" /> 下载更新
+          <span class="i-mdi-download" /><span>下载更新</span>
         </ElButton>
         <ElButton v-if="!result?.latest?.asset" type="primary" plain @click="openDownloadPage()">
-          <span class="i-mdi-open-in-new" /> 前往发布页
+          <span class="i-mdi-open-in-new" /><span>前往发布页</span>
         </ElButton>
       </template>
 
       <template v-else-if="state.status === 'unverified'">
         <ElButton type="primary" plain @click="openDownloadPage()">
-          <span class="i-mdi-open-in-new" /> 手动前往发布页
+          <span class="i-mdi-open-in-new" /><span>手动前往发布页</span>
         </ElButton>
       </template>
     </div>
@@ -266,7 +273,7 @@ function openDownloadPage(): void {
 }
 
 .notes-toggle {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   gap: 4px;
   padding: 2px 0;

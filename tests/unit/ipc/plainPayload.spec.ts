@@ -129,8 +129,6 @@ describe('toPlainPayload', () => {
   it('真实的设置对象（含全部嵌套分组）净化后可跨 IPC 且内容不变', () => {
     const settings = reactive({
       startDelayMs: 3000,
-      insertMode: 'auto',
-      autoPasteThreshold: 500,
       chunkSize: 8,
       seed: 0,
       timing: {
@@ -152,7 +150,8 @@ describe('toPlainPayload', () => {
       focusGuard: 'warn',
       hotkeys: { stop: 'Ctrl+Alt+X', togglePause: 'Ctrl+Alt+P' },
       privacy: { persistContent: false, persistSettings: true },
-      clipboard: { restore: true, importCharset: 'auto' },
+      files: { importCharset: 'auto' },
+      transfer: { encoding: 'hex', chunkBytes: 1024, maxFrameChars: 4096, interFrameDelayMs: 400 },
       verifyStuckKeys: true,
       logLevel: 'info'
     })

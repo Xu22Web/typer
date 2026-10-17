@@ -167,6 +167,23 @@ export class ProcessLinesClient {
     return response.data as T
   }
 
+  /**
+   * @description 发出一条请求但不等响应（"尽力而为"的指令，如紧急中止）
+   * @param cmd 指令名
+   * @param payload 指令附带的字段
+   * @returns 是否已写入 stdin（宿主未启动或管道已断开时为 false）
+   */
+  send(cmd: string, payload: Record<string, unknown> = {}): boolean {
+    const child = this.child
+    if (!child || !child.stdin) return false
+    try {
+      child.stdin.write(encodeRequest({ id: this.nextId++, cmd, ...payload }), 'utf8')
+      return true
+    } catch {
+      return false
+    }
+  }
+
   /** @description 关闭子进程并让所有未完成的请求立即失败 */
   async dispose(): Promise<void> {
     if (this.disposed) return

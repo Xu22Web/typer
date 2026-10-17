@@ -1,3 +1,4 @@
+import type { SendOptions } from './KeyboardDriver'
 import type { KeystrokeAction, Modifier } from '../planner/types'
 
 /** 宿主可执行的原子动作（JSON Lines 协议的最小单元）。 */
@@ -20,6 +21,72 @@ export interface HostWaitItem {
 }
 
 export type HostItem = HostKeyItem | HostUnicodeItem | HostWaitItem
+
+/** 修饰键 → 位掩码（与宿主里 C# 的 MOD_* 常量一一对应）。每个键位最多带一个修饰键。 */
+export const MODIFIER_BITS: Readonly<Record<Modifier, number>> = {
+  ctrl: 1,
+  shift: 2,
+  alt: 4,
+  win: 8
+}
+
+/** 动作操作码（与宿主里 C# 的 OP_* 常量一一对应）。 */
+export const HOST_OP = { key: 0, unicode: 1, wait: 2 } as const
+
+/**
+ * `type` 指令的扁平载荷：ops / vals / mods / delays 四个等长数组。
+ *
+ * 为什么不是"每个动作一个 JSON 对象"：宿主逐个读 PowerShell 对象的属性很贵
+ * （实测每个动作约 2.4ms，把管线吞吐压到几百/秒）；换成扁平数组后宿主只需把
+ * `"111"` 转成 int[]，chord 组装全部在 C# 里完成。
+ */
+export type EncodedHostBatch = {
+  ops: number[]
+  /** key: vk；unicode: UTF-16 码元；wait: 0 */
+  vals: number[]
+  /** key: 修饰键位掩码；其它动作恒为 0 */
+  mods: number[]
+  /** 执行该动作之前要等待的毫秒数（wait 动作的时长也放在这里） */
+  delays: number[]
+  /** 每个动作单独一次 SendInput（数据帧用；省略表示允许宿主攒批） */
+  perItem?: boolean
+}
+
+/**
+ * @description 把协议层动作编码成宿主可直接消费的扁平数组
+ * @param items 协议层动作列表
+ * @returns 四个等长数组构成的批量载荷
+ */
+export function encodeHostItems(items: HostItem[], options: SendOptions = {}): EncodedHostBatch {
+  const ops: number[] = []
+  const vals: number[] = []
+  const mods: number[] = []
+  const delays: number[] = []
+
+  for (const item of items) {
+    if (item.t === 'key') {
+      ops.push(HOST_OP.key)
+      vals.push(item.vk)
+      mods.push(item.mods.reduce((bits, mod) => bits | MODIFIER_BITS[mod], 0))
+      delays.push(item.delay)
+    } else if (item.t === 'unicode') {
+      ops.push(HOST_OP.unicode)
+      vals.push(item.cu)
+      mods.push(0)
+      delays.push(item.delay)
+    } else {
+      // 等待动作的时长也放进 delays：宿主用同一条"断批 + 等待"路径处理，无需单独分支
+      ops.push(HOST_OP.wait)
+      vals.push(0)
+      mods.push(0)
+      delays.push(item.ms)
+    }
+  }
+
+  return options.perItem === true
+    ? { ops, vals, mods, delays, perItem: true }
+    : { ops, vals, mods, delays }
+}
 
 /** 带节奏信息的动作（引擎产出，驱动转成 HostItem）。 */
 export interface ScheduledAction {
@@ -53,6 +120,18 @@ export interface HostTypeData {
   injected: number
   /** 本批包含的动作数 */
   items?: number
+  /** SendInput 被输入队列拖住的总时长（毫秒）：目标端消化不过来时会变大 */
+  blockedMs?: number
+  /** 单次 SendInput 被拖住的最长时长（毫秒） */
+  maxBlockedMs?: number
+  /** 宿主为"让队列排空"额外等待的总时长（毫秒），即自适应降速量 */
+  valveMs?: number
+  /** 被拖住的 SendInput 次数 */
+  blockedCalls?: number
+  /** 这一批被"紧急中止"打断：剩余动作被丢弃，因此 injected 会少于 requested */
+  cancelled?: boolean
+  /** 本批结束时宿主看到的前台窗口：焦点守护据此判定，省掉单独一次往返 */
+  foreground?: HostForegroundData
 }
 
 export interface HostPingData {
@@ -94,8 +173,7 @@ export const ERROR_MESSAGES: Readonly<Record<string, string>> = {
   E_TIMEOUT: '输入宿主响应超时',
   E_HOST_EXIT: '输入宿主进程意外退出',
   E_NOT_STARTED: '输入宿主尚未启动',
-  E_UNSUPPORTED_PLATFORM: '当前系统不受支持：本程序仅支持 Windows',
-  E_CLIPBOARD: '剪贴板操作失败'
+  E_UNSUPPORTED_PLATFORM: '当前系统不受支持：本程序仅支持 Windows'
 }
 
 /**
@@ -119,7 +197,8 @@ export function describeError(error: unknown): string {
 export function toHostItems(scheduled: ScheduledAction[]): HostItem[] {
   const items: HostItem[] = []
   for (const { action, delayMs } of scheduled) {
-    const delay = Math.max(0, Math.round(delayMs))
+    // 保留 0.25ms 精度：极速档的间隔可能是亚毫秒，取整到毫秒会把节奏放慢一倍
+    const delay = Math.max(0, Math.round(delayMs * 4) / 4)
     if (action.kind === 'key') {
       items.push({ t: 'key', vk: action.vk, mods: [...action.modifiers], delay })
     } else if (action.kind === 'unicode') {
@@ -129,6 +208,37 @@ export function toHostItems(scheduled: ScheduledAction[]): HostItem[] {
     }
   }
   return items
+}
+
+/**
+ * @description 把一段纯 ASCII 文本直接编码成 Unicode 注入项（帧模式快路径）。
+ *
+ * 帧文本只含可打印 ASCII，逐字符走 planner / 调度器只会产生成千上万个临时对象；
+ * 这里直接按 UTF-16 码元生成动作，并把换行映射成 CR（接收端按回车断行）。
+ * @param text 帧内容（含行尾换行）
+ * @returns 协议层动作列表（延迟全为 0）
+ */
+export function toUnicodeHostItems(text: string): HostItem[] {
+  const items: HostItem[] = new Array(text.length)
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i)
+    items[i] = { t: 'unicode', cu: code === 0x0a ? 0x0d : code, delay: 0 }
+  }
+  return items
+}
+
+/**
+ * @description 判断一段文本能否走上面那条快路径（只含可打印 ASCII 与换行）
+ * @param text 待判断的文本
+ * @returns 是否可以直接按码元注入
+ */
+export function isPlainAsciiText(text: string): boolean {
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i)
+    if (code === 0x0a) continue
+    if (code < 0x20 || code > 0x7e) return false
+  }
+  return true
 }
 
 /**
@@ -241,6 +351,8 @@ export function assertInjectionResult(data: unknown, requestedEvents: number): H
   if (typeof candidate.injected !== 'number' || typeof candidate.requested !== 'number') {
     throw new ProtocolError('E_PARSE', 'type 指令的返回内容缺少 injected / requested')
   }
+  // 被中止打断的批次本来就会少注入，不能当成"注入不足"报错
+  if (candidate.cancelled === true) return candidate as HostTypeData
   if (candidate.injected < candidate.requested) {
     throw new ProtocolError(
       'E_INJECT_FAILED',

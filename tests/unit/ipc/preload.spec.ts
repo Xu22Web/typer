@@ -44,6 +44,7 @@ interface ExposedApi {
     toggleMaximize: () => Promise<unknown>
     close: () => Promise<unknown>
     isMaximized: () => Promise<unknown>
+    focusMain: () => Promise<unknown>
     onState: (listener: (payload: { maximized: boolean }) => void) => () => void
   }
   updates: {
@@ -52,6 +53,14 @@ interface ExposedApi {
     cancel: () => Promise<unknown>
     install: () => Promise<unknown>
     state: () => Promise<unknown>
+  }
+  float: {
+    expand: () => Promise<unknown>
+    collapse: () => Promise<unknown>
+    drag: (dx: number, dy: number) => Promise<unknown>
+    drop: () => Promise<unknown>
+    setInteractive: (interactive: boolean) => Promise<unknown>
+    onState: (listener: (payload: { state: string; edge: string }) => void) => () => void
   }
   openExternal: (url: string) => Promise<unknown>
 }
@@ -152,6 +161,9 @@ describe('preload 的 IPC 参数净化', () => {
 
     await api.window.isMaximized()
     expect(callAt(3).channel).toBe('window:is-maximized')
+
+    await api.window.focusMain()
+    expect(callAt(4).channel).toBe('window:focus-main')
   })
 
   it('更新接口走各自的频道，force 默认带上 false', async () => {
@@ -185,5 +197,26 @@ describe('preload 的 IPC 参数净化', () => {
 
     expect(callAt().channel).toBe('shell:open-external')
     expect(callAt().payload).toBe('https://github.com/Xu22Web/typer')
+  })
+
+  it('浮窗动作走约定频道，拖动传 {dx,dy}', async () => {
+    const api = getApi()
+
+    await api.float.expand()
+    expect(callAt(0).channel).toBe('float:expand')
+
+    await api.float.collapse()
+    expect(callAt(1).channel).toBe('float:collapse')
+
+    await api.float.drag(12, -8)
+    expect(callAt(2).channel).toBe('float:drag')
+    expect(callAt(2).payload).toEqual({ dx: 12, dy: -8 })
+
+    await api.float.drop()
+    expect(callAt(3).channel).toBe('float:drop')
+
+    await api.float.setInteractive(true)
+    expect(callAt(4).channel).toBe('float:interactive')
+    expect(callAt(4).payload).toBe(true)
   })
 })

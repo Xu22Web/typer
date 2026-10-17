@@ -1,17 +1,26 @@
-import type { EngineSettings, InsertMode } from '../typing/engine/TypingEngine'
+import type { EngineSettings } from '../typing/engine/TypingEngine'
 import type { FocusGuardMode } from '../typing/focus/focusGuard'
 import { isLayoutId, type LayoutId } from '../typing/planner/keymap'
+import {
+  INJECTION_PROFILES,
+  PROFILE_LIMITS,
+  TRANSFER_PACES,
+  type TransferPace
+} from '../typing/scheduling/profile'
 import type { JitterDistribution, SpeedMode } from '../typing/scheduling/timing'
 import type { TypoCorrection, TypoStyle } from '../typing/scheduling/typo'
-import { TRANSFER_LIMITS, type TransferEncoding } from '@shared/transfer/transfer'
+import {
+  TRANSFER_ENCODINGS,
+  TRANSFER_LIMITS,
+  type TransferEncoding
+} from '@shared/transfer/transfer'
+import { DEFAULT_PLACEMENT, type DockEdge } from '../window/floatDock'
 import type { ImportCharset, LogLevel, Settings } from './types'
 
 export type { ImportCharset, LogLevel, Settings } from './types'
 
 export const DEFAULT_SETTINGS: Settings = {
   startDelayMs: 3000,
-  insertMode: 'auto',
-  autoPasteThreshold: 500,
   chunkSize: 8,
   seed: 0,
   timing: {
@@ -28,6 +37,9 @@ export const DEFAULT_SETTINGS: Settings = {
     burstSize: 40,
     burstPauseMs: 400
   },
+  injection: {
+    profile: 'normal'
+  },
   typo: {
     rate: 0.02,
     style: 'adjacent',
@@ -39,8 +51,6 @@ export const DEFAULT_SETTINGS: Settings = {
   },
   focusGuard: 'warn',
   hotkeys: {
-    // 只支持 Windows：用 Ctrl 而不是 CommandOrControl（后者在 Windows 上也等价于 Ctrl，
-    // 但显示出来会让人以为需要 Command 键）
     stop: 'Ctrl+Alt+X',
     togglePause: 'Ctrl+Alt+P'
   },
@@ -48,19 +58,23 @@ export const DEFAULT_SETTINGS: Settings = {
     persistContent: false,
     persistSettings: true
   },
-  clipboard: {
-    restore: true,
+  files: {
     importCharset: 'auto'
   },
   transfer: {
-    encoding: 'hex',
-    chunkBytes: 1024,
-    maxFrameChars: 4096,
-    interFrameDelayMs: 400,
-    pasteFrameIncludesNewline: true
+    encoding: 'gzb64',
+    paceMode: 'safe',
+    chunkBytes: 8192,
+    maxFrameChars: 24576,
+    interFrameDelayMs: 120
   },
   update: {
     checkOnStartup: true
+  },
+  floating: {
+    ...(DEFAULT_PLACEMENT as { mode: 'docked'; edge: DockEdge; offset: number }),
+    x: 0,
+    y: 0
   },
   verifyStuckKeys: true,
   logLevel: 'info'
@@ -69,10 +83,11 @@ export const DEFAULT_SETTINGS: Settings = {
 /** 每个数值字段的合法区间与默认值，用于“夹取”非法输入。 */
 export const NUMERIC_BOUNDS = {
   startDelayMs: [0, 60_000],
-  autoPasteThreshold: [100, 100_000],
-  chunkSize: [1, 64],
+  // 每批动作数与字符/秒的可选区间随注入档位变化，这里给的是标准档（normal）的区间；
+  // 归一化时按实际档位从 PROFILE_LIMITS 取值
+  chunkSize: PROFILE_LIMITS.normal.chunkSize,
   seed: [0, 0xffffffff],
-  cps: [0.5, 50],
+  cps: PROFILE_LIMITS.normal.cps,
   wpm: [10, 1000],
   baseIntervalMs: [1, 2000],
   jitterMs: [0, 500],
@@ -84,7 +99,11 @@ export const NUMERIC_BOUNDS = {
   burstPauseMs: [0, 10_000],
   typoRate: [0, 0.2],
   chunkBytes: [64, 1024 * 1024],
-  maxFrameChars: [256, 1024 * 1024]
+  maxFrameChars: [256, 1024 * 1024],
+  // 浮窗沿边位置与自由浮动坐标都只是屏幕坐标，真正的夹取由 floatDock 按所在显示器完成；
+  // 这里只挡掉明显非法的值
+  floatOffset: [-100_000, 100_000],
+  floatCoord: [-100_000, 100_000]
 } as const satisfies Record<string, readonly [number, number]>
 
 type BoundsKey = keyof typeof NUMERIC_BOUNDS
@@ -175,15 +194,41 @@ function asRecord(value: unknown): Record<string, unknown> {
   return typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : {}
 }
 
-const SPEED_MODES: readonly SpeedMode[] = ['cps', 'wpm', 'interval']
+const SPEED_MODES: readonly SpeedMode[] = ['cps', 'wpm', 'interval', 'max']
 const DISTRIBUTIONS: readonly JitterDistribution[] = ['uniform', 'gaussian']
-const INSERT_MODES: readonly InsertMode[] = ['keystroke', 'paste', 'auto']
 const TYPO_STYLES: readonly TypoStyle[] = ['adjacent', 'lookalike', 'transpose']
 const TYPO_CORRECTIONS: readonly TypoCorrection[] = ['auto', 'none']
 const FOCUS_MODES: readonly FocusGuardMode[] = ['off', 'warn', 'strict']
 const LOG_LEVELS: readonly LogLevel[] = ['silent', 'error', 'warn', 'info', 'debug']
 const CHARSETS: readonly ImportCharset[] = ['auto', 'utf8', 'utf16le', 'gbk']
-const TRANSFER_ENCODING_VALUES: readonly TransferEncoding[] = ['hex', 'b64', 'txt']
+const TRANSFER_ENCODING_VALUES: readonly TransferEncoding[] = TRANSFER_ENCODINGS
+const DOCK_EDGES: readonly DockEdge[] = ['left', 'right', 'top', 'bottom']
+const FLOAT_MODES = ['docked', 'floating'] as const
+
+/** 上一版的文件传输默认值。 */
+const LEGACY_TRANSFER_DEFAULTS = {
+  encoding: 'hex',
+  paceMode: 'safe',
+  chunkBytes: 1024,
+  maxFrameChars: 4096,
+  interFrameDelayMs: 400
+} as const
+
+/**
+ * @description 判断存盘的传输设置是否"从未被改动过"（逐项等于旧默认值）。
+ *
+ * 这种情况视为用户没有表达过偏好，升级后直接采用新的默认值（压缩编码、更大的片）——
+ * 只要有一项不同就完全尊重用户的选择。
+ * @param value 存盘的 transfer 字段
+ * @returns 是否与旧默认值完全一致
+ */
+function untouchedLegacyTransfer(value: unknown): boolean {
+  if (typeof value !== 'object' || value === null) return false
+  const record = value as Record<string, unknown>
+  return (
+    Object.keys(LEGACY_TRANSFER_DEFAULTS) as Array<keyof typeof LEGACY_TRANSFER_DEFAULTS>
+  ).every((key) => record[key] === LEGACY_TRANSFER_DEFAULTS[key])
+}
 
 /**
  * @description 把任意（旧版本或被手工编辑过的）JSON 归一化为合法设置；类型错误回退默认值、超范围夹取、未知字段丢弃，且永不抛错
@@ -193,14 +238,39 @@ const TRANSFER_ENCODING_VALUES: readonly TransferEncoding[] = ['hex', 'b64', 'tx
 export function normalizeSettings(raw: unknown): Settings {
   const root = asRecord(raw)
   const timing = asRecord(root.timing)
+  const injection = asRecord(root.injection)
   const typo = asRecord(root.typo)
   const keyboard = asRecord(root.keyboard)
   const hotkeys = asRecord(root.hotkeys)
   const privacy = asRecord(root.privacy)
-  const clipboard = asRecord(root.clipboard)
+  const files = asRecord(root.files)
   const update = asRecord(root.update)
-  const transfer = asRecord(root.transfer)
+  const transfer = asRecord(untouchedLegacyTransfer(root.transfer) ? undefined : root.transfer)
+  const floating = asRecord(root.floating)
   const bounds = NUMERIC_BOUNDS
+
+  const profile = readEnum(
+    injection,
+    'profile',
+    INJECTION_PROFILES,
+    DEFAULT_SETTINGS.injection.profile
+  )
+  const limits = PROFILE_LIMITS[profile]
+  // "不限速"只属于极速档：旧配置或被手改的文件在标准档下退回字符/秒
+  const requestedSpeed = readEnum(
+    timing,
+    'speedMode',
+    SPEED_MODES,
+    DEFAULT_SETTINGS.timing.speedMode
+  )
+  const speedMode: SpeedMode =
+    requestedSpeed === 'max' && profile !== 'turbo' ? 'cps' : requestedSpeed
+  const paceMode: TransferPace = readEnum(
+    transfer,
+    'paceMode',
+    TRANSFER_PACES,
+    DEFAULT_SETTINGS.transfer.paceMode
+  )
 
   const layoutValue = keyboard.layout
   const layout: LayoutId =
@@ -215,18 +285,12 @@ export function normalizeSettings(raw: unknown): Settings {
       DEFAULT_SETTINGS.startDelayMs,
       bounds.startDelayMs
     ),
-    insertMode: readEnum(root, 'insertMode', INSERT_MODES, DEFAULT_SETTINGS.insertMode),
-    autoPasteThreshold: readNumber(
-      root,
-      'autoPasteThreshold',
-      DEFAULT_SETTINGS.autoPasteThreshold,
-      bounds.autoPasteThreshold
-    ),
-    chunkSize: readNumber(root, 'chunkSize', DEFAULT_SETTINGS.chunkSize, bounds.chunkSize),
+    chunkSize: readNumber(root, 'chunkSize', DEFAULT_SETTINGS.chunkSize, limits.chunkSize),
     seed: Math.floor(readNumber(root, 'seed', DEFAULT_SETTINGS.seed, bounds.seed)),
+    injection: { profile },
     timing: {
-      speedMode: readEnum(timing, 'speedMode', SPEED_MODES, DEFAULT_SETTINGS.timing.speedMode),
-      cps: readNumber(timing, 'cps', DEFAULT_SETTINGS.timing.cps, bounds.cps),
+      speedMode,
+      cps: readNumber(timing, 'cps', DEFAULT_SETTINGS.timing.cps, limits.cps),
       wpm: readNumber(timing, 'wpm', DEFAULT_SETTINGS.timing.wpm, bounds.wpm),
       baseIntervalMs: readNumber(
         timing,
@@ -306,13 +370,12 @@ export function normalizeSettings(raw: unknown): Settings {
         DEFAULT_SETTINGS.privacy.persistSettings
       )
     },
-    clipboard: {
-      restore: readBool(clipboard, 'restore', DEFAULT_SETTINGS.clipboard.restore),
+    files: {
       importCharset: readEnum(
-        clipboard,
+        files,
         'importCharset',
         CHARSETS,
-        DEFAULT_SETTINGS.clipboard.importCharset
+        DEFAULT_SETTINGS.files.importCharset
       )
     },
     update: {
@@ -325,6 +388,7 @@ export function normalizeSettings(raw: unknown): Settings {
         TRANSFER_ENCODING_VALUES,
         DEFAULT_SETTINGS.transfer.encoding
       ),
+      paceMode,
       chunkBytes: readNumber(
         transfer,
         'chunkBytes',
@@ -342,15 +406,17 @@ export function normalizeSettings(raw: unknown): Settings {
         'interFrameDelayMs',
         DEFAULT_SETTINGS.transfer.interFrameDelayMs,
         TRANSFER_LIMITS.interFrameDelayMs
-      ),
-      pasteFrameIncludesNewline: readBool(
-        transfer,
-        'pasteFrameIncludesNewline',
-        DEFAULT_SETTINGS.transfer.pasteFrameIncludesNewline
       )
     },
     verifyStuckKeys: readBool(root, 'verifyStuckKeys', DEFAULT_SETTINGS.verifyStuckKeys),
-    logLevel: readEnum(root, 'logLevel', LOG_LEVELS, DEFAULT_SETTINGS.logLevel)
+    logLevel: readEnum(root, 'logLevel', LOG_LEVELS, DEFAULT_SETTINGS.logLevel),
+    floating: {
+      mode: readEnum(floating, 'mode', FLOAT_MODES, DEFAULT_SETTINGS.floating.mode),
+      edge: readEnum(floating, 'edge', DOCK_EDGES, DEFAULT_SETTINGS.floating.edge),
+      offset: readNumber(floating, 'offset', DEFAULT_SETTINGS.floating.offset, bounds.floatOffset),
+      x: readNumber(floating, 'x', DEFAULT_SETTINGS.floating.x, bounds.floatCoord),
+      y: readNumber(floating, 'y', DEFAULT_SETTINGS.floating.y, bounds.floatCoord)
+    }
   }
 }
 
@@ -366,12 +432,15 @@ export function mergeSettings(base: Settings, patch: unknown): Settings {
     ...base,
     ...patchRecord,
     timing: { ...base.timing, ...asRecord(patchRecord.timing) },
+    injection: { ...base.injection, ...asRecord(patchRecord.injection) },
     typo: { ...base.typo, ...asRecord(patchRecord.typo) },
     keyboard: { ...base.keyboard, ...asRecord(patchRecord.keyboard) },
     hotkeys: { ...base.hotkeys, ...asRecord(patchRecord.hotkeys) },
     privacy: { ...base.privacy, ...asRecord(patchRecord.privacy) },
-    clipboard: { ...base.clipboard, ...asRecord(patchRecord.clipboard) },
-    update: { ...base.update, ...asRecord(patchRecord.update) }
+    files: { ...base.files, ...asRecord(patchRecord.files) },
+    transfer: { ...base.transfer, ...asRecord(patchRecord.transfer) },
+    update: { ...base.update, ...asRecord(patchRecord.update) },
+    floating: { ...base.floating, ...asRecord(patchRecord.floating) }
   }
   return normalizeSettings(merged)
 }
@@ -384,16 +453,15 @@ export function mergeSettings(base: Settings, patch: unknown): Settings {
 export function toEngineSettings(settings: Settings): EngineSettings {
   return {
     startDelayMs: settings.startDelayMs,
-    insertMode: settings.insertMode,
-    autoPasteThreshold: settings.autoPasteThreshold,
     chunkSize: settings.chunkSize,
     layout: settings.keyboard.layout,
     forceUnicodeForAll: settings.keyboard.forceUnicodeForAll,
     focusGuard: settings.focusGuard,
     seed: settings.seed,
     verifyStuckKeys: settings.verifyStuckKeys,
+    profile: settings.injection.profile,
+    transferPace: settings.transfer.paceMode,
     interFrameDelayMs: settings.transfer.interFrameDelayMs,
-    pasteFrameIncludesNewline: settings.transfer.pasteFrameIncludesNewline,
     timing: settings.timing,
     typo: {
       rate: settings.typo.rate,

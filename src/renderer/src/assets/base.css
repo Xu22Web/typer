@@ -62,6 +62,13 @@
   --statusbar-h: 34px;
   --sidenav-w: 216px;
 
+  /* 动效：Win11 的 167ms（控件）/ 250ms（面）与 FastOutSlowIn 观感 */
+  --dur-fast: 167ms;
+  --dur-surface: 250ms;
+  --ease-standard: cubic-bezier(0.1, 0.9, 0.2, 1);
+  /* 输入页内容区上下内边距：页面高度按它扣除，保证操作条常驻且不出现多余滚动条 */
+  --content-pad-y: 48px;
+
   --font-sans:
     'Segoe UI Variable Text', 'Segoe UI Variable', 'Segoe UI', 'Microsoft YaHei UI',
     'Microsoft YaHei', system-ui, sans-serif;

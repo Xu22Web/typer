@@ -79,6 +79,20 @@ export class FocusGuard {
   }
 
   /**
+   * @description 用一批注入"搭车"带回来的前台快照判定焦点；没有快照时返回 null 表示需要另查
+   * @param current 宿主在上一批结束时看到的前台窗口；null 表示没有可用快照
+   * @param expected 倒计时前记录的目标窗口；null 表示不做检查
+   * @returns 判定结果；无法判定时为 null
+   */
+  judge(current: HostForegroundData | null, expected: FocusSnapshot | null): FocusVerdict | null {
+    if (this.mode === 'off' || expected === null) {
+      return { blocked: false, changed: false }
+    }
+    if (!current) return null
+    return evaluateFocus(this.mode, expected, current)
+  }
+
+  /**
    * @description 再次查询前台窗口并给出判定
    * @param expected 目标窗口快照；null 表示不做检查
    * @returns 是否阻止、窗口是否变化与需要提示的警告

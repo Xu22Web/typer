@@ -24,6 +24,7 @@ interface FakeWindowControls {
   toggleMaximize: () => void
   close: () => void
   isMaximized: () => boolean
+  focusMain: () => void
 }
 
 /**
@@ -41,7 +42,36 @@ function createFakeWindowControls(maximized = false): FakeWindowControls {
       controls.calls.push('toggleMaximize')
     },
     close: () => controls.calls.push('close'),
-    isMaximized: () => controls.maximize
+    isMaximized: () => controls.maximize,
+    focusMain: () => controls.calls.push('focusMain')
+  }
+  return controls
+}
+
+/** @description 假浮窗控制，记录调用以断言 IPC → 浮窗动作的映射 */
+interface FakeFloatControls {
+  calls: string[]
+  expand: () => void
+  collapse: () => void
+  dragBy: (dx: number, dy: number) => void
+  drop: () => void
+  dock: () => void
+  setInteractive: (interactive: boolean) => void
+}
+
+/**
+ * @description 创建假浮窗控制
+ * @returns 记录调用的假浮窗控制
+ */
+function createFakeFloatControls(): FakeFloatControls {
+  const controls: FakeFloatControls = {
+    calls: [],
+    expand: () => controls.calls.push('expand'),
+    collapse: () => controls.calls.push('collapse'),
+    dragBy: (dx, dy) => controls.calls.push(`drag:${dx},${dy}`),
+    drop: () => controls.calls.push('drop'),
+    dock: () => controls.calls.push('dock'),
+    setInteractive: (interactive) => controls.calls.push(`interactive:${interactive}`)
   }
   return controls
 }
@@ -145,6 +175,8 @@ function createHarness(
     /** 启用传输 IPC 面；toolsFiles 用来伪造 tools/ 目录内容 */
     withTransfer?: boolean
     toolsFiles?: Record<string, string>
+    /** 启用浮窗 IPC 面 */
+    withFloat?: boolean
     openExternal?: (url: string) => void
   } = {}
 ): {
@@ -157,6 +189,7 @@ function createHarness(
   importCalls: Array<{ path: string; charset?: string }>
   windowControls: FakeWindowControls | null
   updates: FakeUpdates | null
+  floatControls: FakeFloatControls | null
 } {
   const ipcMain = createFakeIpcMain()
   const clock = createVirtualClock()
@@ -180,6 +213,7 @@ function createHarness(
 
   const windowControls = overrides.withWindowControls ? createFakeWindowControls() : null
   const updates = overrides.withUpdates ? createFakeUpdates() : null
+  const floatControls = overrides.withFloat ? createFakeFloatControls() : null
   const transfer = overrides.withTransfer
     ? createFakeTransfer(createToolScriptReader(overrides.toolsFiles ?? {}))
     : null
@@ -197,6 +231,7 @@ function createHarness(
     },
     ...(windowControls ? { windowControls } : {}),
     ...(updates ? { updates } : {}),
+    ...(floatControls ? { float: floatControls } : {}),
     ...(transfer ? { transfer } : {}),
     ...(overrides.openExternal ? { openExternal: overrides.openExternal } : {}),
     logger: {
@@ -217,7 +252,8 @@ function createHarness(
     broadcast,
     importCalls,
     windowControls,
-    updates
+    updates,
+    floatControls
   }
 }
 
@@ -240,7 +276,8 @@ describe('registerIpcHandlers 注册', () => {
       IPC.windowMinimize,
       IPC.windowToggleMaximize,
       IPC.windowClose,
-      IPC.windowIsMaximized
+      IPC.windowIsMaximized,
+      IPC.windowFocusMain
     ]
     for (const channel of expected) {
       expect(h.ipcMain.channels).toContain(channel)
@@ -252,6 +289,61 @@ describe('registerIpcHandlers 注册', () => {
     const h = createHarness()
     expect(h.ipcMain.channels).not.toContain(IPC.windowMinimize)
     expect(h.ipcMain.channels).not.toContain(IPC.windowClose)
+  })
+
+  it('有浮窗实现时注册浮窗频道，没有时一个都不注册', () => {
+    const withFloat = createHarness({ withFloat: true })
+    for (const channel of [
+      IPC.floatExpand,
+      IPC.floatCollapse,
+      IPC.floatDrag,
+      IPC.floatDrop,
+      IPC.floatDock,
+      IPC.floatInteractive
+    ]) {
+      expect(withFloat.ipcMain.channels).toContain(channel)
+    }
+
+    const without = createHarness()
+    expect(without.ipcMain.channels).not.toContain(IPC.floatExpand)
+  })
+})
+
+describe('IPC 浮窗控制', () => {
+  it('展开 / 收起 / 落定 / 贴边 / 点击穿透映射到浮窗动作', async () => {
+    const h = createHarness({ withFloat: true })
+
+    await h.ipcMain.invoke(IPC.floatExpand)
+    await h.ipcMain.invoke(IPC.floatCollapse)
+    await h.ipcMain.invoke(IPC.floatDrop)
+    await h.ipcMain.invoke(IPC.floatDock)
+    await h.ipcMain.invoke(IPC.floatInteractive, true)
+    await h.ipcMain.invoke(IPC.floatInteractive, false)
+
+    expect(h.floatControls?.calls).toEqual([
+      'expand',
+      'collapse',
+      'drop',
+      'dock',
+      'interactive:true',
+      'interactive:false'
+    ])
+  })
+
+  it('拖动位移只接受有限数字，并夹到 ±4096', async () => {
+    const h = createHarness({ withFloat: true })
+
+    await h.ipcMain.invoke(IPC.floatDrag, { dx: 12.6, dy: -4.2 })
+    await h.ipcMain.invoke(IPC.floatDrag, { dx: 99_999, dy: -99_999 })
+    await h.ipcMain.invoke(IPC.floatDrag, { dx: Number.NaN, dy: '8' })
+    await h.ipcMain.invoke(IPC.floatDrag, undefined)
+
+    expect(h.floatControls?.calls).toEqual([
+      'drag:13,-4',
+      'drag:4096,-4096',
+      'drag:0,0',
+      'drag:0,0'
+    ])
   })
 })
 
@@ -281,6 +373,12 @@ describe('IPC 窗口控制（自绘标题栏）', () => {
       }
     }
     await expect(h.ipcMain.invoke(IPC.windowMinimize)).rejects.toThrow('窗口已销毁')
+  })
+
+  it('召回主窗口（进度浮窗点击）转发到窗口操作', async () => {
+    const h = createHarness({ withWindowControls: true })
+    await h.ipcMain.invoke(IPC.windowFocusMain)
+    expect(h.windowControls?.calls).toEqual(['focusMain'])
   })
 })
 
@@ -399,7 +497,7 @@ describe('IPC 接收端脚本', () => {
     const h = createHarness({ withTransfer: true, toolsFiles: {} })
 
     await expect(h.ipcMain.invoke(IPC.transferToolScript)).rejects.toThrow(
-      /找不到文件传输脚本目录[\s\S]*npm run build:tools/
+      /找不到文件传输脚本目录[\s\S]*pnpm build:tools/
     )
   })
 

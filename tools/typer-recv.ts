@@ -28,9 +28,11 @@ import {
   chunkSlice,
   createLineSplitter,
   crc32Hex,
-  decodeBytes,
+  decodePayload,
+  encodePayload,
   escapeText,
   formatIndexList,
+  fromWireBytes,
   missingIndexes,
   parseFrame,
   parseIndexList,
@@ -153,8 +155,19 @@ function runSelfTest(): number {
       sha256Hex('abc') === 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad'
     )
     const bytes = Uint8Array.from([0, 1, 127, 128, 255])
-    check('hex 往返', [...decodeBytes(crc32SafeEncode(bytes), 'hex')].join() === [...bytes].join())
-    check('base64 往返', [...decodeBytes(encodeB64(bytes), 'b64')].join() === [...bytes].join())
+    check(
+      'hex 往返',
+      [...decodePayload(crc32SafeEncode(bytes), 'hex')].join() === [...bytes].join()
+    )
+    check('base64 往返', [...decodePayload(encodeB64(bytes), 'b64')].join() === [...bytes].join())
+    const sample = new TextEncoder().encode('Typer 压缩自检 '.repeat(16))
+    const packed = encodePayload(sample, 'gzb64')
+    check(
+      'gzb64 往返',
+      [...fromWireBytes(decodePayload(packed.payload, 'gzb64'), 'gzb64')].join() ===
+        [...sample].join()
+    )
+    check('gzb64 确有压缩收益', packed.payload.length < sample.length)
     check('文本转义往返', unescapeText(escapeText('a\r\n\t\\b\u0000中')) === 'a\r\n\t\\b\u0000中')
     check('片号解析', parseIndexList('1,3-5', 10).join() === '1,3,4,5')
     check(
@@ -278,14 +291,22 @@ function partPath(seq: number, crc: string): string {
 }
 
 /**
- * @description 计算第 seq 片应有的字节数
+ * @description 计算第 seq 片应有的线上字节数
  * @param seq 片号
- * @returns 字节数；txt 模式片长由字符决定、无法反推，返回 null
+ * @returns 字节数；txt / gzb64 模式片长由内容决定、无法反推，返回 null
  */
 function expectedBytes(seq: number): number | null {
-  // txt 模式按字符边界切片，片长由字符决定，无法用字节数反推（只能校验上界）
-  if (meta!.enc === 'txt') return null
+  // txt 按字符边界切片、gzb64 压缩后长度随内容变化，都无法用"原始大小 + 片大小"反推（只能校验上界）
+  if (meta!.enc === 'txt' || meta!.enc === 'gzb64') return null
   return chunkSlice(meta!.size, meta!.chunk, seq).bytes
+}
+
+/**
+ * @description 单片线上字节数的上界（压缩编码下可能比原始片略大）
+ * @returns 上界字节数
+ */
+function wireUpperBound(): number {
+  return meta!.enc === 'gzb64' ? meta!.chunk + 1024 : meta!.chunk
 }
 
 /**
@@ -294,9 +315,10 @@ function expectedBytes(seq: number): number | null {
  */
 function assertChunkLength(frame: ParsedDataFrame): void {
   const expected = expectedBytes(frame.seq)
+  const upper = wireUpperBound()
   if (expected === null) {
-    if (frame.bytes < 1 || frame.bytes > meta!.chunk) {
-      throw new FrameError('len', `片 ${frame.seq} 长度 ${frame.bytes} 超出 1 ~ ${meta!.chunk}`)
+    if (frame.bytes < 1 || frame.bytes > upper) {
+      throw new FrameError('len', `片 ${frame.seq} 长度 ${frame.bytes} 超出 1 ~ ${upper}`)
     }
     return
   }
@@ -400,6 +422,8 @@ function applyMeta(next: TaskMeta, { fromDisk }: { fromDisk: boolean }): boolean
   outPath = outPath ?? join(dir, meta.name ? basename(meta.name) : `job-${meta.job}.bin`)
   if (!reportDisabled) reportPath = reportPath ?? join(dir, 'resume.json')
   seqWidth = Math.max(6, String(Math.max(0, meta.total - 1)).length)
+  // 工作目录在这里建一次就够：逐片写入时再 mkdir 只是白付系统调用
+  mkdirSync(dir, { recursive: true })
   if (!fromDisk) saveMeta()
   return true
 }
@@ -424,7 +448,7 @@ function scanExistingParts(): number {
     }
     const size = statSync(full).size
     const expected = expectedBytes(seq)
-    const usable = expected === null ? size >= 1 && size <= meta!.chunk : size === expected
+    const usable = expected === null ? size >= 1 && size <= wireUpperBound() : size === expected
     if (!usable || crc32Hex(readFileSync(full)) !== crc) {
       if (verbose) info(`丢弃不可用的分片：${entry}`)
       rmSync(full, { force: true })
@@ -520,7 +544,7 @@ function handleData(frame: ParsedDataFrame): void {
     return
   }
 
-  mkdirSync(dir as string, { recursive: true })
+  // 工作目录在建立任务时已建好，热路径上不再逐片 mkdir
   const tmp = `${target}.tmp`
   writeFileSync(tmp, bytes)
   renameSync(tmp, target)
@@ -535,14 +559,14 @@ function handleData(frame: ParsedDataFrame): void {
 }
 
 /**
- * @description 把数据帧载荷解码为字节
+ * @description 把数据帧载荷解码为线上字节（压缩编码下还没解压）
  * @param frame 已解析的数据帧
- * @returns 解码后的字节
+ * @returns 线上字节
  */
 function decodeDataPayload(frame: ParsedDataFrame): Uint8Array {
   if (frame.enc === 'txt')
     return Buffer.from(unescapeText(frame.payload), charset as BufferEncoding)
-  return decodeBytes(frame.payload, frame.enc)
+  return decodePayload(frame.payload, frame.enc)
 }
 
 // ---------------------------------------------------------------------------
@@ -591,11 +615,12 @@ async function mergeAndVerify(): Promise<number> {
     for (let seq = 0; seq < meta!.total; seq++) {
       const entry = parts.get(seq)
       if (!entry) throw new Error(`分片缺失：${seq}`)
-      for await (const chunk of createReadStream(join(dir as string, entry))) {
-        hash.update(chunk)
-        size += chunk.length
-        if (!out.write(chunk)) await once(out, 'drain')
-      }
+      const wire = readFileSync(join(dir as string, entry))
+      // 片上带的是"线上字节"（压缩编码下是压缩后的数据），合并时才还原成原始字节
+      const chunk = meta!.enc === 'gzb64' ? fromWireBytes(wire, 'gzb64') : wire
+      hash.update(chunk)
+      size += chunk.length
+      if (!out.write(chunk)) await once(out, 'drain')
     }
     await new Promise<void>((ok, bad) => out.end((error) => (error ? bad(error) : ok())))
   } catch (error) {
@@ -758,7 +783,13 @@ async function run(): Promise<number> {
       source.destroy()
       return
     }
-    if (consume(splitter.push(text))) ended = true
+    if (consume(splitter.push(text))) {
+      ended = true
+      // 交互式输入流（TTY）不会自己 EOF：结束帧就是"传输完成"的信号，收到就收工。
+      // 不主动收工的话，等 EOF 会一直等下去，#DONE 与合并永远不出现（用户看起来就是"卡住"）。
+      // 从文件/管道读入时留给流自然结束，避免丢掉结束帧之后的内容。
+      if (process.stdin.isTTY && !options.in) source.destroy()
+    }
   }
 
   source.on('data', onData)

@@ -1,8 +1,8 @@
-import { pasteWithClipboard, type ClipboardLike } from './clipboard'
-import type { KeyboardDriver } from './KeyboardDriver'
+import type { KeyboardDriver, SendOptions } from './KeyboardDriver'
 import { ProcessLinesClient, type SpawnFn } from './powershellDriver'
 import {
   assertInjectionResult,
+  encodeHostItems,
   expectedEventCount,
   ProtocolError,
   type HostForegroundData,
@@ -16,19 +16,23 @@ export interface WindowsSendInputDriverOptions {
   spawn: SpawnFn
   /** typing-host.ps1 的绝对路径 */
   hostScriptPath: string
-  clipboard: ClipboardLike
   /** 默认 `powershell.exe`（Windows PowerShell 5.1，Windows 全版本自带） */
   powershellPath?: string
   /** 只解析动作、不真正注入（用于系统自检/测试） */
   dryRun?: boolean
   requestTimeoutMs?: number
   maxRestarts?: number
-  /** 粘贴模式结束后是否恢复用户剪贴板 */
-  restoreClipboard?: boolean
   onLog?: (level: 'info' | 'warn' | 'error', message: string) => void
 }
 
-const PASTE_VK = 0x56 // V
+/**
+ * 每个注入事件（按下/抬起/修饰键/Unicode 报文）额外给多少毫秒预算。
+ *
+ * 目标端消化一个事件实测约 2.5ms（WinForms 控件 4~12ms/字符，一个字符 ≈ 2 个事件），
+ * 这里给 4 倍余量。为什么要给：宿主会按目标端的实际消化能力补等（valve），
+ * 这部分补等不在计划 delay 里，只按 delay 算超时会让"慢目标 + 大帧"被误判失败。
+ */
+const PER_EVENT_BUDGET_MS = 10
 
 /**
  * Windows 键盘注入驱动：通过 `SendInput` 宿主完成真实注入。
@@ -46,7 +50,7 @@ export class WindowsSendInputDriver implements KeyboardDriver {
 
   /**
    * @description 装配 PowerShell 宿主命令行并创建进程客户端
-   * @param options 驱动选项（spawn、宿主脚本、剪贴板与超时/重启配置）
+   * @param options 驱动选项（spawn、宿主脚本与超时/重启配置）
    */
   constructor(options: WindowsSendInputDriverOptions) {
     this.options = options
@@ -94,27 +98,41 @@ export class WindowsSendInputDriver implements KeyboardDriver {
   }
 
   /**
-   * @description 下发一批动作，并按"基础超时 + 动作自身等待"计算超时上限
+   * @description 下发一批动作，并按"基础超时 + 动作自身等待 + 目标端消化时间"计算超时上限
    * @param items 待注入的原子动作
    * @returns 宿主报告的注入统计
    */
-  async send(items: HostItem[]): Promise<HostTypeData> {
+  async send(items: HostItem[], options: SendOptions = {}): Promise<HostTypeData> {
     if (items.length === 0) return { requested: 0, injected: 0 }
 
-    // 超时必须把动作自身的等待时间算进去，否则长批次会被误判为超时
-    const totalDelay = items.reduce((sum, item) => {
-      if (item.t === 'wait') return sum + item.ms
-      return sum + item.delay
-    }, 0)
+    const batch = encodeHostItems(items, options)
+    // 超时要覆盖"计划等待 + 目标端消化每个事件的时间"：delay 只是计划间隔，
+    // 真正决定耗时的是目标程序消化输入的快慢（外加宿主为缓解队列压力补的等待）。
+    // 只按 delay 算时，上千字符的一批会在固定上限处被误判超时，整批半途而废。
+    const totalDelay = batch.delays.reduce((sum, ms) => sum + Math.max(0, ms), 0)
+    const events = expectedEventCount(items)
     const base = this.options.requestTimeoutMs ?? 15_000
 
-    const data = await this.client.request<unknown>('type', { items }, base + totalDelay + 5_000)
-    return assertInjectionResult(data, expectedEventCount(items))
+    const data = await this.client.request<unknown>(
+      'type',
+      batch,
+      base + totalDelay + events * PER_EVENT_BUDGET_MS + 5_000
+    )
+    return assertInjectionResult(data, events)
   }
 
   /** @description 释放所有修饰键并等待宿主确认 */
   async releaseAll(): Promise<void> {
     await this.client.request('releaseAll')
+  }
+
+  /**
+   * @description 立刻中止宿主正在执行的那一批（不等响应）。
+   * 宿主在后台线程读到 cancel 后会置位中止标志，逐动作检查并丢弃未提交的事件，
+   * 因此"停止"的生效时间从"等整批打完"缩短到一个动作以内。
+   */
+  cancel(): void {
+    this.client.send('cancel')
   }
 
   /**
@@ -131,22 +149,6 @@ export class WindowsSendInputDriver implements KeyboardDriver {
    */
   async probe(): Promise<HostProbeData> {
     return this.client.request<HostProbeData>('probe')
-  }
-
-  /**
-   * @description 通过剪贴板 + Ctrl+V 代替逐字符输入，并按需恢复用户剪贴板
-   * @param text 要粘贴的文本
-   */
-  async paste(text: string): Promise<void> {
-    if (text.length === 0) return
-    await pasteWithClipboard({
-      clipboard: this.options.clipboard,
-      text,
-      restoreClipboard: this.options.restoreClipboard ?? true,
-      sendPaste: async () => {
-        await this.send([{ t: 'key', vk: PASTE_VK, mods: ['ctrl'], delay: 0 }])
-      }
-    })
   }
 
   /** @description 关闭宿主进程并释放资源 */

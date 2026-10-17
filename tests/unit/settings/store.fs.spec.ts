@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { DEFAULT_SETTINGS } from '@main/settings/schema'
+import { DEFAULT_SETTINGS, NUMERIC_BOUNDS } from '@main/settings/schema'
 import { SettingsStore, describeFsFailure } from '@main/settings/store'
 
 /**
@@ -104,14 +104,14 @@ describe('SettingsStore 真实落盘', () => {
   it('归一化后的值才落盘（越界值被夹取）', () => {
     const store = new SettingsStore({ filePath: filePath() })
     store.load()
-    store.update({ startDelayMs: 999_999, insertMode: '不存在的模式' })
+    store.update({ startDelayMs: 999_999, chunkSize: 999 })
 
     const saved = JSON.parse(readFileSync(filePath(), 'utf8')) as {
       startDelayMs: number
-      insertMode: string
+      chunkSize: number
     }
     expect(saved.startDelayMs).toBe(60_000)
-    expect(saved.insertMode).toBe(DEFAULT_SETTINGS.insertMode)
+    expect(saved.chunkSize).toBe(NUMERIC_BOUNDS.chunkSize[1])
   })
 
   it('保存成功时报告 ok + written', () => {

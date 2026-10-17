@@ -89,7 +89,9 @@ async function copyAll(): Promise<void> {
 
     <section class="card logs">
       <div class="card-head">
-        <h2 class="card-title"><span class="icon i-mdi-text-box-search-outline" /> 运行记录</h2>
+        <h2 class="card-title">
+          <span class="icon i-mdi-text-box-search-outline" /><span>运行记录</span>
+        </h2>
         <div class="spacer" />
 
         <ElRadioGroup v-model="filter" size="small">
@@ -125,23 +127,27 @@ async function copyAll(): Promise<void> {
 
       <ul ref="listEl" class="list" @scroll="autoScroll = false" @click="autoScroll = true">
         <li v-for="(entry, index) in visible" :key="`${entry.at}-${index}`" :class="entry.level">
-          <span class="icon text-icon" :class="levelIcon[entry.level]" />
-          <span class="time mono">{{ new Date(entry.at).toLocaleTimeString() }}</span>
-          <span class="message">{{ entry.message }}</span>
+          <div class="icon text-icon" :class="levelIcon[entry.level]" />
+          <div class="time mono">{{ new Date(entry.at).toLocaleTimeString() }}</div>
+          <div class="message">{{ entry.message }}</div>
         </li>
         <li v-if="visible.length === 0" class="empty">
-          {{
-            typing.logs.value.length === 0
-              ? '暂无日志，开始一次输入后就会出现记录。'
-              : '当前筛选条件下没有记录。'
-          }}
+          <div>
+            {{
+              typing.logs.value.length === 0
+                ? '暂无日志，开始一次输入后就会出现记录。'
+                : '当前筛选条件下没有记录。'
+            }}
+          </div>
         </li>
       </ul>
 
-      <p class="foot muted">
-        <span class="i-mdi-arrow-down" />
-        {{ autoScroll ? '已开启自动滚动（点击列表任意位置重新跟随）' : '已暂停自动滚动' }}
-      </p>
+      <div class="foot muted">
+        <div class="i-mdi-arrow-down" />
+        <div>
+          {{ autoScroll ? '已开启自动滚动（点击列表任意位置重新跟随）' : '已暂停自动滚动' }}
+        </div>
+      </div>
     </section>
   </section>
 </template>

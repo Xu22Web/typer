@@ -1,6 +1,7 @@
 <script setup lang="ts" vapor>
 import { toPlainPayload } from '@main/ipc/plainPayload'
 import type { Settings } from '@main/settings/types'
+import { PROFILE_LIMITS } from '@main/typing/scheduling/profile'
 import {
   CHUNK_PRESETS,
   TRANSFER_ENCODING_OPTIONS,
@@ -27,6 +28,42 @@ const restoring = ref(false)
 const limits = TRANSFER_LIMITS
 const typing = useTyping()
 
+/** 当前档位的能力表：字符/秒与每批动作数的可选区间随档位变化 */
+const profileLimits = computed(() => {
+  const profile = draft.value?.injection.profile ?? 'normal'
+  return PROFILE_LIMITS[profile]
+})
+
+/** 速度模式的可选项：只有极速档才有"不限速" */
+const speedModeOptions = computed(() => {
+  const options = [
+    { label: '字符/秒', value: 'cps' },
+    { label: '词/分钟', value: 'wpm' },
+    { label: '固定间隔', value: 'interval' }
+  ]
+  if (draft.value?.injection.profile === 'turbo') {
+    options.push({ label: '不限速', value: 'max' })
+  }
+  return options
+})
+
+/**
+ * @description 切换注入档位；退回标准档时把"不限速"收回成字符/秒，并把越界的数值夹回区间
+ * @param profile 目标档位
+ */
+function applyProfile(profile: 'normal' | 'turbo'): void {
+  if (!draft.value) return
+  draft.value.injection.profile = profile
+  if (profile !== 'turbo' && draft.value.timing.speedMode === 'max') {
+    draft.value.timing.speedMode = 'cps'
+  }
+  const bounds = PROFILE_LIMITS[profile]
+  // 极速档按批下发，批次越大来回越少；切到极速时把过小的批提升到能体现速度的量级
+  const target = profile === 'turbo' ? Math.max(128, draft.value.chunkSize) : draft.value.chunkSize
+  draft.value.chunkSize = Math.min(bounds.chunkSize[1], Math.max(bounds.chunkSize[0], target))
+  draft.value.timing.cps = Math.min(bounds.cps[1], Math.max(bounds.cps[0], draft.value.timing.cps))
+}
+
 /** 当前片大小对应的预设（不在预设里则归为"自定义"） */
 const presetId = computed(() => {
   const bytes = draft.value?.transfer.chunkBytes ?? 0
@@ -35,7 +72,7 @@ const presetId = computed(() => {
 
 /** 当前编码的说明文案 */
 const encodingHint = computed(() => {
-  const value = draft.value?.transfer.encoding ?? 'hex'
+  const value = draft.value?.transfer.encoding ?? 'gzb64'
   return TRANSFER_ENCODING_OPTIONS.find((option) => option.value === value)?.description ?? ''
 })
 
@@ -177,50 +214,53 @@ async function restoreDefaults(): Promise<void> {
 
     <template v-if="draft">
       <section class="card group">
-        <h2 class="group-title"><span class="icon i-mdi-play-circle-outline" /> 启动与模式</h2>
+        <h2 class="group-title">
+          <span class="icon i-mdi-play-circle-outline" /><span>启动与模式</span>
+        </h2>
 
         <div class="row">
           <div class="label">
-            <span>倒计时</span>
+            <div>倒计时</div>
             <small>点击开始后等待多久才真正输入，留出切换窗口的时间</small>
           </div>
           <ElInputNumber v-model="draft.startDelayMs" :min="0" :max="60000" :step="500" />
-          <span class="unit">毫秒</span>
+          <div class="unit">毫秒</div>
         </div>
 
         <div class="row">
           <div class="label">
-            <span>输入方式</span>
-            <small>逐字模拟按键最接近真人；超长文本与不认 Unicode 的程序可用粘贴</small>
+            <div>注入档位</div>
+            <small>
+              标准：逐字下发，节奏与停止最灵敏；极速：攒批下发并放开每字符 1ms 下限，
+              实际速度由目标窗口的消化能力决定
+            </small>
           </div>
-          <ElSelect v-model="draft.insertMode" class="control">
-            <ElOption label="逐字模拟按键" value="keystroke" />
-            <ElOption label="剪贴板粘贴" value="paste" />
-            <ElOption label="自动（长文本用粘贴）" value="auto" />
-          </ElSelect>
-        </div>
-
-        <div v-if="draft.insertMode !== 'keystroke'" class="row">
-          <div class="label">
-            <span>自动粘贴阈值</span>
-            <small>自动模式下，超过该字符数就改用粘贴</small>
-          </div>
-          <ElInputNumber v-model="draft.autoPasteThreshold" :min="100" :max="100000" :step="100" />
-          <span class="unit">字符</span>
+          <ElSegmented
+            :model-value="draft.injection.profile"
+            :options="[
+              { label: '标准', value: 'normal' },
+              { label: '极速', value: 'turbo' }
+            ]"
+            @change="applyProfile($event as 'normal' | 'turbo')"
+          />
         </div>
 
         <div class="row">
           <div class="label">
-            <span>每批动作数</span>
-            <small>值越小，紧急停止的响应越快，但下发开销略增</small>
+            <div>每批动作数</div>
+            <small>值越大下发开销越小；停止始终按动作取消，只有暂停会在批与批之间生效</small>
           </div>
-          <ElInputNumber v-model="draft.chunkSize" :min="1" :max="64" />
-          <span class="unit">个</span>
+          <ElInputNumber
+            v-model="draft.chunkSize"
+            :min="profileLimits.chunkSize[0]"
+            :max="profileLimits.chunkSize[1]"
+          />
+          <div class="unit">个</div>
         </div>
 
         <div class="row">
           <div class="label">
-            <span>随机种子</span>
+            <div>随机种子</div>
             <small>0 表示每次运行都不同；填固定值可复现同一套节奏</small>
           </div>
           <ElInputNumber v-model="draft.seed" :min="0" :max="4294967295" />
@@ -228,7 +268,9 @@ async function restoreDefaults(): Promise<void> {
       </section>
 
       <section class="card group">
-        <h2 class="group-title"><span class="icon i-mdi-speedometer" /> 速度与随机性</h2>
+        <h2 class="group-title">
+          <span class="icon i-mdi-speedometer" /><span>速度与随机性</span>
+        </h2>
         <p class="group-desc">
           只作用于<strong>文本输入</strong>；文件传输是数据传输，为可复现与速度使用固定节奏
           （只有「文件传输」里的片间断顿生效）。
@@ -236,48 +278,47 @@ async function restoreDefaults(): Promise<void> {
 
         <div class="row">
           <div class="label">
-            <span>速度模式</span>
-            <small>按字符、按词，或直接指定每两个动作之间的间隔</small>
+            <div>速度模式</div>
+            <small>按字符、按词、直接指定每两个动作之间的间隔，或在极速档下不限速</small>
           </div>
-          <ElSegmented
-            v-model="draft.timing.speedMode"
-            :options="[
-              { label: '字符/秒', value: 'cps' },
-              { label: '词/分钟', value: 'wpm' },
-              { label: '固定间隔', value: 'interval' }
-            ]"
-          />
+          <ElSegmented v-model="draft.timing.speedMode" :options="speedModeOptions" />
         </div>
 
         <div v-if="draft.timing.speedMode === 'cps'" class="row">
-          <div class="label"><span>字符/秒</span></div>
-          <ElSlider v-model="draft.timing.cps" :min="0.5" :max="50" :step="0.5" class="control" />
-          <span class="value mono">{{ draft.timing.cps }}</span>
+          <div class="label"><div>字符/秒</div></div>
+          <ElSlider
+            v-model="draft.timing.cps"
+            :min="profileLimits.cps[0]"
+            :max="profileLimits.cps[1]"
+            :step="0.5"
+            class="control"
+          />
+          <div class="value mono">{{ draft.timing.cps }}</div>
         </div>
 
         <div v-if="draft.timing.speedMode === 'wpm'" class="row">
-          <div class="label"><span>词/分钟</span></div>
+          <div class="label"><div>词/分钟</div></div>
           <ElSlider v-model="draft.timing.wpm" :min="10" :max="1000" :step="10" class="control" />
-          <span class="value mono">{{ draft.timing.wpm }}</span>
+          <div class="value mono">{{ draft.timing.wpm }}</div>
         </div>
 
         <div v-if="draft.timing.speedMode === 'interval'" class="row">
-          <div class="label"><span>固定间隔</span></div>
+          <div class="label"><div>固定间隔</div></div>
           <ElInputNumber v-model="draft.timing.baseIntervalMs" :min="1" :max="2000" />
-          <span class="unit">毫秒</span>
+          <div class="unit">毫秒</div>
         </div>
 
         <div class="row">
           <div class="label">
-            <span>抖动幅度</span>
+            <div>抖动幅度</div>
             <small>在基础间隔上附加的随机浮动，让节奏不像机器</small>
           </div>
           <ElSlider v-model="draft.timing.jitterMs" :min="0" :max="500" class="control" />
-          <span class="value mono">±{{ draft.timing.jitterMs }}ms</span>
+          <div class="value mono">±{{ draft.timing.jitterMs }}ms</div>
         </div>
 
         <div class="row">
-          <div class="label"><span>抖动分布</span></div>
+          <div class="label"><div>抖动分布</div></div>
           <ElSegmented
             v-model="draft.timing.distribution"
             :options="[
@@ -289,57 +330,59 @@ async function restoreDefaults(): Promise<void> {
       </section>
 
       <section class="card group">
-        <h2 class="group-title"><span class="icon i-mdi-timer-sand" /> 停顿节奏</h2>
+        <h2 class="group-title"><span class="icon i-mdi-timer-sand" /><span>停顿节奏</span></h2>
         <p class="group-desc">
           让输入在标点、换行处自然停顿，避免"一口气打完"的机械感；文件模式下不生效。
         </p>
 
         <div class="row">
-          <div class="label"><span>标点后</span></div>
+          <div class="label"><div>标点后</div></div>
           <ElInputNumber v-model="draft.timing.punctuationPauseMs" :min="0" :max="2000" />
-          <span class="unit">毫秒</span>
+          <div class="unit">毫秒</div>
         </div>
         <div class="row">
-          <div class="label"><span>空格后</span></div>
+          <div class="label"><div>空格后</div></div>
           <ElInputNumber v-model="draft.timing.wordPauseMs" :min="0" :max="1000" />
-          <span class="unit">毫秒</span>
+          <div class="unit">毫秒</div>
         </div>
         <div class="row">
-          <div class="label"><span>换行后</span></div>
+          <div class="label"><div>换行后</div></div>
           <ElInputNumber v-model="draft.timing.newlinePauseMs" :min="0" :max="5000" />
-          <span class="unit">毫秒</span>
+          <div class="unit">毫秒</div>
         </div>
         <div class="row">
-          <div class="label"><span>空行后</span></div>
+          <div class="label"><div>空行后</div></div>
           <ElInputNumber v-model="draft.timing.paragraphPauseMs" :min="0" :max="5000" />
-          <span class="unit">毫秒</span>
+          <div class="unit">毫秒</div>
         </div>
         <div class="row">
           <div class="label">
-            <span>周期性休息</span>
+            <div>周期性休息</div>
             <small>每输入 N 个字符停顿一次；0 表示关闭</small>
           </div>
           <ElInputNumber v-model="draft.timing.burstSize" :min="0" :max="1000" />
-          <span class="unit">字符后休息</span>
+          <div class="unit">字符后休息</div>
           <ElInputNumber v-model="draft.timing.burstPauseMs" :min="0" :max="10000" :step="100" />
-          <span class="unit">毫秒</span>
+          <div class="unit">毫秒</div>
         </div>
       </section>
 
       <section class="card group">
-        <h2 class="group-title"><span class="icon i-mdi-backspace-outline" /> 错字与纠正</h2>
+        <h2 class="group-title">
+          <span class="icon i-mdi-backspace-outline" /><span>错字与纠正</span>
+        </h2>
         <p class="group-desc">
           按概率打错再退格纠正，让输入过程更像真人；设为 0 即完全无误。文件模式下始终不打错字
           （错字会破坏帧数据，只能靠重传补救）。
         </p>
 
         <div class="row">
-          <div class="label"><span>错字概率</span></div>
+          <div class="label"><div>错字概率</div></div>
           <ElSlider v-model="draft.typo.rate" :min="0" :max="0.2" :step="0.005" class="control" />
-          <span class="value mono">{{ (draft.typo.rate * 100).toFixed(1) }}%</span>
+          <div class="value mono">{{ (draft.typo.rate * 100).toFixed(1) }}%</div>
         </div>
         <div class="row">
-          <div class="label"><span>错字方式</span></div>
+          <div class="label"><div>错字方式</div></div>
           <ElSelect v-model="draft.typo.style" class="control">
             <ElOption label="相邻键位" value="adjacent" />
             <ElOption label="形近字" value="lookalike" />
@@ -348,7 +391,7 @@ async function restoreDefaults(): Promise<void> {
         </div>
         <div class="row">
           <div class="label">
-            <span>自动纠正</span>
+            <div>自动纠正</div>
             <small>开启后会补上退格与正确字符</small>
           </div>
           <ElSwitch v-model="draft.typo.correction" active-value="auto" inactive-value="none" />
@@ -356,14 +399,16 @@ async function restoreDefaults(): Promise<void> {
       </section>
 
       <section class="card group">
-        <h2 class="group-title"><span class="icon i-mdi-keyboard-settings-outline" /> 键盘布局</h2>
+        <h2 class="group-title">
+          <span class="icon i-mdi-keyboard-settings-outline" /><span>键盘布局</span>
+        </h2>
         <p class="group-desc">
           真实按键由<strong>目标窗口的布局</strong>解释。不确定目标布局时，直接开"全部用 Unicode
           注入"最稳。
         </p>
 
         <div class="row">
-          <div class="label"><span>目标窗口布局</span></div>
+          <div class="label"><div>目标窗口布局</div></div>
           <ElSelect v-model="draft.keyboard.layout" class="control">
             <ElOption label="English (US)" value="us" />
             <ElOption label="English (UK)" value="uk" />
@@ -374,21 +419,23 @@ async function restoreDefaults(): Promise<void> {
         </div>
         <div class="row">
           <div class="label">
-            <span>全部用 Unicode 注入</span>
-            <small>与布局无关，绕过物理键位映射</small>
+            <div>全部用 Unicode 注入</div>
+            <small>与布局、输入法无关（输入法在中文态时会吞掉真实按键）</small>
           </div>
           <ElSwitch v-model="draft.keyboard.forceUnicodeForAll" />
         </div>
       </section>
 
       <section class="card group">
-        <h2 class="group-title"><span class="icon i-mdi-target-account" /> 焦点与热键</h2>
+        <h2 class="group-title">
+          <span class="icon i-mdi-target-account" /><span>焦点与热键</span>
+        </h2>
         <p class="group-desc">
           输入过程中若前台窗口变了，可能把字打到别的程序上；焦点守护用来兜底。
         </p>
 
         <div class="row">
-          <div class="label"><span>焦点守护</span></div>
+          <div class="label"><div>焦点守护</div></div>
           <ElSegmented
             v-model="draft.focusGuard"
             :options="[
@@ -400,18 +447,18 @@ async function restoreDefaults(): Promise<void> {
         </div>
         <div class="row">
           <div class="label">
-            <span>紧急停止热键</span>
+            <div>紧急停止热键</div>
             <small>全局热键，焦点在别的窗口时也能中断</small>
           </div>
           <ElInput v-model="draft.hotkeys.stop" class="control" />
         </div>
         <div class="row">
-          <div class="label"><span>暂停/继续热键</span></div>
+          <div class="label"><div>暂停/继续热键</div></div>
           <ElInput v-model="draft.hotkeys.togglePause" class="control" />
         </div>
         <div class="row">
           <div class="label">
-            <span>完成后检测粘键</span>
+            <div>完成后检测粘键</div>
             <small>输入结束自检是否残留按下状态的修饰键</small>
           </div>
           <ElSwitch v-model="draft.verifyStuckKeys" />
@@ -419,29 +466,27 @@ async function restoreDefaults(): Promise<void> {
       </section>
 
       <section class="card group">
-        <h2 class="group-title"><span class="icon i-mdi-shield-lock-outline" /> 隐私与剪贴板</h2>
+        <h2 class="group-title">
+          <span class="icon i-mdi-shield-lock-outline" /><span>隐私与导入</span>
+        </h2>
 
         <div class="row">
           <div class="label">
-            <span>保存输入内容到磁盘</span>
+            <div>保存输入内容到磁盘</div>
             <small>默认关闭：内容只在内存里处理</small>
           </div>
           <ElSwitch v-model="draft.privacy.persistContent" />
         </div>
         <div class="row">
-          <div class="label"><span>保存设置到磁盘</span></div>
+          <div class="label"><div>保存设置到磁盘</div></div>
           <ElSwitch v-model="draft.privacy.persistSettings" />
         </div>
         <div class="row">
           <div class="label">
-            <span>粘贴后恢复剪贴板</span>
-            <small>粘贴模式会临时改写剪贴板，结束后还原原内容</small>
+            <div>导入文件编码</div>
+            <small>「导入文本」读取文件时使用的编码</small>
           </div>
-          <ElSwitch v-model="draft.clipboard.restore" />
-        </div>
-        <div class="row">
-          <div class="label"><span>导入文件编码</span></div>
-          <ElSelect v-model="draft.clipboard.importCharset" class="control">
+          <ElSelect v-model="draft.files.importCharset" class="control">
             <ElOption label="自动识别" value="auto" />
             <ElOption label="UTF-8" value="utf8" />
             <ElOption label="UTF-16 LE" value="utf16le" />
@@ -451,7 +496,9 @@ async function restoreDefaults(): Promise<void> {
       </section>
 
       <section class="card group">
-        <h2 class="group-title"><span class="icon i-mdi-file-arrow-up-down-outline" /> 文件传输</h2>
+        <h2 class="group-title">
+          <span class="icon i-mdi-file-arrow-up-down-outline" /><span>文件传输</span>
+        </h2>
         <p class="group-desc">
           把文件切成"每片一行"的帧逐片输入。接收端逐片校验、支持断点续传，合并后再校验整文件哈希；
           编码与片大小决定"能不能顺利穿过目标终端"。"导出脚本"取走接收端脚本，或在文本页用它把脚本
@@ -460,7 +507,7 @@ async function restoreDefaults(): Promise<void> {
 
         <div class="row">
           <div class="label">
-            <span>默认编码</span>
+            <div>默认编码</div>
             <small>{{ encodingHint }}</small>
           </div>
           <ElSelect v-model="draft.transfer.encoding" class="control">
@@ -475,8 +522,24 @@ async function restoreDefaults(): Promise<void> {
 
         <div class="row">
           <div class="label">
-            <span>片大小</span>
-            <small>每片原始字节数；hex 编码下帧长约 2 倍字节数</small>
+            <div>传输节奏</div>
+            <small>
+              帧内每个字符都单独投递并留 1ms 间隔（这是数据不丢字符的下限）；极速档额外去掉片间断顿
+            </small>
+          </div>
+          <ElSegmented
+            v-model="draft.transfer.paceMode"
+            :options="[
+              { label: '稳健', value: 'safe' },
+              { label: '极速', value: 'fast' }
+            ]"
+          />
+        </div>
+
+        <div class="row">
+          <div class="label">
+            <div>片大小</div>
+            <small>每片原始字节数；压缩编码下实际帧长通常只有原始字节数的四成左右</small>
           </div>
           <ElSelect
             :model-value="presetId"
@@ -494,7 +557,7 @@ async function restoreDefaults(): Promise<void> {
 
         <div class="row">
           <div class="label">
-            <span>单帧字符上限</span>
+            <div>单帧字符上限</div>
             <small>超出会拒绝开始：终端与剪贴板都会截断过长的行</small>
           </div>
           <ElInputNumber
@@ -508,8 +571,8 @@ async function restoreDefaults(): Promise<void> {
 
         <div class="row">
           <div class="label">
-            <span>片间断顿</span>
-            <small>给接收端落盘与回显留时间；越小越快，但更容易丢字符</small>
+            <div>片间断顿</div>
+            <small>给接收端落盘与回显留时间；极速节奏档下固定为 0，这里只对稳健档生效</small>
           </div>
           <ElInputNumber
             v-model="draft.transfer.interFrameDelayMs"
@@ -522,34 +585,28 @@ async function restoreDefaults(): Promise<void> {
 
         <div class="row">
           <div class="label">
-            <span>粘贴整帧含换行</span>
-            <small>开启时一行帧一次粘贴即完成（少一次按键）</small>
-          </div>
-          <ElSwitch v-model="draft.transfer.pasteFrameIncludesNewline" />
-        </div>
-
-        <div class="row">
-          <div class="label">
-            <span>接收脚本</span>
+            <div>接收脚本</div>
             <small>零依赖（Node ≥ 16）；导出后双击同目录 run.bat 即可运行</small>
           </div>
           <div class="tools-actions">
             <ElButton size="small" @click="exportTools">
-              <span class="i-mdi-export-variant" /> 导出脚本
+              <span class="i-mdi-export-variant" /><span>导出脚本</span>
             </ElButton>
             <ElButton size="small" text @click="revealTools">
-              <span class="i-mdi-folder-open-outline" /> 打开目录
+              <span class="i-mdi-folder-open-outline" /><span>打开目录</span>
             </ElButton>
           </div>
         </div>
       </section>
 
       <section class="card group">
-        <h2 class="group-title"><span class="icon i-mdi-cloud-download-outline" /> 更新</h2>
+        <h2 class="group-title">
+          <span class="icon i-mdi-cloud-download-outline" /><span>更新</span>
+        </h2>
 
         <div class="row">
           <div class="label">
-            <span>启动时检查更新</span>
+            <div>启动时检查更新</div>
             <small>只访问 GitHub 公开接口读取最新发布，不会上传任何本地信息</small>
           </div>
           <ElSwitch v-model="draft.update.checkOnStartup" />
@@ -562,21 +619,23 @@ async function restoreDefaults(): Promise<void> {
 
     <!-- 保存条：粘在底部，改动状态一目了然 -->
     <div class="savebar">
-      <span v-if="saveError" class="error">
-        <span class="i-mdi-alert-circle-outline" />
-        {{ saveError }}
-      </span>
-      <span v-else-if="dirty" class="hint">
-        <span class="i-mdi-circle-medium" />
-        有未保存的改动
-      </span>
-      <span v-else class="hint muted">所有改动已保存</span>
+      <div v-if="saveError" class="error">
+        <div class="i-mdi-alert-circle-outline" />
+        <div>{{ saveError }}</div>
+      </div>
+      <div v-else-if="dirty" class="hint">
+        <div class="i-mdi-circle-medium" />
+        <div>有未保存的改动</div>
+      </div>
+      <div v-else class="hint muted"><div>所有改动已保存</div></div>
 
       <div class="spacer" />
 
-      <ElButton :loading="restoring" @click="restoreDefaults()">恢复默认</ElButton>
-      <ElButton :disabled="!dirty || saving" @click="discard()">放弃改动</ElButton>
-      <ElButton type="primary" :disabled="!dirty" :loading="saving" @click="save()">保存</ElButton>
+      <ElButton :loading="restoring" @click="restoreDefaults()"><span>恢复默认</span></ElButton>
+      <ElButton :disabled="!dirty || saving" @click="discard()"><span>放弃改动</span></ElButton>
+      <ElButton type="primary" :disabled="!dirty" :loading="saving" @click="save()"
+        ><span>保存</span></ElButton
+      >
     </div>
   </section>
 </template>
@@ -641,7 +700,7 @@ async function restoreDefaults(): Promise<void> {
   flex: 1;
   min-width: 0;
 
-  span {
+  div {
     font-size: 13px;
     color: var(--text-1);
   }
@@ -689,7 +748,7 @@ async function restoreDefaults(): Promise<void> {
 
 .hint,
 .error {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   gap: 6px;
   font-size: 12px;

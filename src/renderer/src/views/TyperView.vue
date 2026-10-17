@@ -25,6 +25,13 @@ const detected = computed(() => typing.targetWindow.value !== '未检测')
 /** 最新一条日志，用于在输入页提示"刚刚发生了什么" */
 const latestLog = computed(() => typing.logs.value.at(-1) ?? null)
 
+/** 页头说明：两种模式各一句话（窄窗口会被省略号截断，鼠标悬停看全文） */
+const pageDesc = computed(() =>
+  mode.value === 'text'
+    ? '把要输入的内容粘贴到内容区，点开始，然后在倒计时内切换到目标窗口。中文、emoji 与需要 Shift 组合的符号都能正确输入。'
+    : '选择一个文件，Typer 会把它切成"每片一行"的帧逐片输入；接收端逐片校验、支持断点续传，合并后再校验整文件哈希。'
+)
+
 /** 开始按钮文案：文件模式显示要发多少片，倒计时非 0 时补上"几秒后" */
 const startLabel = computed(() => {
   const delay = settings.value?.startDelayMs ?? 0
@@ -62,7 +69,7 @@ async function insertToolScriptFromFile(): Promise<void> {
 </script>
 
 <template>
-  <section class="page">
+  <section class="page input-page">
     <header class="page-header">
       <div class="header-row">
         <h1>输入</h1>
@@ -76,7 +83,7 @@ async function insertToolScriptFromFile(): Promise<void> {
             :disabled="typing.isRunning.value"
             @click="mode = 'text'"
           >
-            <span class="i-mdi-text-box-outline" /> 文本
+            <span class="i-mdi-text-box-outline" /><span>文本</span>
           </button>
           <button
             class="mode-option"
@@ -87,20 +94,15 @@ async function insertToolScriptFromFile(): Promise<void> {
             :disabled="typing.isRunning.value"
             @click="mode = 'file'"
           >
-            <span class="i-mdi-file-arrow-up-down-outline" /> 文件
+            <span class="i-mdi-file-arrow-up-down-outline" /><span>文件</span>
           </button>
         </div>
+
+        <div class="spacer" />
+        <!-- 窄窗口：目标窗口降级成胶囊（宽窗口在右侧卡片里显示完整信息） -->
+        <TargetChip class="compact-only" />
       </div>
-      <p class="page-desc">
-        <template v-if="mode === 'text'">
-          把要输入的内容粘贴到内容区，点开始，然后在倒计时内切换到目标窗口。 中文、emoji 与需要
-          Shift 组合的符号都能正确输入。
-        </template>
-        <template v-else>
-          选择一个文件，Typer 会把它切成"每片一行"的帧逐片输入；接收端逐片校验、支持断点续传，
-          合并后再校验整文件哈希。
-        </template>
-      </p>
+      <p class="page-desc" :title="pageDesc">{{ pageDesc }}</p>
     </header>
 
     <ElAlert
@@ -112,7 +114,7 @@ async function insertToolScriptFromFile(): Promise<void> {
       description="键盘注入目前仅支持 Windows。界面可以打开，但无法真正输入。"
     />
 
-    <div class="input-layout">
+    <div class="workspace">
       <!--
         主任务：文本模式是内容区，文件模式是文件面板。
         KeepAlive 让两者切换时保留各自的页内状态（文件面板的预览/续传展开与输入、文本面板的滚动）。
@@ -122,11 +124,11 @@ async function insertToolScriptFromFile(): Promise<void> {
         <TextPanel v-else />
       </KeepAlive>
 
-      <!-- 次要信息：目标窗口 + 运行状态 -->
+      <!-- 次要信息：目标窗口 + 运行状态 + 提示（窄窗口收进页头的胶囊与状态条） -->
       <aside class="side-column">
         <section class="card target">
           <div class="card-head">
-            <h2 class="card-title"><span class="icon i-mdi-target" /> 目标窗口</h2>
+            <h2 class="card-title"><span class="icon i-mdi-target" /><span>目标窗口</span></h2>
             <div class="spacer" />
             <button
               class="icon-btn ghost"
@@ -139,20 +141,40 @@ async function insertToolScriptFromFile(): Promise<void> {
             </button>
           </div>
 
-          <p class="target-name">
-            <span class="dot" :class="{ ok: detected }" />
-            <span class="ellipsis" :title="typing.targetWindow.value">
+          <div class="target-name">
+            <div class="dot" :class="{ ok: detected }" />
+            <div class="ellipsis" :title="typing.targetWindow.value">
               {{ typing.targetWindow.value }}
-            </span>
-          </p>
+            </div>
+          </div>
           <p class="card-desc">开始前先点一下目标程序的输入位置，输入就会落在这里。</p>
         </section>
 
         <RunStatusPanel />
+
+        <section class="card hint-card">
+          <div class="notice-head">
+            <div class="icon i-mdi-lightbulb-on-outline" />
+            <div>开始后请勿移动鼠标或切换窗口</div>
+          </div>
+          <p class="card-desc">
+            <span
+              >随时可按
+              <code>{{ settings?.hotkeys.stop ?? 'Ctrl+Alt+X' }}</code> 紧急停止，内容区里按
+              <code>Ctrl+Enter</code> 也能开始。目标程序若开着中文输入法，建议先切到英文。</span
+            >
+          </p>
+          <div v-if="latestLog" class="latest-log mono">
+            <div class="i-mdi-history" />
+            <div>{{ new Date(latestLog.at).toLocaleTimeString() }} · {{ latestLog.message }}</div>
+          </div>
+        </section>
       </aside>
     </div>
 
-    <!-- 主操作条：开始是唯一的主按钮，其余按危险/次要分组 -->
+    <RunStatusStrip class="compact-only" />
+
+    <!-- 主操作条：常驻页面底部（只有主面板内部滚动），开始是唯一的主按钮 -->
     <section class="card action-bar">
       <div class="secondary">
         <ElButton
@@ -160,10 +182,11 @@ async function insertToolScriptFromFile(): Promise<void> {
           :disabled="typing.isRunning.value"
           @click="typing.importFile()"
         >
-          <span class="i-mdi-file-import-outline" /> 导入文本
+          <span class="i-mdi-file-import-outline" /><span>导入文本</span>
         </ElButton>
         <RouterLink class="link-btn" to="/settings">
-          <span class="i-mdi-tune-vertical" /> 调整设置
+          <div class="i-mdi-tune-vertical" />
+          <div>调整设置</div>
         </RouterLink>
         <ElButton
           v-if="typing.state.value === 'paused'"
@@ -171,14 +194,18 @@ async function insertToolScriptFromFile(): Promise<void> {
           plain
           @click="typing.resume()"
         >
-          <span class="i-mdi-play" /> 继续
+          <span class="i-mdi-play" /><span>继续</span>
         </ElButton>
         <ElButton v-else :disabled="!typing.isRunning.value" @click="typing.pause()">
-          <span class="i-mdi-pause" /> 暂停
+          <span class="i-mdi-pause" /><span>暂停</span>
         </ElButton>
         <ElButton type="danger" plain :disabled="!typing.isRunning.value" @click="typing.stop()">
-          <span class="i-mdi-stop" /> 停止
+          <span class="i-mdi-stop" /><span>停止</span>
         </ElButton>
+        <RouterLink class="link-btn" to="/logs">
+          <div class="i-mdi-text-box-search-outline" />
+          <div>运行日志</div>
+        </RouterLink>
       </div>
 
       <div class="primary">
@@ -190,39 +217,76 @@ async function insertToolScriptFromFile(): Promise<void> {
           @click="start()"
         >
           <span :class="mode === 'file' ? 'i-mdi-file-arrow-up-down-outline' : 'i-mdi-keyboard'" />
-          {{ startLabel }}
+          <span>{{ startLabel }}</span>
         </ElButton>
       </div>
-    </section>
-
-    <section class="card notice">
-      <div class="notice-head">
-        <span class="icon i-mdi-lightbulb-on-outline" />
-        <span>开始后请勿移动鼠标或切换窗口</span>
-        <div class="spacer" />
-        <RouterLink class="link-btn" to="/logs">查看运行日志</RouterLink>
-      </div>
-      <p class="card-desc">
-        随时可按
-        <code>{{ settings?.hotkeys.stop ?? 'Ctrl+Alt+X' }}</code>
-        紧急停止，内容区里按 <code>Ctrl+Enter</code> 也能开始。
-        目标程序若开着中文输入法，建议先切到英文。
-      </p>
-      <p v-if="latestLog" class="latest-log mono">
-        <span class="i-mdi-history" />
-        {{ new Date(latestLog.at).toLocaleTimeString() }} · {{ latestLog.message }}
-      </p>
     </section>
   </section>
 </template>
 
 <style scoped lang="scss">
-.input-layout {
-  display: grid;
-  grid-template-columns: minmax(0, 1.6fr) minmax(280px, 1fr);
-  gap: 16px;
-  /* 宽窗口：两列等高（左列是主任务，右列拉伸对齐它的底边） */
-  align-items: stretch;
+/*
+ * 输入页占满内容区高度：页头与操作条常驻，只有主面板内部滚动。
+ * 高度 = 视口 − 标题栏 − 状态栏 − 内容区上下内边距（--content-pad-y，与 .content 的 padding 同步）。
+ */
+.input-page {
+  height: calc(100vh - var(--titlebar-h) - var(--statusbar-h) - var(--content-pad-y));
+  min-height: 420px;
+  gap: 12px;
+}
+
+.workspace {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  gap: 12px;
+}
+
+/* 窄窗口不显示右列与页头胶囊，改由状态条承担同样的信息 */
+.compact-only {
+  display: none;
+}
+
+.side-column {
+  display: flex;
+  flex-direction: column;
+  width: 300px;
+  flex: none;
+  min-height: 0;
+  gap: 12px;
+  overflow-y: auto;
+}
+
+@media (max-width: 1239px) {
+  .side-column {
+    display: none;
+  }
+
+  .compact-only {
+    display: flex;
+  }
+}
+
+/* 矮窗口：说明文字让位给内容与操作条 */
+@media (max-height: 700px) {
+  .page-desc {
+    display: none;
+  }
+}
+
+/* 说明文字只占一行：内容用 title 也能看到，竖向空间留给主面板 */
+.page-desc {
+  overflow: hidden;
+  max-width: 100%;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 窄窗口隐藏与侧边导航重复的入口，操作条保持一行 */
+@media (max-width: 960px) {
+  .action-bar .link-btn {
+    display: none;
+  }
 }
 
 .header-row {
@@ -241,7 +305,7 @@ async function insertToolScriptFromFile(): Promise<void> {
 }
 
 .mode-option {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   gap: 6px;
   padding: 4px 12px;
@@ -264,18 +328,6 @@ async function insertToolScriptFromFile(): Promise<void> {
   }
 }
 
-.side-column {
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  gap: 16px;
-
-  /* 宽窗口下右列与左列等高：目标窗口是固定内容，多出来的高度给运行状态 */
-  > :last-child {
-    flex: 1;
-  }
-}
-
 .target-name {
   display: flex;
   align-items: center;
@@ -285,12 +337,13 @@ async function insertToolScriptFromFile(): Promise<void> {
 }
 
 .action-bar {
+  flex: none;
   /* 两端对齐：次要操作（含运行控制）成组贴左，主按钮单独贴右 */
   justify-content: space-between;
   flex-direction: row;
   align-items: center;
   gap: 12px;
-  padding: 12px 16px;
+  padding: 10px 12px;
 
   .secondary,
   .primary {
@@ -331,7 +384,7 @@ async function insertToolScriptFromFile(): Promise<void> {
 }
 
 .link-btn {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   gap: 6px;
   padding: 7px 12px;
@@ -349,7 +402,7 @@ async function insertToolScriptFromFile(): Promise<void> {
   }
 }
 
-.notice {
+.hint-card {
   gap: 8px;
 
   .notice-head {
@@ -373,39 +426,6 @@ async function insertToolScriptFromFile(): Promise<void> {
     font-size: 12px;
     color: var(--text-3);
     word-break: break-all;
-  }
-}
-
-/*
- * 中窗口（含默认窗口宽度）：内容区独占一行，目标窗口与运行状态并排放在它下面、两卡等高；
- * 高度多出来的部分留给内容，避免卡片看起来"半空"。
- */
-@media (max-width: 1279px) {
-  .input-layout {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .side-column {
-    flex-direction: row;
-    align-items: stretch;
-
-    > :first-child,
-    > :last-child {
-      flex: 1;
-      min-width: 0;
-    }
-  }
-
-  /* 目标窗口内容少，撑高后把说明压到底部，与运行状态的统计区对齐 */
-  .target {
-    justify-content: space-between;
-  }
-}
-
-/* 窄窗口：全部单列 */
-@media (max-width: 980px) {
-  .side-column {
-    flex-direction: column;
   }
 }
 </style>

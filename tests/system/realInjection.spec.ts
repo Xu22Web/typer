@@ -48,8 +48,7 @@ describeE2E('真实注入（需要前台焦点）', () => {
 
     driver = new WindowsSendInputDriver({
       spawn: nodeSpawnAdapter,
-      hostScriptPath: HOST_SCRIPT,
-      clipboard: { readText: () => '', writeText: () => {} }
+      hostScriptPath: HOST_SCRIPT
     })
     await driver.start()
 
@@ -88,9 +87,11 @@ describeE2E('真实注入（需要前台焦点）', () => {
     const result = await driver.send(items)
     expect(result.injected).toBe(result.requested)
 
-    await waitFor(() => target.readKeys().length > 0, {
-      timeoutMs: 10_000,
-      description: '目标窗口收到字符'
+    // 必须等到**完整字符流**落盘再断言：fixture 每收到一个 WM_CHAR 就重写一次文件，
+    // 只等"文件非空"会读到只到一半的状态（emoji 是最后一个字符，最容易读到落单的高代理码元）
+    await waitFor(() => target.readKeys() === SAMPLE_TEXT, {
+      timeoutMs: 15_000,
+      description: '目标窗口收到完整字符流'
     })
 
     expect(target.readKeys()).toBe(SAMPLE_TEXT)

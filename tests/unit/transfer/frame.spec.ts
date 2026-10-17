@@ -13,10 +13,13 @@ import {
   crc32,
   crc32Hex,
   decodeBytes,
+  decodePayload,
   encodeBytes,
+  encodePayload,
   escapeText,
   estimateDataFrameChars,
   formatIndexList,
+  fromWireBytes,
   isFrameLine,
   missingIndexes,
   parseFrame,
@@ -163,6 +166,34 @@ describe('载荷编码', () => {
     expect(() => decodeBytes('x', 'txt' as never)).toThrow(FrameError)
   })
 
+  it('gzb64 只能经由 encodePayload / decodePayload 使用', () => {
+    expect(() => encodeBytes('x', 'gzb64')).toThrow(/encodePayload/)
+    expect(() => decodeBytes('x', 'gzb64')).toThrow(/decodePayload/)
+  })
+
+  it('gzb64：先压缩再 Base64，线上字节是压缩后的长度', () => {
+    const text = new TextEncoder().encode('Typer 文件传输压缩自检。'.repeat(40))
+    const { wire, payload } = encodePayload(text, 'gzb64')
+
+    expect(wire.length).toBeLessThan(text.length / 2)
+    expect(payload.length).toBe(Math.ceil(wire.length / 3) * 4)
+    expect(payload).not.toMatch(/[\s]/)
+    expect([...fromWireBytes(decodePayload(payload, 'gzb64'), 'gzb64')]).toEqual([...text])
+  })
+
+  it('gzb64：不可压缩数据的线上字节略大于原始片，但仍能逐字节还原', () => {
+    const bytes = randomBytes(4096, 11)
+    const { wire, payload } = encodePayload(bytes, 'gzb64')
+
+    expect(wire.length).toBeGreaterThanOrEqual(bytes.length)
+    expect([...fromWireBytes(decodePayload(payload, 'gzb64'), 'gzb64')]).toEqual([...bytes])
+  })
+
+  it('gzb64：被截断的压缩片解压时报错，而不是产出错误数据', () => {
+    const { wire } = encodePayload(new TextEncoder().encode('x'.repeat(500)), 'gzb64')
+    expect(() => fromWireBytes(wire.subarray(0, wire.length - 6), 'gzb64')).toThrow(FrameError)
+  })
+
   it('txt 转义：往返一致且不含空白与控制字符', () => {
     const text = '第一行\r\n第二行 空格\tTab\\反斜杠\u0000\u001b结束\u00a0\u3000😀'
     const payload = escapeText(text)
@@ -174,7 +205,7 @@ describe('载荷编码', () => {
     expect(payload).toContain('\\x00')
     expect(payload).toContain('\\x1b')
     // 空格必须转义：帧是空格分隔的，载荷里的空格会把字段切错
-    expect(payload).toContain('\\x20')
+    expect(payload).toContain('\\s')
     // 非 ASCII 空白用 \uXXXX
     expect(payload).toContain('\\u00a0')
     expect(payload).toContain('\\u3000')
@@ -182,6 +213,7 @@ describe('载荷编码', () => {
 
   it('反转义宽容未知序列，但对残缺序列报错', () => {
     expect(unescapeText('a\\db')).toBe('a\\db')
+    expect(unescapeText('a\\sb')).toBe('a b')
     expect(() => unescapeText('abc\\')).toThrow(/反斜杠/)
     expect(() => unescapeText('a\\xzz')).toThrow(/\\x/)
     expect(() => unescapeText('a\\uzzzz')).toThrow(/\\u/)
@@ -377,12 +409,16 @@ describe('分片规划', () => {
     expect(() => planTextChunks('中', 2)).toThrow(/超过片大小上限/)
   })
 
-  it('帧长估算覆盖三种编码与显式载荷长度', () => {
+  it('帧长估算覆盖各编码与显式载荷长度', () => {
     const base = { seq: 0, total: 10, bytes: 1024, job: 'a1b2c3d4' }
     const hex = estimateDataFrameChars({ ...base, enc: 'hex' })
     expect(hex).toBeGreaterThan(2048)
     expect(estimateDataFrameChars({ ...base, enc: 'b64' })).toBeLessThan(hex)
     expect(estimateDataFrameChars({ ...base, enc: 'txt', payloadChars: 5 })).toBeLessThan(hex)
+    // gzb64 的 bytes 已是压缩后长度，载荷按 Base64 折算；头部只多出编码名的两个字符
+    expect(estimateDataFrameChars({ ...base, enc: 'gzb64' })).toBe(
+      estimateDataFrameChars({ ...base, enc: 'b64' }) + 2
+    )
   })
 })
 
@@ -454,6 +490,45 @@ describe('端到端（纯内存）：分片 → 解析 → 校验 → 合并', (
   it('b64 编码、非整除片大小同样逐字节还原', () => {
     const source = randomBytes(1000, 9)
     expect([...roundTrip(source, 333, 'b64')]).toEqual([...source])
+  })
+
+  it('gzb64：按压缩后的字节声明片长与校验，合并后逐字节还原', () => {
+    const source = new TextEncoder().encode('文件传输 gzb64 端到端自检。'.repeat(60))
+    const chunkBytes = 512
+    const job = 'a1b2c3d4'
+    const total = chunkCount(source.length, chunkBytes)
+    const lines: string[] = []
+
+    for (let seq = 0; seq < total; seq++) {
+      const { offset, bytes } = chunkSlice(source.length, chunkBytes, seq)
+      const slice = source.subarray(offset, offset + bytes)
+      const { wire, payload } = encodePayload(slice, 'gzb64')
+      lines.push(
+        buildDataFrame({
+          job,
+          seq,
+          total,
+          bytes: wire.length,
+          crc32: crc32Hex(wire),
+          sha16: sha16Hex(wire),
+          enc: 'gzb64',
+          payload
+        })
+      )
+    }
+
+    const merged: number[] = []
+    for (const line of lines) {
+      const frame = parseFrame(line)
+      expect(frame.kind).toBe('data')
+      if (frame.kind !== 'data') continue
+      const wire = verifyDataFrame(frame, decodePayload(frame.payload, 'gzb64'))
+      merged.push(...fromWireBytes(wire, 'gzb64'))
+    }
+
+    expect(merged).toEqual([...source])
+    // 压缩确实生效：线上字符数远小于十六进制（2 倍）与原始字节数
+    expect(lines.join('').length).toBeLessThan(source.length)
   })
 
   it('空文件：没有数据帧，只有开始与结束帧', () => {

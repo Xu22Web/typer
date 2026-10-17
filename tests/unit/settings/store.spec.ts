@@ -35,14 +35,15 @@ describe('SettingsStore 读取', () => {
     expect(fs.files.size).toBe(0)
   })
 
-  it('读取已有设置并做归一化（越界值被夹取）', () => {
+  it('读取已有设置并做归一化（越界值被夹取、未知分组被丢弃）', () => {
     const fs = createMemoryFs({
-      [FILE]: JSON.stringify({ startDelayMs: 999999, insertMode: 'paste' })
+      [FILE]: JSON.stringify({ startDelayMs: 999999, clipboard: { restore: false } })
     })
     const { store } = createStore(fs)
     const settings = store.load()
     expect(settings.startDelayMs).toBe(60_000)
-    expect(settings.insertMode).toBe('paste')
+    expect('clipboard' in settings).toBe(false)
+    expect(settings.files.importCharset).toBe('auto')
   })
 
   it('JSON 损坏时备份原文件并回退默认值', () => {

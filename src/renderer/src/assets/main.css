@@ -182,16 +182,20 @@ a:hover {
    小标签 / 徽章
    ========================================================================== */
 
+/*
+ * 药丸高度用 min-height 表示，不靠行高撑开：行高只负责文字排版，
+ * 一旦某个容器把字号调小（状态条与浮窗用 11px），固定行高就会把文字顶偏。
+ */
 .chip {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  padding: 3px 10px;
+  min-height: 26px;
+  padding: 0 10px;
   border: 1px solid var(--stroke);
   border-radius: 999px;
   background: var(--ctrl-fill);
   font-size: 12px;
-  line-height: 18px;
   color: var(--text-2);
   white-space: nowrap;
 
@@ -460,7 +464,6 @@ a:hover {
   padding: 0 14px;
   height: 48px;
   min-height: 48px;
-  line-height: 48px;
   border: none;
   background: transparent;
   font-size: 13px;

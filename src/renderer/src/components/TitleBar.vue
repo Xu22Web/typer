@@ -18,11 +18,11 @@ const pageTitle = computed(() => {
   <header class="titlebar">
     <RouterLink class="brand" to="/" title="Typer · 模拟键盘输入">
       <img class="mark" src="@renderer/assets/logo.svg" alt="" />
-      <span class="name">Typer</span>
+      <div class="name">Typer</div>
     </RouterLink>
 
-    <span class="divider" />
-    <span class="page-title">{{ pageTitle }}</span>
+    <div class="divider" />
+    <div class="page-title">{{ pageTitle }}</div>
 
     <div class="spacer" />
 
@@ -88,7 +88,6 @@ const pageTitle = computed(() => {
 .name {
   font-size: 13px;
   font-weight: 600;
-  line-height: 1;
   letter-spacing: 0.02em;
 }
 
@@ -107,7 +106,6 @@ const pageTitle = computed(() => {
  */
 .page-title {
   font-size: 13px;
-  line-height: 1;
   color: var(--text-2);
 }
 

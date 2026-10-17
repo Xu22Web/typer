@@ -4,7 +4,7 @@
  */
 
 /** 载荷编码（与线格式的 `enc` 字段一致）。 */
-export type TransferEncoding = 'hex' | 'b64' | 'txt'
+export type TransferEncoding = 'hex' | 'b64' | 'txt' | 'gzb64'
 
 export interface TransferEncodingOption {
   value: TransferEncoding
@@ -14,25 +14,35 @@ export interface TransferEncodingOption {
   overhead: number
   /** 是否只适用于 UTF-8 文本文件 */
   textOnly?: boolean
+  /** 接收端需要同版本脚本才能解开（新增编码用） */
+  requiresNewReceiver?: boolean
 }
 
 export const TRANSFER_ENCODING_OPTIONS: readonly TransferEncodingOption[] = [
   {
-    value: 'hex',
-    label: '十六进制（推荐）',
-    description: '只有 0-9 A-F，最抗终端与输入法干扰；能逐字节还原任何文件（含 GBK、EXE）',
-    overhead: 2
+    value: 'gzb64',
+    label: '压缩（推荐）',
+    description:
+      '先逐片压缩再 Base64：文本、代码、JSON 通常只有十六进制约三分之一的字符；已压缩的包也略优于 Base64。接收端需与 Typer 同版本',
+    overhead: 1 / 3,
+    requiresNewReceiver: true
   },
   {
     value: 'b64',
     label: 'Base64',
-    description: '体积约为十六进制的一半，含大小写与 + / =，目标端可靠时更快',
+    description: '体积约为十六进制的一半，含大小写与 + / =；任何文件都能逐字节还原',
     overhead: 4 / 3
+  },
+  {
+    value: 'hex',
+    label: '十六进制',
+    description: '只有 0-9 A-F，最抗终端与输入法干扰，任何版本的接收端都能解；字符数最多',
+    overhead: 2
   },
   {
     value: 'txt',
     label: '文本（UTF-8）',
-    description: '可读性最好；仅适用于合法 UTF-8 文本，空格与换行会转义成 \\x20 / \\n',
+    description: '可读性最好；仅适用于合法 UTF-8 文本，空格与换行会转义成 \\s / \\n',
     overhead: 1,
     textOnly: true
   }
@@ -53,8 +63,9 @@ export interface ChunkPreset {
 /**
  * 片大小预设。
  *
- * 帧长 ≈ 45 + 数字位数 + 载荷字符数：`hex` 时约为 `2 × 片字节数`。
- * 终端/剪贴板对单行长度都有限制，"保守"永远比"快"重要。
+ * 帧长 ≈ 45 + 数字位数 + 载荷字符数：`hex` 时约为 `2 × 片字节数`（最长的情形），
+ * `gzb64` 时通常不到一半。因此「帧长上限」按 hex 的最坏情况给，实际帧长由编码自己决定。
+ * 帧是逐字符打出去的，片越大帧越长、重传成本也越高，所以仍保留小片预设。
  */
 export const CHUNK_PRESETS: readonly ChunkPreset[] = [
   {
@@ -62,28 +73,28 @@ export const CHUNK_PRESETS: readonly ChunkPreset[] = [
     label: '窄终端',
     chunkBytes: 256,
     maxFrameChars: 1024,
-    description: '串口、老式控制台与限宽终端（帧长约 560 字符）'
+    description: '串口、老式控制台与限宽终端（帧长只有几百字符）'
+  },
+  {
+    id: 'conservative',
+    label: '保守',
+    chunkBytes: 1024,
+    maxFrameChars: 4096,
+    description: '目标端不稳或需要频繁续传时（十六进制帧长约 2.1 K 字符）'
   },
   {
     id: 'default',
     label: '默认',
-    chunkBytes: 1024,
-    maxFrameChars: 4096,
-    description: '终端 raw 模式与剪贴板粘贴的通用选择（帧长约 2.1 K 字符）'
+    chunkBytes: 8192,
+    maxFrameChars: 24576,
+    description: '压缩编码下的通用选择：帧头占比最小、分片数最少'
   },
   {
-    id: 'wide',
-    label: '宽松',
-    chunkBytes: 4096,
-    maxFrameChars: 16384,
-    description: '目标端可靠、粘贴不截断时使用（帧长约 8.2 K 字符）'
-  },
-  {
-    id: 'paste',
-    label: '仅粘贴',
-    chunkBytes: 16384,
-    maxFrameChars: 65536,
-    description: '已知无行宽限制、只走剪贴板时使用（帧长约 32.8 K 字符）'
+    id: 'large',
+    label: '大文件',
+    chunkBytes: 32768,
+    maxFrameChars: 66560,
+    description: '目标端可靠、链路稳定时用于大文件（重传成本更高）'
   }
 ]
 
@@ -123,7 +134,7 @@ export interface TransferPrepareOptions {
 
 /** 准备（读文件 + 哈希 + 分片）的进度。 */
 export interface TransferPrepareProgress {
-  phase: 'hash' | 'plan'
+  phase: 'hash' | 'compress' | 'plan'
   done: number
   total: number
 }
@@ -140,6 +151,8 @@ export interface TransferJobSummary {
   total: number
   /** 整文件 SHA-256（始终计算：接收端要靠它做最终校验） */
   sha256: string
+  /** 实际要打出去的字节总量（压缩编码下是压缩后的字节数） */
+  wireBytes: number
   /** 末片字节数（空文件为 0） */
   tailBytes: number
   /** 最长帧的字符数 */
@@ -189,21 +202,6 @@ export function formatBytes(bytes: number): string {
     index += 1
   }
   return `${value >= 100 ? Math.round(value) : value.toFixed(1)} ${units[index]}`
-}
-
-/**
- * @description 把毫秒格式化成粗粒度的预计耗时（用于提示用户量级）
- * @param ms 毫秒数
- * @returns 人类可读的耗时文本（非法输入返回破折号）
- */
-export function formatDuration(ms: number): string {
-  if (!Number.isFinite(ms) || ms <= 0) return '—'
-  const seconds = Math.round(ms / 1000)
-  if (seconds < 60) return `${seconds} 秒`
-  const minutes = Math.floor(seconds / 60)
-  if (minutes < 60) return `${minutes} 分 ${String(seconds % 60).padStart(2, '0')} 秒`
-  const hours = Math.floor(minutes / 60)
-  return `${hours} 小时 ${String(minutes % 60).padStart(2, '0')} 分`
 }
 
 /**

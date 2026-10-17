@@ -11,9 +11,9 @@ defineProps<{ rows: HexPreviewRow[] }>()
 <template>
   <div class="hex mono">
     <div v-for="row in rows" :key="row.offset" class="hex-row">
-      <span class="hex-offset">{{ row.offset.toString(16).padStart(8, '0') }}</span>
-      <span class="hex-bytes">{{ row.hex }}</span>
-      <span class="hex-ascii">{{ row.ascii }}</span>
+      <div class="hex-offset">{{ row.offset.toString(16).padStart(8, '0') }}</div>
+      <div class="hex-bytes">{{ row.hex }}</div>
+      <div class="hex-ascii">{{ row.ascii }}</div>
     </div>
   </div>
 </template>

@@ -31,8 +31,6 @@ const timing: TimingSettings = {
 function engineSettings(overrides: Partial<EngineSettings> = {}): EngineSettings {
   return {
     startDelayMs: 0,
-    insertMode: 'keystroke',
-    autoPasteThreshold: 100_000,
     chunkSize: 8,
     layout: 'us',
     forceUnicodeForAll: false,
@@ -129,7 +127,7 @@ describe('TypingEngine 正常流程', () => {
 
     expect(result.state).toBe('completed')
     expect(h.driver.releaseAllCalls).toBe(1)
-    expect(h.driver.pasted).toEqual([])
+    expect(h.driver.items.length).toBeGreaterThan(0)
 
     const chars = h.driver.items.map((item) => {
       if (item.t === 'unicode') return item.cu
@@ -218,6 +216,8 @@ describe('TypingEngine 中止与暂停', () => {
     // 第 2 批结束后立即中止，因此只会有 2 批
     expect(driver.batches).toHaveLength(2)
     expect(driver.releaseAllCalls).toBe(1)
+    // 中止要立刻通知宿主打断正在跑的那一批，不能等它自然打完
+    expect(driver.cancelCalls).toBe(1)
   })
 
   it('暂停 → 继续：动作不丢失也不重复', async () => {
@@ -321,30 +321,77 @@ describe('TypingEngine 进度', () => {
   })
 })
 
-describe('TypingEngine 粘贴模式', () => {
-  it('paste 模式整段粘贴，不逐字下发', async () => {
+describe('TypingEngine 逐字符输入', () => {
+  it('全部内容都逐字符下发，不整段跳过', async () => {
     const h = createHarness()
-    const result = await h.engine.start('中文内容', engineSettings({ insertMode: 'paste' }))
+    const result = await h.engine.start('中文内容', engineSettings())
     expect(result.state).toBe('completed')
-    expect(h.driver.pasted).toEqual(['中文内容'])
-    expect(h.driver.batches).toHaveLength(0)
     expect(result.typed).toBe(result.total)
+    expect(h.driver.batches.length).toBeGreaterThan(0)
+    expect(h.driver.items.length).toBe(result.total)
   })
+})
 
-  it('auto 模式超过阈值时自动改用粘贴', async () => {
+describe('TypingEngine 极速档', () => {
+  it('把相邻动作攒成一批下发，延迟之和不变', async () => {
     const h = createHarness()
-    await h.engine.start(
-      'a'.repeat(30),
-      engineSettings({ insertMode: 'auto', autoPasteThreshold: 10 })
+    const result = await h.engine.start(
+      'abcdefgh',
+      engineSettings({
+        profile: 'turbo',
+        chunkSize: 8,
+        timing: { ...timing, baseIntervalMs: 1 }
+      })
     )
-    expect(h.driver.pasted).toHaveLength(1)
+
+    expect(result.state).toBe('completed')
+    expect(h.driver.items).toHaveLength(8)
+    // 8ms 的计划间隔小于 16ms 攒批窗口 → 8 个动作合成一批
+    expect(h.driver.batches).toHaveLength(1)
+    expect(h.driver.batches[0]).toHaveLength(8)
+    const delays = (h.driver.batches[0] ?? []).map((item) =>
+      item.t === 'wait' ? item.ms : item.delay
+    )
+    expect(delays[0]).toBe(8)
+    expect(delays.slice(1).every((ms) => ms === 0)).toBe(true)
   })
 
-  it('auto 模式未超过阈值时仍逐字输入', async () => {
+  it('极速档每次下发至少凑够 32 个动作（减少目标端被唤醒的次数）', async () => {
     const h = createHarness()
-    await h.engine.start('abc', engineSettings({ insertMode: 'auto', autoPasteThreshold: 10 }))
-    expect(h.driver.pasted).toHaveLength(0)
-    expect(h.driver.items.length).toBeGreaterThan(0)
+    const result = await h.engine.start(
+      'a'.repeat(70),
+      engineSettings({
+        profile: 'turbo',
+        chunkSize: 512,
+        timing: { ...timing, baseIntervalMs: 1 }
+      })
+    )
+
+    expect(result.state).toBe('completed')
+    const items = h.driver.items
+    expect(items).toHaveLength(70)
+    const breaks = items
+      .map((item) => (item.t === 'wait' ? item.ms : item.delay))
+      .filter((ms) => ms > 0)
+    // 70ms 总间隔 → 每 32 个动作断一次：32 / 32 / 6
+    expect(breaks).toEqual([32, 32, 6])
+  })
+
+  it('焦点查询搭车：首批之后不再单独查前台窗口', async () => {
+    const driver = new MockKeyboardDriver({
+      foreground: { hwnd: 1, pid: 100, title: '目标窗口' },
+      piggybackForeground: true
+    })
+    const h = createHarness({ driver })
+    const result = await h.engine.start(
+      'abcdef',
+      engineSettings({ chunkSize: 2, focusGuard: 'warn' })
+    )
+
+    expect(result.state).toBe('completed')
+    expect(driver.batches.length).toBeGreaterThanOrEqual(3)
+    // 1 次倒计时前捕获 + 1 次首批前补查；后续批次都用搭车快照
+    expect(driver.foregroundCalls).toBe(2)
   })
 })
 

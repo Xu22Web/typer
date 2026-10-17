@@ -26,6 +26,15 @@ export default defineConfig({
     }
   },
   renderer: {
+    build: {
+      rollupOptions: {
+        // 两个窗口各自的 HTML 入口：主窗口与进度浮窗（浮窗只挂载 FloatWindow，不引入路由与页面）
+        input: {
+          index: resolve('src/renderer/index.html'),
+          float: resolve('src/renderer/float.html')
+        }
+      }
+    },
     resolve: {
       alias: {
         '@renderer': resolve('src/renderer/src'),

@@ -1,8 +1,10 @@
 import { createHash } from 'node:crypto'
 import { open, stat } from 'node:fs/promises'
 import { basename } from 'node:path'
+import { deflateRawSync } from 'node:zlib'
 
 import {
+  COMPRESSION_LEVEL,
   FrameError,
   buildBeginFrame,
   buildDataFrame,
@@ -14,9 +16,11 @@ import {
   escapeText,
   estimateDataFrameChars,
   parseFrame,
+  payloadEncoding,
   planTextChunks,
   randomJobId,
   sha16Hex,
+  toWireBytes,
   verifyDataFrame
 } from '@main/util/frame'
 
@@ -78,6 +82,91 @@ const HASH_CHUNK_BYTES = 1 << 20
 const UTF8_HINT_BYTES = 64 * 1024
 
 /**
+ * 扫描结果。
+ *
+ * 一次读盘同时产出两样东西：整文件 SHA-256，以及（压缩编码时）每片压缩后的字节数。
+ * 后者让"要打多少字符、大概多久"在发送前就是精确值，而不是估算。
+ */
+interface ScanResult {
+  sha256: string
+  wireBytes: Uint32Array | null
+}
+
+/**
+ * @description 计算一段字节 deflate 之后的大小（不保留结果，只用于统计）
+ * @param buffer 待压缩的缓冲
+ * @param length 有效长度
+ * @returns 压缩后的字节数
+ */
+function compressedLength(buffer: Buffer, length: number): number {
+  return deflateRawSync(buffer.subarray(0, length), { level: COMPRESSION_LEVEL }).length
+}
+
+/**
+ * @description 流式扫描文件并计算 SHA-256（压缩编码时顺带统计每片压缩后大小）；
+ * 大文件不会一次读进内存，且可被取消
+ * @param input 路径、大小、片大小、是否压缩、可复用的哈希与进度/取消钩子
+ * @returns 哈希与每片线上字节数
+ */
+async function scanFile(input: {
+  path: string
+  size: number
+  chunkBytes: number
+  compress: boolean
+  cachedSha256?: string
+  deps: PrepareDeps
+}): Promise<ScanResult> {
+  const { path, size, chunkBytes, compress, cachedSha256, deps } = input
+  const wireBytes = compress ? new Uint32Array(chunkCount(size, chunkBytes)) : null
+  if (size === 0) {
+    return { sha256: cachedSha256 ?? createHash('sha256').digest('hex'), wireBytes }
+  }
+
+  const hash = cachedSha256 === undefined ? createHash('sha256') : null
+  const handle = await open(path, 'r')
+  const block = Buffer.allocUnsafe(Math.min(Math.max(HASH_CHUNK_BYTES, chunkBytes), size))
+  const pending = wireBytes ? Buffer.allocUnsafe(Math.min(chunkBytes, size)) : null
+  let pendingLength = 0
+  let chunkIndex = 0
+  let position = 0
+  try {
+    while (position < size) {
+      if (canceled(deps)) throw new TransferError('canceled', '已取消')
+      const read = await handle.read(block, 0, block.length, position)
+      if (read.bytesRead <= 0) break
+      const piece = block.subarray(0, read.bytesRead)
+      position += read.bytesRead
+      hash?.update(piece)
+      if (wireBytes && pending) {
+        let cursor = 0
+        while (cursor < piece.length) {
+          const take = Math.min(pending.length - pendingLength, piece.length - cursor)
+          piece.copy(pending, pendingLength, cursor, cursor + take)
+          pendingLength += take
+          cursor += take
+          if (pendingLength === pending.length) {
+            wireBytes[chunkIndex] = compressedLength(pending, pendingLength)
+            chunkIndex += 1
+            pendingLength = 0
+          }
+        }
+      }
+      // 压缩编码下这一趟同时在压缩，进度文案要如实反映
+      deps.onProgress?.({ phase: wireBytes ? 'compress' : 'hash', done: position, total: size })
+    }
+    if (wireBytes && pending && pendingLength > 0) {
+      wireBytes[chunkIndex] = compressedLength(pending, pendingLength)
+    }
+  } finally {
+    await handle.close()
+  }
+
+  if (hash) return { sha256: hash.digest('hex'), wireBytes }
+  if (cachedSha256 === undefined) throw new TransferError('io', '内部错误：缺少整文件哈希')
+  return { sha256: cachedSha256, wireBytes }
+}
+
+/**
  * @description 把数值夹取到闭区间内（非有限数取区间下界）
  * @param value 原始值
  * @param range 合法区间 [min, max]
@@ -95,35 +184,6 @@ function clamp(value: number, range: readonly [number, number]): number {
  */
 function canceled(deps: PrepareDeps): boolean {
   return deps.shouldCancel?.() === true
-}
-
-/**
- * @description 流式读取文件并计算 SHA-256（大文件不会一次读进内存，且可被取消）
- * @param path 文件路径
- * @param size 文件字节数
- * @param deps 进度与取消钩子
- * @returns 十六进制摘要
- */
-async function hashFile(path: string, size: number, deps: PrepareDeps): Promise<string> {
-  const hash = createHash('sha256')
-  if (size === 0) return hash.digest('hex')
-
-  const handle = await open(path, 'r')
-  const buffer = Buffer.allocUnsafe(Math.min(HASH_CHUNK_BYTES, size))
-  let position = 0
-  try {
-    while (position < size) {
-      if (canceled(deps)) throw new TransferError('canceled', '已取消')
-      const read = await handle.read(buffer, 0, buffer.length, position)
-      if (read.bytesRead <= 0) break
-      hash.update(buffer.subarray(0, read.bytesRead))
-      position += read.bytesRead
-      deps.onProgress?.({ phase: 'hash', done: position, total: size })
-    }
-  } finally {
-    await handle.close()
-  }
-  return hash.digest('hex')
 }
 
 /**
@@ -182,15 +242,17 @@ function astralCount(text: string): number {
 }
 
 /**
- * @description 估算给定字节数在某种载荷编码下会变成多少字符（与 frame.mjs 的口径一致）
- * @param bytes 原始字节数
+ * @description 估算给定字节数在某种编码下会变成多少字符（口径与 `encodePayload` 一致：
+ * hex 每字节 2 个字符、base64 每 3 字节 4 个字符、txt 与字节数相等）
+ * @param wireBytes 线上字节数
  * @param encoding 载荷编码
  * @returns 载荷字符数
  */
-function encodedChars(bytes: number, encoding: TransferPrepareOptions['encoding']): number {
-  if (encoding === 'hex') return bytes * 2
-  if (encoding === 'b64') return Math.ceil(bytes / 3) * 4
-  return bytes
+function payloadCharsFor(wireBytes: number, encoding: TransferPrepareOptions['encoding']): number {
+  const codec = payloadEncoding(encoding)
+  if (codec === 'hex') return wireBytes * 2
+  if (codec === 'b64') return Math.ceil(wireBytes / 3) * 4
+  return wireBytes
 }
 
 export interface PrepareTransferInput {
@@ -238,16 +300,27 @@ export async function prepareTransfer(input: PrepareTransferInput): Promise<Prep
   const name = input.options.name?.trim() || basename(path)
   const job = randomJobId()
 
-  // 1) 整文件哈希。文件指纹（大小 + 修改时间）都没变时可直接复用上次结果，
-  //    这样"改片大小"这类操作不会把 GB 级文件重新读一遍。
+  // 1) 整文件哈希 +（压缩编码时）每片压缩后大小。文件指纹（大小 + 修改时间）都没变时可复用哈希，
+  //    但压缩编码仍需读一遍才能知道压缩后有多大——要的是准确的字符数与耗时。
   const reusable =
     input.cached !== undefined &&
     input.cached.size === size &&
     input.cached.mtimeMs === info.mtimeMs
+  const compressing = encoding === 'gzb64'
 
-  const sha256 = reusable
-    ? (input.cached as { sha256: string }).sha256
-    : await hashFile(path, size, deps)
+  const scan =
+    reusable && !compressing
+      ? null
+      : await scanFile({
+          path,
+          size,
+          chunkBytes,
+          compress: compressing,
+          cachedSha256: reusable ? (input.cached as { sha256: string }).sha256 : undefined,
+          deps
+        })
+  const sha256 = scan?.sha256 ?? (input.cached as { sha256: string }).sha256
+  const wireBytes = scan?.wireBytes ?? null
   if (!reusable && canceled(deps)) throw new TransferError('canceled', '已取消')
 
   // 2) 预览 + UTF-8 提示（只看开头：结论只用于界面提示，真正的校验在 txt 模式里做）
@@ -271,6 +344,8 @@ export async function prepareTransfer(input: PrepareTransferInput): Promise<Prep
         : (textChunks[total - 1]?.bytes ?? 0)
 
   // 4) 帧长与字符量统计：不发一个字节就能算出"要打多少字符、大概多久"
+  const wireRatio =
+    wireBytes === null || size === 0 ? 1 : wireBytes.reduce((sum, value) => sum + value, 0) / size
   const stats = collectFrameStats({
     job,
     total,
@@ -278,7 +353,9 @@ export async function prepareTransfer(input: PrepareTransferInput): Promise<Prep
     size,
     chunkBytes,
     maxFrameChars,
-    textChunks
+    textChunks,
+    wireBytes,
+    wireRatio
   })
 
   const beginText = buildBeginFrame({
@@ -302,6 +379,7 @@ export async function prepareTransfer(input: PrepareTransferInput): Promise<Prep
     maxFrameChars,
     total,
     sha256,
+    wireBytes: stats.wireBytes,
     tailBytes,
     peakFrameChars: stats.peakFrameChars,
     frameChars: stats.frameChars + beginText.length + 1 + endText.length + 1,
@@ -312,7 +390,7 @@ export async function prepareTransfer(input: PrepareTransferInput): Promise<Prep
 
   return createPreparedTransfer(
     summary,
-    { path, textChunks, beginText, endText },
+    { path, textChunks, beginText, endText, wireBytes },
     { size, mtimeMs: info.mtimeMs }
   )
 }
@@ -363,36 +441,42 @@ interface FrameStatsInput {
   chunkBytes: number
   maxFrameChars: number
   textChunks: Array<{ text: string; bytes: number; chars: number }> | null
+  /** 每片线上字节数（压缩编码时由扫描阶段给出） */
+  wireBytes: Uint32Array | null
+  /** 线上字节数 ÷ 原始字节数（未压缩为 1），用于给出片大小建议 */
+  wireRatio: number
 }
 
 /**
  * @description 逐帧累加字符数与动作数，并在这里就把"帧太长"的问题挡掉
- * @param input 分片表与帧长上限
- * @returns 总字符数、总动作数与最长帧字符数
+ * @param input 分片表、线上字节数与帧长上限
+ * @returns 总字符数、总动作数、最长帧字符数与线上字节总量
  */
 function collectFrameStats(input: FrameStatsInput): {
   frameChars: number
   typedActions: number
   peakFrameChars: number
+  wireBytes: number
 } {
   let frameChars = 0
   let typedActions = 0
   let peakFrameChars = 0
+  let wireTotal = 0
 
   for (let index = 0; index < input.total; index++) {
-    const bytes =
+    const wire =
       input.textChunks === null
-        ? chunkSlice(input.size, input.chunkBytes, index).bytes
+        ? (input.wireBytes?.[index] ?? chunkSlice(input.size, input.chunkBytes, index).bytes)
         : (input.textChunks[index]?.bytes ?? 0)
     const payloadChars =
       input.textChunks === null
-        ? encodedChars(bytes, input.encoding)
+        ? payloadCharsFor(wire, input.encoding)
         : escapeText(input.textChunks[index]?.text ?? '').length
     const headerChars = estimateDataFrameChars({
       job: input.job,
       seq: index,
       total: input.total,
-      bytes,
+      bytes: wire,
       enc: input.encoding,
       payloadChars: 0
     })
@@ -410,9 +494,10 @@ function collectFrameStats(input: FrameStatsInput): {
     typedActions += payloadChars + 1
     if (input.textChunks !== null) typedActions += astralCount(input.textChunks[index]?.text ?? '')
     peakFrameChars = Math.max(peakFrameChars, lineChars)
+    wireTotal += wire
   }
 
-  return { frameChars, typedActions, peakFrameChars }
+  return { frameChars, typedActions, peakFrameChars, wireBytes: wireTotal }
 }
 
 /**
@@ -421,8 +506,10 @@ function collectFrameStats(input: FrameStatsInput): {
  * @returns 建议的片字节数
  */
 function suggestChunkBytes(input: FrameStatsInput): number {
-  const overhead = input.encoding === 'hex' ? 2 : input.encoding === 'b64' ? 4 / 3 : 1
-  return Math.max(1, Math.floor((input.maxFrameChars - 64) / overhead))
+  const codec = payloadEncoding(input.encoding)
+  const perByte =
+    codec === 'hex' ? 2 : codec === 'b64' ? 4 / 3 : codec === 'txt' ? 1 : input.wireRatio * (4 / 3)
+  return Math.max(1, Math.floor((input.maxFrameChars - 64) / perByte))
 }
 
 interface PreparedInternals {
@@ -430,6 +517,8 @@ interface PreparedInternals {
   textChunks: Array<{ text: string; bytes: number; chars: number }> | null
   beginText: string
   endText: string
+  /** 每片线上字节数（压缩编码时有值） */
+  wireBytes: Uint32Array | null
 }
 
 /**
@@ -456,14 +545,15 @@ function createPreparedTransfer(
   }
 
   /**
-   * @description 取某一片的原始字节数与载荷字符数
+   * @description 取某一片的线上字节数与载荷字符数
    * @param index 片号
-   * @returns 该片的字节数与载荷字符数
+   * @returns 该片的线上字节数与载荷字符数
    */
   const payloadOf = (index: number): { bytes: number; payloadChars: number } => {
     if (internals.textChunks === null) {
-      const bytes = chunkSlice(summary.size, summary.chunkBytes, index).bytes
-      return { bytes, payloadChars: encodedChars(bytes, summary.encoding) }
+      const bytes =
+        internals.wireBytes?.[index] ?? chunkSlice(summary.size, summary.chunkBytes, index).bytes
+      return { bytes, payloadChars: payloadCharsFor(bytes, summary.encoding) }
     }
     const chunk = internals.textChunks[index]
     if (!chunk) throw new FrameError('range', `片号超出范围：${index}`)
@@ -521,7 +611,7 @@ function createPreparedTransfer(
     async renderFrame(index: number): Promise<string> {
       assertIndex(index)
 
-      let bytes: Buffer
+      let wire: Uint8Array
       let payload: string
 
       if (internals.textChunks === null) {
@@ -535,12 +625,12 @@ function createPreparedTransfer(
             `读取第 ${index} 片失败：期望 ${slice.bytes} 字节，实际 ${bytesRead}（文件在传输过程中被修改了？）`
           )
         }
-        bytes = buffer
-        payload = encodeBytes(buffer, summary.encoding === 'b64' ? 'b64' : 'hex')
+        wire = toWireBytes(buffer, summary.encoding)
+        payload = encodeBytes(wire, payloadEncoding(summary.encoding))
       } else {
         const chunk = internals.textChunks[index]
         if (!chunk) throw new FrameError('range', `片号超出范围：${index}`)
-        bytes = Buffer.from(chunk.text, 'utf8')
+        wire = Buffer.from(chunk.text, 'utf8')
         payload = escapeText(chunk.text)
       }
 
@@ -548,9 +638,9 @@ function createPreparedTransfer(
         job: summary.job,
         seq: index,
         total: summary.total,
-        bytes: bytes.length,
-        crc32: crc32Hex(bytes),
-        sha16: sha16Hex(bytes),
+        bytes: wire.length,
+        crc32: crc32Hex(wire),
+        sha16: sha16Hex(wire),
         enc: summary.encoding,
         payload
       })
@@ -561,7 +651,7 @@ function createPreparedTransfer(
       if (parsed.kind !== 'data') {
         throw new TransferError('self-check', '自检失败：渲染结果不是数据帧')
       }
-      verifyDataFrame(parsed, bytes)
+      verifyDataFrame(parsed, wire)
 
       return line
     },

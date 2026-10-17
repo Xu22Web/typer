@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it, afterAll } from 'vitest'
+import { encodeHostItems, type HostItem } from '@main/typing/drivers/protocol'
 import { HostSession } from './helpers/hostSession'
 import { HOST_SCRIPT, runPowershell, TARGET_SCRIPT } from './helpers/system'
 
@@ -77,6 +78,30 @@ describe('PowerShell 脚本静态校验', () => {
     expect(source).toContain('ConvertTo-AsciiJson')
   })
 
+  it('宿主脚本用内核定时器等待而不是空转烧 CPU', () => {
+    const source = readSource(HOST_SCRIPT)
+    // 等待要交给内核（高分辨率可等待定时器），自旋只留一小段尾段：
+    // 全程自旋会吃满一个核，整台机器都会跟着卡
+    expect(source).toContain('CreateWaitableTimerExW')
+    expect(source).toContain('CREATE_WAITABLE_TIMER_HIGH_RESOLUTION')
+    expect(source).toContain('WaitForSingleObject')
+    expect(source).toContain('SPIN_TAIL_MS')
+    expect(source).toContain('timeBeginPeriod')
+    expect(source).not.toContain('Thread.Sleep((int)(remainingMs - 1.0))')
+  })
+
+  it('宿主脚本带输入队列压力阀：被队列拖住时自动补等，避免整机输入被拖慢', () => {
+    const source = readSource(HOST_SCRIPT)
+    expect(source).toContain('VALVE_TRIGGER_MS')
+    expect(source).toContain('VALVE_GAIN')
+    expect(source).toContain('LastFlushTicks')
+    expect(source).toContain('valveMs')
+    expect(source).toContain('blockedCalls')
+    // 阀要覆盖"每一次 flush"：零延迟大批次没有下一个等待可以借机降速，必须就地补等
+    expect(source).toContain('ValveWaitAfterFlush')
+    expect(source.match(/ValveWaitAfterFlush\(/g)?.length ?? 0).toBeGreaterThanOrEqual(3)
+  })
+
   it('宿主脚本在 add-type 失败时不会静默继续', () => {
     const source = readSource(HOST_SCRIPT)
     expect(source).toMatch(/Add-Type[\s\S]*catch/)
@@ -108,7 +133,7 @@ describe('宿主 dry-run 真实启动', () => {
 
   it('dry-run 下按事件数回执请求的动作（含中文、emoji、Shift 组合符号）', async () => {
     expect(session).not.toBeNull()
-    const items = [
+    const items: HostItem[] = [
       { t: 'key', vk: 0x48, mods: ['shift'], delay: 1 }, // H（Shift 组合）
       { t: 'key', vk: 0x31, mods: ['shift'], delay: 1 }, // !（Shift 组合）
       { t: 'unicode', cu: 0x4e2d, delay: 1 }, // 中
@@ -117,15 +142,30 @@ describe('宿主 dry-run 真实启动', () => {
       { t: 'key', vk: 0x0d, mods: [], delay: 1 } // 回车
     ]
 
-    const result = await session!.request<{ requested: number; injected: number; items: number }>(
-      'type',
-      { items }
-    )
+    const result = await session!.request<{
+      requested: number
+      injected: number
+      items: number
+      blockedMs: number
+      maxBlockedMs: number
+      valveMs: number
+      blockedCalls: number
+      foreground?: { hwnd: number; pid: number; title: string }
+    }>('type', encodeHostItems(items))
 
     // 2 个 Shift 组合按键 × (2 本体 + 2 修饰) = 8；3 个 unicode = 6；回车 2 → 共 16
     expect(result.requested).toBe(16)
     expect(result.injected).toBe(result.requested)
     expect(result.items).toBe(items.length)
+    // dry-run 不真的调用 SendInput，因此不应报告任何"被输入队列拖住"的迹象，
+    // 压力阀也不该补等（否则会白白拖慢节奏）
+    expect(result.blockedMs).toBe(0)
+    expect(result.maxBlockedMs).toBe(0)
+    expect(result.valveMs).toBe(0)
+    expect(result.blockedCalls).toBe(0)
+    // 焦点守护靠这条"搭车"信息，省掉每批一次单独的 foreground 往返
+    expect(result.foreground).toBeDefined()
+    expect(typeof result.foreground?.pid).toBe('number')
   })
 
   it('releaseAll / probe / foreground 都能正常响应', async () => {

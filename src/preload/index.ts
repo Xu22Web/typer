@@ -6,6 +6,7 @@ import { toPlainPayload } from '@main/ipc/plainPayload'
 import type { ProgressSnapshot } from '@main/typing/engine/progress'
 import type { EngineSnapshot } from '@main/typing/engine/states'
 import type { WindowStatePayload } from '@main/ipc/contracts'
+import type { FloatStatePayload } from '@main/window/floatingWindow'
 import type { UpdateProgress, UpdateState } from '@main/update/types'
 
 /**
@@ -79,8 +80,26 @@ const api = {
     toggleMaximize: () => invoke(IPC.windowToggleMaximize),
     close: () => invoke(IPC.windowClose),
     isMaximized: () => invoke(IPC.windowIsMaximized),
+    /** 召回并聚焦主窗口（进度浮窗点击时用） */
+    focusMain: () => invoke(IPC.windowFocusMain),
     onState: (listener: (payload: WindowStatePayload) => void) =>
       subscribe(IPC.eventWindowState, listener)
+  },
+  float: {
+    /** 展开成卡片（鼠标靠近细条时） */
+    expand: () => invoke(IPC.floatExpand),
+    /** 收回成贴边细条（鼠标离开后） */
+    collapse: () => invoke(IPC.floatCollapse),
+    /** 拖动位移（单位 DIP） */
+    drag: (dx: number, dy: number) => invoke(IPC.floatDrag, { dx, dy }),
+    /** 拖动落定：靠近边缘则吸附成细条，否则自由浮动 */
+    drop: () => invoke(IPC.floatDrop),
+    /** 立刻吸附到最近的边 */
+    dock: () => invoke(IPC.floatDock),
+    /** 贴边时把窗口切成"接收鼠标 / 点击穿透" */
+    setInteractive: (interactive: boolean) => invoke(IPC.floatInteractive, interactive),
+    onState: (listener: (payload: FloatStatePayload) => void) =>
+      subscribe(IPC.eventFloatState, listener)
   },
   updates: {
     check: (force = false) => invoke(IPC.updateCheck, { force }),

@@ -1,11 +1,19 @@
 import { buildPlan, countTypedActions, iterateActions, type PlanOptions } from '../planner/plan'
 import { describeSkipped } from '../planner/text'
 import type { KeyboardDriver } from '../drivers/KeyboardDriver'
-import type { HostForegroundData, ScheduledAction } from '../drivers/protocol'
+import type { HostForegroundData, HostTypeData, ScheduledAction } from '../drivers/protocol'
 import { toHostItems } from '../drivers/protocol'
 import { createRng, resolveSeed, type Rng } from '../scheduling/rng'
 import {
+  PROFILE_LIMITS,
+  TRANSFER_PACE_LIMITS,
+  textBatchWindowMs,
+  type InjectionProfile,
+  type TransferPace
+} from '../scheduling/profile'
+import {
   baseIntervalMsFor,
+  coalesceDelays,
   FRAME_MODE_TIMING,
   TimingScheduler,
   type TimingSettings
@@ -14,8 +22,6 @@ import type { TypoCorrection, TypoOptions, TypoStyle } from '../scheduling/typo'
 import { FocusGuard, type FocusGuardMode, type FocusSnapshot } from '../focus/focusGuard'
 import { computeProgress, type ProgressFrames, type ProgressSnapshot } from './progress'
 import { isBusy, type EngineSnapshot, type EngineState } from './states'
-
-export type InsertMode = 'keystroke' | 'paste' | 'auto'
 
 /**
  * 一次输入任务的来源。
@@ -48,8 +54,6 @@ export type TypingRequest =
 /** 引擎需要的设置子集（由设置层派生，测试可直接构造）。 */
 export interface EngineSettings {
   startDelayMs: number
-  insertMode: InsertMode
-  autoPasteThreshold: number
   chunkSize: number
   layout: string
   forceUnicodeForAll: boolean
@@ -57,10 +61,12 @@ export interface EngineSettings {
   seed: number
   /** 完成后自检是否有按键粘住 */
   verifyStuckKeys: boolean
+  /** 注入档位：normal 逐字（默认），turbo 攒批 + 零下限 */
+  profile?: InjectionProfile
+  /** 文件传输节奏档：safe 每字符 1ms（默认），fast 交给压力阀 */
+  transferPace?: TransferPace
   /** 文件传输：片与片之间的额外停顿（给接收端落盘/回显留时间） */
   interFrameDelayMs?: number
-  /** 文件传输：粘贴帧时是否把行尾换行一起粘贴（少一次按键） */
-  pasteFrameIncludesNewline?: boolean
   timing: TimingSettings
   typo: {
     rate: number
@@ -96,6 +102,19 @@ export interface RunResult {
 /** 倒计时每片最长 100ms，保证中止响应足够快。 */
 const COUNTDOWN_TICK_MS = 100
 
+/** 宿主因目标端消化不过来而额外等待超过这个时长（毫秒）时提醒一次 */
+const PRESSURE_WARN_MS = 300
+
+/** 单批至少下发多少个动作（极速档按实测速率调整批次大小时的兜底） */
+const MIN_ACTIONS_PER_REQUEST = 32
+
+/**
+ * 极速档每次 `SendInput` 至少攒多少个动作。
+ * 目标端"被唤醒一次"的固定开销通常远大于逐字符开销：同一个目标下，每 8 个字符下发一次
+ * 只有约 76 字符/秒，每 128 个字符下发一次能到约 370 字符/秒。32 是节奏抖动与吞吐的折中。
+ */
+const TURBO_MIN_GROUP = 32
+
 /**
  * 输入引擎：倒计时 → 分块下发动作 → 暂停/继续/中止。
  *
@@ -120,6 +139,12 @@ export class TypingEngine {
   private baseIntervalMs = 60
   /** 文件传输任务的片进度（文本任务为 null） */
   private frames: ProgressFrames | null = null
+  /** 本次运行是否已提醒过"目标端消化不过来" */
+  private pressureWarned = false
+  /** 上一批注入结束时宿主看到的前台窗口：焦点守护用它替代额外的往返查询 */
+  private lastForeground: HostForegroundData | null = null
+  /** 单个请求的动作数（极速档按实测速率调整，保证暂停/停止的粒度） */
+  private actionsPerRequest = 0
 
   /**
    * @description 保存注入的依赖（驱动、时钟、随机源与回调）
@@ -172,6 +197,9 @@ export class TypingEngine {
     this.typedCount = 0
     this.totalCount = 0
     this.countdownRemainingMs = 0
+    this.pressureWarned = false
+    this.lastForeground = null
+    this.actionsPerRequest = Math.max(1, settings.chunkSize)
     this.frames =
       task.kind === 'frames'
         ? { done: 0, total: task.indexes.length, lastIndex: -1, failed: 0 }
@@ -263,7 +291,7 @@ export class TypingEngine {
   }
 
   /**
-   * @description 文本任务：统计动作总数 → 空文本短路 → 粘贴或逐块输入
+   * @description 文本任务：统计动作总数 → 空文本短路 → 逐块下发真实按键
    * @param text 待输入文本
    * @param settings 引擎设置子集
    * @param seed 本次使用的随机种子
@@ -309,36 +337,23 @@ export class TypingEngine {
 
     this.setState('running')
 
-    // 5) 粘贴模式
-    const usePaste =
-      settings.insertMode === 'paste' ||
-      (settings.insertMode === 'auto' && this.totalCount > Math.max(1, settings.autoPasteThreshold))
-
-    if (usePaste) {
-      await this.driver.start()
-      const verdict = await guard.verify(expectedFocus)
-      if (verdict.blocked) {
-        this.abortReason = verdict.warning ?? '前台窗口已变化'
-        return 'aborted'
-      }
-      await this.driver.paste(text)
-      this.typedCount = this.totalCount
-      this.emitProgress(true)
-      this.deps.onLog?.('info', '已通过剪贴板粘贴完成输入')
-      return 'completed'
-    }
-
-    // 6) 逐块输入
+    // 5) 逐块输入
     await this.driver.start()
 
-    const scheduler = new TimingScheduler(settings.timing, rngFactory(seed))
+    const profile = settings.profile ?? 'normal'
+    const limits = PROFILE_LIMITS[profile]
+    const scheduler = new TimingScheduler(settings.timing, rngFactory(seed), limits.minDelayMs)
     const actions = iterateActions(text, {
       ...planBase,
       typo: { ...typoOptions, rng: rngFactory(seed) }
     })
 
-    const chunkSize = Math.max(1, settings.chunkSize)
+    const maxChunk = Math.max(1, settings.chunkSize)
+    // 攒批窗口：极速档按间隔自适应，标准档只在接近人速上限时合并两个相邻动作
+    const batchWindow = textBatchWindowMs(profile, baseIntervalMsFor(settings.timing))
     let chunk: ScheduledAction[] = []
+    /** 本批累计的计划时长：与动作数一起限制单个请求的大小 */
+    let chunkMs = 0
 
     /**
      * @description 下发当前累积的一批动作（必要时先等待暂停结束并复核焦点）
@@ -355,7 +370,7 @@ export class TypingEngine {
         this.setState('running')
       }
 
-      const verdict = await guard.verify(expectedFocus)
+      const verdict = await this.checkFocus(guard, expectedFocus)
       if (verdict.changed) {
         this.deps.onLog?.('warn', verdict.warning ?? '前台窗口已变化')
         if (verdict.blocked) {
@@ -366,16 +381,35 @@ export class TypingEngine {
 
       const pending = chunk
       chunk = []
-      await this.driver.send(toHostItems(pending))
+      chunkMs = 0
+      const startedAt = this.deps.now()
+      const outgoing =
+        batchWindow > 0
+          ? coalesceDelays(pending, batchWindow, profile === 'turbo' ? TURBO_MIN_GROUP : 1)
+          : pending
+      const result = await this.driver.send(toHostItems(outgoing))
+      this.lastForeground = result.foreground ?? null
+      // 被中止打断的批次只注入了一部分，别把它算进进度
+      if (result.cancelled) return false
       this.typedCount += pending.length
+      this.noteHostPressure(result)
       this.emitProgress(false)
+      this.retuneActionsPerRequest(
+        pending.length,
+        this.deps.now() - startedAt,
+        maxChunk,
+        limits.batchBudgetMs
+      )
       return true
     }
 
     for (const action of actions) {
       if (this.aborted) return 'aborted'
-      chunk.push({ action, delayMs: scheduler.delayFor(action) })
-      if (chunk.length >= chunkSize) {
+      const delayMs = scheduler.delayFor(action)
+      chunk.push({ action, delayMs })
+      chunkMs += delayMs
+      const overTime = limits.batchBudgetMs > 0 && chunkMs >= limits.batchBudgetMs
+      if (chunk.length >= this.actionsPerRequest || overTime) {
         const ok = await flush()
         if (!ok) return 'aborted'
       }
@@ -390,12 +424,11 @@ export class TypingEngine {
   }
 
   /**
-   * @description 文件传输任务：逐帧发送（每片一行）；不打错字（错字会直接破坏数据），
-   * 一片下发完毕再发下一片且片间可加停顿（让接收端总在完整的一行上做校验），
-   * 每帧按长度选择粘贴或真实按键（沿用 `insertMode` 的自动策略）。
+   * @description 文件传输任务：逐帧发送（每片一行），**逐字符真实按键**；不打错字（错字会直接破坏数据），
+   * 一片下发完毕再发下一片且片间可加停顿（让接收端总在完整的一行上做校验）。
    * 帧内节奏使用确定性节奏 {@link FRAME_MODE_TIMING}，因此帧模式不读取 `settings.timing`、
    * 不读取 `settings.typo`，也不使用随机源（随机化只会拖慢传输并让失败不可复现）；
-   * 片间断顿只发生在片与片之间，由 `settings.interFrameDelayMs` 控制。
+   * 片间断顿只发生在片与片之间，稳健档由 `settings.interFrameDelayMs` 控制，极速档不留停顿。
    * @param task 文件传输任务
    * @param settings 引擎设置子集
    * @param seed 本次使用的随机种子
@@ -414,7 +447,11 @@ export class TypingEngine {
   ): Promise<RunResult['state']> {
     const planBase: PlanOptions = {
       layout: settings.layout,
-      forceUnicodeForAll: settings.forceUnicodeForAll
+      // 帧是数据：必须与目标窗口的布局、输入法状态无关。目标端若开着中文输入法（中文态），
+      // 真实按键会被候选窗吞掉（连回车都可能被当成"提交候选"），数据直接丢失且不报错。
+      // 因此正文走 Unicode 报文、换行也走 Unicode CR 报文（见 resolveChar）。
+      forceUnicodeForAll: true,
+      lineEnding: 'cr'
     }
     const beginText = task.begin?.()
     const endText = task.end?.()
@@ -433,44 +470,57 @@ export class TypingEngine {
 
     await this.driver.start()
 
-    const scheduler = new TimingScheduler(FRAME_MODE_TIMING, rngFactory(seed))
-    const interFrameDelay = Math.max(0, Math.round(settings.interFrameDelayMs ?? 0))
-    const pastePerFrame = settings.insertMode === 'paste'
-    const pasteThreshold = Math.max(1, settings.autoPasteThreshold)
-    const pasteIncludesNewline = settings.pasteFrameIncludesNewline !== false
+    const pace = TRANSFER_PACE_LIMITS[settings.transferPace ?? 'safe']
+    const scheduler = new TimingScheduler(FRAME_MODE_TIMING, rngFactory(seed), pace.minDelayMs)
+    const interFrameDelay =
+      pace.frameGapMs ?? Math.max(0, Math.round(settings.interFrameDelayMs ?? 0))
 
     /**
-     * @description 按节奏下发一段文本（不带行尾换行）
+     * @description 按节奏下发一段文本（不带行尾换行）。
+     *
+     * 帧是**数据**：丢一个字符整片就废了，因此这里每个字符单独一次 `SendInput`（`perItem`），
+     * 由宿主在两个字符之间等待。实测（真实终端接收端，27,657 字符）：逐字符投递 + 1ms 间隔零丢失；
+     * 一次投递多个字符或零延迟快投则会静默丢字符。
      * @param text 要输入的文本
+     * @returns 是否全部下发完成；false 表示已中止
      */
-    const sendText = async (text: string): Promise<void> => {
-      const scheduled: ScheduledAction[] = []
-      for (const action of iterateActions(text, { ...planBase, typo: null })) {
-        scheduled.push({ action, delayMs: scheduler.delayFor(action) })
+    const sendText = async (text: string): Promise<boolean> => {
+      // 帧一律走"逐字符 + 宿主侧等待"的路径：帧是数据，丢一个字符整片就作废，
+      // 因此不使用"零延迟攒批直投"的快路径（实测真实终端下它会静默丢字符）。
+      const items = toHostItems(
+        coalesceDelays(
+          Array.from(iterateActions(text, { ...planBase, typo: null }), (action) => ({
+            action,
+            delayMs: scheduler.delayFor(action)
+          })),
+          pace.batchWindowMs
+        )
+      )
+
+      for (let offset = 0; offset < items.length; offset += pace.batchActions) {
+        // 中止只在下发之间生效：子批大小决定了"紧急停止"的延迟上限
+        if (this.aborted) return false
+        const batch = items.slice(offset, offset + pace.batchActions)
+        const result = await this.driver.send(batch, { perItem: true })
+        this.lastForeground = result.foreground ?? null
+        this.noteHostPressure(result)
+        if (result.cancelled) return false
+        this.typedCount += batch.length
+        this.emitProgress(false)
       }
-      await this.driver.send(toHostItems(scheduled))
-      this.typedCount += scheduled.length
-      this.emitProgress(false)
+
+      return true
     }
 
     /**
-     * @description 发送一整帧，并按长度选择粘贴或逐字符输入
+     * @description 发送一整帧（帧内容 + 行尾换行，逐字符按键）
      * @param text 帧内容（不含行尾换行）
+     * @returns 是否发送完成；false 表示已中止
      */
-    const sendFrame = async (text: string): Promise<void> => {
-      const paste =
-        pastePerFrame || (settings.insertMode === 'auto' && text.length >= pasteThreshold)
-
-      if (paste) {
-        // 粘贴：把行尾换行一起放进剪贴板，少一次按键（目标端按行读，等价）
-        const payload = pasteIncludesNewline ? `${text}\n` : text
-        await this.driver.paste(payload)
-        if (!pasteIncludesNewline) await sendText('\n')
-        this.typedCount += text.length + 1
-      } else {
-        await sendText(`${text}\n`)
-      }
+    const sendFrame = async (text: string): Promise<boolean> => {
+      const completed = await sendText(`${text}\n`)
       this.emitProgress(false)
+      return completed
     }
 
     /**
@@ -478,7 +528,7 @@ export class TypingEngine {
      * @returns 是否继续发送
      */
     const verifyFocus = async (): Promise<boolean> => {
-      const verdict = await guard.verify(expectedFocus)
+      const verdict = await this.checkFocus(guard, expectedFocus)
       if (!verdict.changed) return true
       this.deps.onLog?.('warn', verdict.warning ?? '前台窗口已变化')
       if (verdict.blocked) {
@@ -491,7 +541,7 @@ export class TypingEngine {
     try {
       if (beginText) {
         if (!(await verifyFocus())) return 'aborted'
-        await sendFrame(beginText)
+        if (!(await sendFrame(beginText))) return 'aborted'
       }
 
       let sent = 0
@@ -518,7 +568,7 @@ export class TypingEngine {
           continue
         }
 
-        await sendFrame(text)
+        if (!(await sendFrame(text))) return 'aborted'
 
         sent += 1
         this.markFrameDone(index)
@@ -531,7 +581,7 @@ export class TypingEngine {
 
       if (endText) {
         if (!(await verifyFocus())) return 'aborted'
-        await sendFrame(endText)
+        if (!(await sendFrame(endText))) return 'aborted'
       }
 
       if (settings.verifyStuckKeys) await this.probeStuckKeys()
@@ -539,7 +589,7 @@ export class TypingEngine {
       this.emitProgress(true)
       return 'completed'
     } finally {
-      // 中止/失败也要保证修饰键被释放（粘贴路径会按下 Ctrl）
+      // 中止/失败也要保证修饰键被释放
       await this.driver.releaseAll().catch(() => undefined)
     }
   }
@@ -570,6 +620,61 @@ export class TypingEngine {
     }
     this.deps.onLog?.('error', `第 ${index} 片发送失败：${message}`)
     this.emitProgress(false)
+  }
+
+  /**
+   * @description 复核前台窗口：优先用上一批注入搭车带回的快照（省掉一次往返），
+   * 没有快照时（例如批次尚未发生）再单独查询
+   * @param guard 焦点守护
+   * @param expected 倒计时前记录的目标窗口
+   * @returns 焦点判定
+   */
+  private async checkFocus(
+    guard: FocusGuard,
+    expected: FocusSnapshot | null
+  ): Promise<{ changed: boolean; blocked: boolean; warning?: string }> {
+    const piggyback = guard.judge(this.lastForeground, expected)
+    if (piggyback) return piggyback
+    return guard.verify(expected)
+  }
+
+  /**
+   * @description 按实测速率调整单个请求的动作数：让每个请求的计划时长不超过档位预算，
+   * 这样批次再大，暂停与停止的粒度也不会退化成秒级
+   * @param sent 上一批的动作数
+   * @param elapsedMs 上一批从下达到返回的实际耗时
+   * @param maxChunk 设置允许的动作数上限
+   */
+  private retuneActionsPerRequest(
+    sent: number,
+    elapsedMs: number,
+    maxChunk: number,
+    budgetMs: number
+  ): void {
+    if (sent <= 0 || elapsedMs <= 0 || budgetMs <= 0) {
+      this.actionsPerRequest = maxChunk
+      return
+    }
+    const perActionMs = Math.max(0.05, elapsedMs / sent)
+    const next = Math.round(budgetMs / perActionMs)
+    this.actionsPerRequest = Math.min(maxChunk, Math.max(MIN_ACTIONS_PER_REQUEST, next))
+  }
+
+  /**
+   * @description 目标端消化不过来时提醒一次：宿主会把被拖住的时长补进等待（自适应降速），
+   * 这件事值得让用户知道——总耗时基本不变，但机器不会再一直卡着
+   * @param result 宿主返回的注入统计
+   */
+  private noteHostPressure(result: HostTypeData): void {
+    if (this.pressureWarned) return
+    const valveMs = result.valveMs ?? 0
+    if (valveMs < PRESSURE_WARN_MS) return
+    this.pressureWarned = true
+    this.deps.onLog?.(
+      'warn',
+      `目标端消化输入的速度跟不上，已自动放慢注入（本批补等 ${Math.round(valveMs)}ms）：` +
+        '这样输入队列不会一直排满，整机不会被拖卡；总耗时基本不变'
+    )
   }
 
   /** @description 完成后自检是否有按键粘住，仅记录警告 */
@@ -613,6 +718,8 @@ export class TypingEngine {
     if (!isBusy(this.stateValue)) return
     this.aborted = true
     this.abortReason = reason
+    // 先掐断宿主手里正在跑的那一批：否则要等它把整批打完才会看到中止标志
+    this.driver.cancel?.()
     // 唤醒暂停中的等待，让循环尽快退出
     this.resume()
   }

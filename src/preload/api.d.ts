@@ -6,6 +6,7 @@ import type {
   WindowStatePayload
 } from '@main/ipc/contracts'
 import type { UpdateCheckResult, UpdateProgress, UpdateState } from '@main/update/types'
+import type { FloatStatePayload } from '@main/window/floatingWindow'
 import type { Settings } from '@main/settings/types'
 import type { ProgressSnapshot } from '@main/typing/engine/progress'
 import type { EngineSnapshot } from '@main/typing/engine/states'
@@ -99,7 +100,23 @@ export interface TyperApi {
     toggleMaximize: () => Promise<boolean>
     close: () => Promise<void>
     isMaximized: () => Promise<boolean>
+    /** 召回并聚焦主窗口（进度浮窗点击时用） */
+    focusMain: () => Promise<void>
     onState: (listener: (payload: WindowStatePayload) => void) => () => void
+  }
+  /** 进度浮窗：贴边细条与卡片的交互（拖动 / 吸附 / 展开 / 点击穿透）。 */
+  float: {
+    expand: () => Promise<void>
+    collapse: () => Promise<void>
+    /** 拖动位移（DIP），由渲染进程按指针增量上报 */
+    drag: (dx: number, dy: number) => Promise<void>
+    /** 拖动落定：靠近边缘则吸附成细条，否则自由浮动 */
+    drop: () => Promise<void>
+    /** 立刻吸附到最近的边 */
+    dock: () => Promise<void>
+    /** 贴边时切换"接收鼠标 / 点击穿透" */
+    setInteractive: (interactive: boolean) => Promise<void>
+    onState: (listener: (payload: FloatStatePayload) => void) => () => void
   }
   /** 更新检查、下载、校验与安装。 */
   updates: {

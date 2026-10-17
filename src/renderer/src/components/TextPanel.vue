@@ -1,6 +1,7 @@
 <script setup lang="ts" vapor>
 import { buildPlan } from '@main/typing/planner/plan'
 import { estimateTotalMs } from '@main/typing/scheduling/timing'
+import { formatDuration } from '@shared/format/duration'
 
 /**
  * 文本输入面板：承载内容区与实时预览；开始/暂停/停止等共用操作条仍在 TyperView。
@@ -25,6 +26,9 @@ const preview = computed(() => {
   return { stats, estimated: estimateTotalMs(stats.typed, settings.value.timing) }
 })
 
+/** 是否处于"不限速"模式（没有可靠的耗时估算） */
+const unlimited = computed(() => settings.value?.timing.speedMode === 'max')
+
 /** 内容区不能开始的原因 */
 const blocker = computed(() => {
   if (typing.unsupported.value) return '当前系统不支持键盘注入（仅支持 Windows）'
@@ -41,21 +45,29 @@ function clear(): void {
 <template>
   <section class="card editor">
     <div class="card-head">
-      <h2 class="card-title"><span class="icon i-mdi-text-box-outline" /> 内容区</h2>
+      <h2 class="card-title"><span class="icon i-mdi-text-box-outline" /><span>内容区</span></h2>
       <div class="spacer" />
       <template v-if="preview">
-        <span class="chip"
-          ><strong>{{ preview.stats.chars }}</strong> 字符</span
-        >
-        <span class="chip"
-          >中文 <strong>{{ preview.stats.cjk }}</strong></span
-        >
-        <span class="chip"
-          >动作 <strong>{{ preview.stats.typed }}</strong></span
-        >
-        <span v-if="preview.stats.layoutFallbacks > 0" class="chip warn">
-          布局回退 <strong>{{ preview.stats.layoutFallbacks }}</strong>
-        </span>
+        <div class="chip">
+          <div>
+            <strong>{{ preview.stats.chars }}</strong> 字符
+          </div>
+        </div>
+        <div class="chip">
+          <div>
+            中文 <strong>{{ preview.stats.cjk }}</strong>
+          </div>
+        </div>
+        <div class="chip">
+          <div>
+            动作 <strong>{{ preview.stats.typed }}</strong>
+          </div>
+        </div>
+        <div v-if="preview.stats.layoutFallbacks > 0" class="chip warn">
+          <div>
+            布局回退 <strong>{{ preview.stats.layoutFallbacks }}</strong>
+          </div>
+        </div>
       </template>
       <ElButton
         size="small"
@@ -64,7 +76,7 @@ function clear(): void {
         title="清空内容区"
         @click="clear()"
       >
-        <span class="i-mdi-eraser" /> 清空
+        <span class="i-mdi-eraser" /><span>清空</span>
       </ElButton>
     </div>
 
@@ -79,26 +91,31 @@ function clear(): void {
     />
 
     <p class="editor-foot muted">
-      <template v-if="preview">
-        按当前设置预计需要
-        <strong>{{ Math.round(preview.estimated / 1000) }} 秒</strong>输入完成。
-      </template>
-      <template v-else>{{ blocker || '等待输入内容…' }}</template>
+      <span v-if="preview && unlimited">不限速：实际耗时由目标窗口的输入处理速度决定。</span>
+      <span v-else-if="preview"
+        >按当前设置预计需要
+        <strong>{{ formatDuration(preview.estimated) }}</strong> 输入完成。</span
+      >
+      <span v-else>{{ blocker || '等待输入内容…' }}</span>
     </p>
 
-    <p v-if="looksLikeFrames" class="frame-hint">
-      <span class="i-mdi-information-outline text-icon" />
-      看起来是 Typer 帧文本：逐字符输入完全可行（接收端会逐片校验）， 但请把「错字概率」设为
-      0，否则错字会破坏该帧、需要重传那一片。
-    </p>
+    <div v-if="looksLikeFrames" class="frame-hint">
+      <div class="i-mdi-information-outline text-icon" />
+      <div>
+        看起来是 Typer 帧文本：逐字符输入完全可行（接收端会逐片校验）， 但请把「错字概率」设为
+        0，否则错字会破坏该帧、需要重传那一片。
+      </div>
+    </div>
   </section>
 </template>
 
 <style scoped lang="scss">
 .editor {
   gap: 10px;
-  /* 内容区要够大（主任务），但也不能把操作条与提示挤出首屏 */
-  min-height: 340px;
+  /* 填满工作区：内容区随窗口一起长高，操作条因此能常驻视口 */
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .frame-hint {
@@ -111,7 +128,16 @@ function clear(): void {
 }
 
 .editor-input {
+  display: flex;
   flex: 1;
+  min-height: 0;
+
+  /* Element Plus 的 textarea 由 rows 定高：改为撑满容器，滚动交给 textarea 自己 */
+  :deep(.el-textarea__inner) {
+    flex: 1;
+    min-height: 0;
+    height: 100%;
+  }
 }
 
 .editor-foot {

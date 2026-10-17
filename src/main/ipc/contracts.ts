@@ -1,5 +1,5 @@
 import type { ImportCharset } from '../settings/types'
-import type { TransferPrepareOptions } from '@shared/transfer/transfer'
+import { TRANSFER_ENCODINGS, type TransferPrepareOptions } from '@shared/transfer/transfer'
 
 /** IPC 入参校验失败。消息会直接展示给用户，所以用中文写清楚。 */
 export class IpcValidationError extends Error {
@@ -93,8 +93,6 @@ export interface TransferPrepareRequest {
   reuse?: boolean
 }
 
-const TRANSFER_ENCODINGS: readonly string[] = ['hex', 'b64', 'txt']
-
 /**
  * @description 校验"准备文件传输"的请求；片大小与帧长上限由主进程按 `TRANSFER_LIMITS` 夹取，这里只挡住明显非法的输入
  * @param payload 渲染进程传来的原始载荷
@@ -112,7 +110,10 @@ export function parseTransferPrepareRequest(payload: unknown): TransferPrepareRe
 
   const raw = (record.options ?? {}) as Record<string, unknown>
   const encoding = raw.encoding
-  if (typeof encoding !== 'string' || !TRANSFER_ENCODINGS.includes(encoding)) {
+  if (
+    typeof encoding !== 'string' ||
+    !(TRANSFER_ENCODINGS as readonly string[]).includes(encoding)
+  ) {
     throw new IpcValidationError(`准备传输失败：不支持的编码 ${String(encoding)}`)
   }
 
@@ -184,6 +185,20 @@ export function parseTransferResumeRequest(payload: unknown): string {
     throw new IpcValidationError('续传失败：续传内容过大（应是一份小报告或一行令牌）')
   }
   return text
+}
+
+/**
+ * @description 读取浮窗拖动位移：必须是有限数字，并夹到 ±4096（一次 IPC 不可能拖动更多）
+ * @param payload 渲染进程传来的 `{ dx, dy }`
+ * @returns 规范化后的位移
+ */
+export function parseFloatDelta(payload: unknown): { dx: number; dy: number } {
+  const record = (payload ?? {}) as { dx?: unknown; dy?: unknown }
+  const read = (value: unknown): number => {
+    if (typeof value !== 'number' || !Number.isFinite(value)) return 0
+    return Math.max(-4096, Math.min(4096, Math.round(value)))
+  }
+  return { dx: read(record.dx), dy: read(record.dy) }
 }
 
 /**

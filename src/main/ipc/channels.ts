@@ -28,6 +28,15 @@ export const IPC = {
   windowToggleMaximize: 'window:toggle-maximize',
   windowClose: 'window:close',
   windowIsMaximized: 'window:is-maximized',
+  /** 把最小化的主窗口召回并聚焦（进度浮窗点击时用） */
+  windowFocusMain: 'window:focus-main',
+  /** 进度浮窗：拖动 / 落定吸附 / 展开 / 收起 / 请求接收鼠标 */
+  floatDrag: 'float:drag',
+  floatDrop: 'float:drop',
+  floatDock: 'float:dock',
+  floatExpand: 'float:expand',
+  floatCollapse: 'float:collapse',
+  floatInteractive: 'float:interactive',
   /** 更新检查与安装 */
   updateCheck: 'update:check',
   updateDownload: 'update:download',
@@ -43,7 +52,9 @@ export const IPC = {
   eventWindowState: 'window:state',
   eventUpdateState: 'update:state',
   eventUpdateProgress: 'update:progress',
-  eventTransferPrepare: 'transfer:prepare-progress'
+  eventTransferPrepare: 'transfer:prepare-progress',
+  /** 浮窗形态（贴边圆球 / 展开卡片）与贴边方向 */
+  eventFloatState: 'float:state'
 } as const
 
 export type IpcChannel = (typeof IPC)[keyof typeof IPC]
@@ -56,5 +67,6 @@ export const EVENT_CHANNELS: readonly string[] = [
   IPC.eventWindowState,
   IPC.eventUpdateState,
   IPC.eventUpdateProgress,
-  IPC.eventTransferPrepare
+  IPC.eventTransferPrepare,
+  IPC.eventFloatState
 ]

@@ -35,8 +35,6 @@ const timing: TimingSettings = {
 function engineSettings(overrides: Partial<EngineSettings> = {}): EngineSettings {
   return {
     startDelayMs: 0,
-    insertMode: 'paste',
-    autoPasteThreshold: 100_000,
     chunkSize: 8,
     layout: 'us',
     forceUnicodeForAll: false,
@@ -44,7 +42,6 @@ function engineSettings(overrides: Partial<EngineSettings> = {}): EngineSettings
     seed: 42,
     verifyStuckKeys: false,
     interFrameDelayMs: 0,
-    pasteFrameIncludesNewline: true,
     timing,
     typo: { rate: 0, style: 'adjacent', correction: 'auto' },
     ...overrides
@@ -59,15 +56,11 @@ const US_REVERSE = new Map<string, string>(
   ])
 )
 
-/**
- * @description 把宿主指令还原成目标窗口里会出现的文本，用于按键模式断言
- * @param items 引擎下发的宿主指令
- * @returns 还原后的文本
- */
+/** @description 把宿主指令还原成目标窗口里出现的文本，用于断言。CR 与回车都算行尾（接收端两者都认） */
 function itemsToText(items: HostItem[]): string {
   let out = ''
   for (const item of items) {
-    if (item.t === 'unicode') out += String.fromCharCode(item.cu)
+    if (item.t === 'unicode') out += item.cu === 0x0d ? '\n' : String.fromCharCode(item.cu)
     else if (item.t === 'key') {
       if (item.vk === 13) out += '\n'
       else if (item.vk === 9) out += '\t'
@@ -148,25 +141,81 @@ function chars(lines: string[]): number {
 }
 
 describe('引擎 · 文件传输模式', () => {
-  it('逐帧发送：开始帧 → 各数据帧 → 结束帧，每帧独占一次下发', async () => {
+  it('逐帧发送：开始帧 → 各数据帧 → 结束帧，每帧的字符完整且顺序正确', async () => {
     const { engine, driver } = createHarness()
     const result = await engine.start(frameJob(), engineSettings())
 
     expect(result.state).toBe('completed')
-    expect(driver.pasted).toEqual([BEGIN, ...FRAMES, END].map((line) => `${line}\n`))
+    expect(itemsToText(driver.items)).toBe(
+      [BEGIN, ...FRAMES, END].map((line) => `${line}\n`).join('')
+    )
+    // 每批都有界：数据帧必须逐动作小批投递（一次投递太多会在目标端队列排满时丢字符）
+    expect(Math.max(...driver.batches.map((batch) => batch.length))).toBeLessThanOrEqual(32)
   })
 
-  it('按键模式下每帧都完整下发且以 Enter 结尾（不会被切成半行）', async () => {
+  it('每帧都完整下发且以 Enter 结尾（不会被切成半行）', async () => {
     const { engine, driver } = createHarness()
-    await engine.start(
-      frameJob(),
-      engineSettings({ insertMode: 'keystroke', autoPasteThreshold: 1 })
-    )
+    await engine.start(frameJob(), engineSettings())
 
     expect(itemsToText(driver.items)).toBe(
       [BEGIN, ...FRAMES, END].map((line) => `${line}\n`).join('')
     )
-    expect(driver.pasted).toEqual([])
+  })
+
+  it('帧内间隔攒批下发：一整帧只产生少量断批点，且总间隔与逐字符一致', async () => {
+    const { engine, driver } = createHarness()
+    // 一帧 1000 个字符：逐字符下发会有 1000 次 SendInput（宿主见到 delay 就断批），
+    // 攒批后每 16ms 才断一次（帧内间隔为 MIN_DELAY_MS = 1ms → 每 16 个字符一次）
+    const longFrame = 'a'.repeat(1000)
+    await engine.start(
+      frameJob({
+        total: 1,
+        indexes: [0],
+        render: () => longFrame,
+        charsOf: () => longFrame.length,
+        begin: undefined,
+        end: undefined
+      }),
+      engineSettings()
+    )
+
+    const delays = driver.items.map((item) => (item.t === 'wait' ? item.ms : item.delay))
+    const breaks = delays.filter((ms) => ms > 0)
+    expect(driver.items).toHaveLength(longFrame.length + 1)
+    // 1001 个字符 → 每 16 个一批 → 63 个断批点
+    expect(breaks).toHaveLength(Math.ceil((longFrame.length + 1) / 16))
+    // 总间隔必须与逐字符一致（攒批只是把等待提前，不能改变总时长）
+    expect(breaks.reduce((sum, ms) => sum + ms, 0)).toBe(longFrame.length + 1)
+    // 每个断批点都必须是该批的第一个动作
+    expect(delays.slice(0, 4)).toEqual([16, 0, 0, 0])
+  })
+
+  it('极速节奏：帧内仍逐字符留间隔（数据不能丢），只是不等片间停顿', async () => {
+    const { engine, driver } = createHarness()
+    const longFrame = 'a'.repeat(600)
+    const result = await engine.start(
+      frameJob({
+        total: 1,
+        indexes: [0],
+        render: () => longFrame,
+        charsOf: () => longFrame.length,
+        begin: undefined,
+        end: undefined
+      }),
+      engineSettings({ transferPace: 'fast', interFrameDelayMs: 120 })
+    )
+
+    expect(result.state).toBe('completed')
+    // 帧内每个字符 1ms（这是"不丢字符"的下限），攒批窗口为 16ms；极速档省下的是片间断顿
+    const delays = driver.items.map((item) => (item.t === 'wait' ? item.ms : item.delay))
+    expect(delays.filter((ms) => ms > 0).every((ms) => ms <= 16)).toBe(true)
+    // 攒批不改变总时长：所有等待加起来正好等于字符数 × 1ms
+    expect(delays.reduce((sum, ms) => sum + ms, 0)).toBe(longFrame.length + 1)
+    // 601 个字符（含行尾）→ 每 32 个一批
+    const sizes = driver.batches.map((batch) => batch.length)
+    expect(sizes.slice(0, -1).every((size) => size === 32)).toBe(true)
+    expect(sizes.at(-1)).toBe(25)
+    expect(itemsToText(driver.items)).toBe(`${longFrame}\n`)
   })
 
   it('帧模式绝不打错字：即使错字概率拉满，文本仍逐字符原样', async () => {
@@ -174,8 +223,6 @@ describe('引擎 · 文件传输模式', () => {
     await engine.start(
       frameJob(),
       engineSettings({
-        insertMode: 'keystroke',
-        autoPasteThreshold: 1,
         typo: { rate: 1, style: 'adjacent', correction: 'auto' }
       })
     )
@@ -193,12 +240,35 @@ describe('引擎 · 文件传输模式', () => {
     expect(clock.sleeps.filter((ms) => ms === 25)).toHaveLength(2)
   })
 
+  it('帧一律逐动作投递：每批不超过 32 个动作，且都带 perItem', async () => {
+    const { engine, driver } = createHarness()
+    const longFrame = `@TYPER1/D abc 0 1 200 0000 0000 gzb64 ${'QUJD'.repeat(60)}`
+
+    await engine.start(
+      frameJob({
+        total: 1,
+        indexes: [0],
+        render: () => longFrame,
+        charsOf: () => longFrame.length
+      }),
+      engineSettings({ transferPace: 'fast' })
+    )
+
+    expect(driver.batches.length).toBeGreaterThan(1)
+    expect(driver.sendOptions.every((options) => options.perItem === true)).toBe(true)
+    expect(Math.max(...driver.batches.map((batch) => batch.length))).toBeLessThanOrEqual(32)
+  })
+
+  it('极速节奏档忽略片间停顿：连设置的 25ms 也不再等待', async () => {
+    const { engine, clock } = createHarness()
+    await engine.start(frameJob(), engineSettings({ transferPace: 'fast', interFrameDelayMs: 25 }))
+
+    expect(clock.sleeps.filter((ms) => ms >= 25)).toHaveLength(0)
+  })
+
   it('节奏设置对帧模式完全没有影响：极端设置与全 0 的指令序列、总耗时一致', async () => {
     const neutral = createHarness()
-    await neutral.engine.start(
-      frameJob(),
-      engineSettings({ insertMode: 'keystroke', autoPasteThreshold: 1 })
-    )
+    await neutral.engine.start(frameJob(), engineSettings())
 
     // 抖动 / 突发停顿 / 标点 / 换行 / 段落停顿全部拉到极端，错字概率拉满
     const extreme: TimingSettings = {
@@ -219,8 +289,6 @@ describe('引擎 · 文件传输模式', () => {
     await noisy.engine.start(
       frameJob(),
       engineSettings({
-        insertMode: 'keystroke',
-        autoPasteThreshold: 1,
         timing: extreme,
         typo: { rate: 1, style: 'adjacent', correction: 'auto' }
       })
@@ -237,16 +305,10 @@ describe('引擎 · 文件传输模式', () => {
 
   it('片间断顿仍按 interFrameDelayMs 生效：总时长 = 帧内容 + 2×片间断顿', async () => {
     const zero = createHarness()
-    await zero.engine.start(
-      frameJob(),
-      engineSettings({ insertMode: 'keystroke', autoPasteThreshold: 1, interFrameDelayMs: 0 })
-    )
+    await zero.engine.start(frameJob(), engineSettings({ interFrameDelayMs: 0 }))
 
     const spaced = createHarness()
-    await spaced.engine.start(
-      frameJob(),
-      engineSettings({ insertMode: 'keystroke', autoPasteThreshold: 1, interFrameDelayMs: 25 })
-    )
+    await spaced.engine.start(frameJob(), engineSettings({ interFrameDelayMs: 25 }))
 
     // 3 片 → 2 次片间停顿；帧内容耗时确定性不变，差值正好是 2×片间断顿
     expect(spaced.clock.sleeps.filter((ms) => ms === 25)).toHaveLength(2)
@@ -263,44 +325,7 @@ describe('引擎 · 文件传输模式', () => {
 
     expect(result.state).toBe('completed')
     expect(seen).toEqual([1])
-    expect(driver.pasted).toEqual([`${BEGIN}\n`, `${FRAMES[1] as string}\n`])
-  })
-
-  it('上限阈值附近的帧自动选择粘贴 / 按键', async () => {
-    const single = { total: 1, indexes: [0], begin: undefined, end: undefined }
-
-    const byKeys = createHarness()
-    await byKeys.engine.start(
-      frameJob({ ...single, render: () => 'X', charsOf: () => 1 }),
-      engineSettings({ insertMode: 'auto', autoPasteThreshold: 10 })
-    )
-    expect(byKeys.driver.pasted).toEqual([])
-    expect(itemsToText(byKeys.driver.items)).toBe('X\n')
-
-    const byPaste = createHarness()
-    await byPaste.engine.start(
-      frameJob({ ...single, render: () => 'Y'.repeat(50), charsOf: () => 50 }),
-      engineSettings({ insertMode: 'auto', autoPasteThreshold: 10 })
-    )
-    expect(byPaste.driver.pasted).toEqual([`${'Y'.repeat(50)}\n`])
-  })
-
-  it('粘贴不含换行时，额外补一个 Enter 动作', async () => {
-    const { engine, driver } = createHarness()
-    await engine.start(
-      frameJob({
-        total: 1,
-        indexes: [0],
-        begin: undefined,
-        end: undefined,
-        render: () => 'Z',
-        charsOf: () => 1
-      }),
-      engineSettings({ pasteFrameIncludesNewline: false })
-    )
-
-    expect(driver.pasted).toEqual(['Z'])
-    expect(driver.items.some((item) => item.t === 'key' && item.vk === 13)).toBe(true)
+    expect(itemsToText(driver.items)).toBe(`${BEGIN}\n${FRAMES[1] as string}\n`)
   })
 
   it('渲染某片失败：记录日志与失败计数，其余片继续发送', async () => {
@@ -341,6 +366,76 @@ describe('引擎 · 文件传输模式', () => {
     expect(progress.at(-1)?.total).toBe(chars([BEGIN, ...FRAMES, END]))
   })
 
+  it('帧正文与换行都走 Unicode 报文（不受目标端输入法影响）', async () => {
+    const { engine, driver } = createHarness()
+    // 即使设置里没开"全部用 Unicode 注入"，数据帧也必须自己走 Unicode：
+    // 目标端切成中文输入法时，真实按键与真回车都会被候选窗吞掉，整帧数据静默丢失
+    await engine.start(frameJob(), engineSettings({ forceUnicodeForAll: false }))
+
+    expect(driver.items.some((item) => item.t === 'unicode')).toBe(true)
+    // 帧里不应出现任何真实按键事件（连回车也是 Unicode CR 报文）
+    expect(driver.items.some((item) => item.t === 'key')).toBe(false)
+    // 5 行 → 5 个 CR 行尾
+    const crCount = driver.items.filter((item) => item.t === 'unicode' && item.cu === 0x0d).length
+    expect(crCount).toBe(5)
+    expect(itemsToText(driver.items)).toBe(
+      [BEGIN, ...FRAMES, END].map((line) => `${line}\n`).join('')
+    )
+  })
+
+  it('超长帧按 32 个动作一批下发：每批有界，顺序与文本不变', async () => {
+    const { engine, driver } = createHarness()
+    // 700 个字符的一帧（真实场景里一帧可达数千字符，整帧塞进一次请求会让停止等上几十秒）
+    const longFrame = 'a'.repeat(700)
+    const result = await engine.start(
+      frameJob({
+        total: 1,
+        indexes: [0],
+        render: () => longFrame,
+        charsOf: () => longFrame.length,
+        begin: undefined,
+        end: undefined
+      }),
+      engineSettings()
+    )
+
+    expect(result.state).toBe('completed')
+    // 701 个字符 → 21 批 32 + 1 批 29
+    const sizes = driver.batches.map((batch) => batch.length)
+    expect(sizes.slice(0, 21).every((size) => size === 32)).toBe(true)
+    expect(sizes.at(-1)).toBe(29)
+    expect(itemsToText(driver.items)).toBe(`${longFrame}\n`)
+  })
+
+  it('超长帧发送过程中中止：下一批就停，不必等整帧打完', async () => {
+    const clock = createVirtualClock()
+    const holder: { engine?: TypingEngine } = {}
+    const driver = new MockKeyboardDriver({
+      onSend: (_items, index) => {
+        if (index === 1) holder.engine?.abort('测试中止')
+      }
+    })
+    const engine = new TypingEngine({ driver, sleep: clock.sleep, now: clock.now })
+    holder.engine = engine
+
+    const longFrame = 'a'.repeat(700)
+    const result = await engine.start(
+      frameJob({
+        total: 1,
+        indexes: [0],
+        render: () => longFrame,
+        charsOf: () => longFrame.length,
+        begin: undefined,
+        end: undefined
+      }),
+      engineSettings()
+    )
+
+    expect(result.state).toBe('aborted')
+    // 停在第 2 批（256 + 256 个动作），第三批不再下发
+    expect(driver.batches).toHaveLength(2)
+  })
+
   it('中止：片间中止后立即结束，并释放修饰键', async () => {
     const { engine, driver, states } = createHarness()
     let sent = 0
@@ -351,7 +446,7 @@ describe('引擎 · 文件传输模式', () => {
           if (sent === 1) engine.abort('测试中止')
         }
       }),
-      engineSettings({ insertMode: 'keystroke', autoPasteThreshold: 1 })
+      engineSettings()
     )
 
     expect(result.state).toBe('aborted')
@@ -376,13 +471,19 @@ describe('引擎 · 文件传输模式', () => {
     // 等引擎真正进入暂停等待（否则 resume 会先于 pause 执行，测试就失去意义）
     await new Promise((resolve) => setTimeout(resolve, 5))
     expect(engine.state).toBe('paused')
-    expect(driver.pasted).toHaveLength(3) // 开始帧 + 前 2 片
+    const batchesWhilePaused = driver.batches.length
+    // 暂停后不再产生新的下发
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    expect(driver.batches).toHaveLength(batchesWhilePaused)
 
     engine.resume()
     const result = await promise
 
     expect(result.state).toBe('completed')
-    expect(driver.pasted).toHaveLength(5)
+    // 继续后把剩下的片发完（真实内容校验见"每帧都完整下发"用例）
+    expect(itemsToText(driver.items)).toBe(
+      [BEGIN, ...FRAMES, END].map((line) => `${line}\n`).join('')
+    )
   })
 
   it('空任务（没有要发的片）也能干净结束', async () => {
@@ -393,16 +494,13 @@ describe('引擎 · 文件传输模式', () => {
     )
 
     expect(result.state).toBe('completed')
-    expect(driver.pasted).toEqual([])
+    expect(driver.items).toEqual([])
     expect(driver.releaseAllCalls).toBeGreaterThan(0)
   })
 
   it('文本任务路径不受影响：字符串入参仍按文本处理', async () => {
     const { engine, driver } = createHarness()
-    const result = await engine.start(
-      '中文ab',
-      engineSettings({ insertMode: 'keystroke', autoPasteThreshold: 1 })
-    )
+    const result = await engine.start('中文ab', engineSettings())
 
     expect(result.state).toBe('completed')
     expect(itemsToText(driver.items)).toBe('中文ab')

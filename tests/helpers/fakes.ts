@@ -298,26 +298,3 @@ export function createMemoryFs(initial: Record<string, string> = {}): MemoryFs {
   }
   return fs
 }
-
-/**
- * @description 创建假剪贴板，记录每次写入以便断言
- * @param initial 初始剪贴板内容
- * @returns 带读写方法与写入历史的假剪贴板
- */
-export function createFakeClipboard(initial = ''): {
-  readText(): string
-  writeText(text: string): void
-  readonly history: string[]
-  value: string
-} {
-  const state = {
-    value: initial,
-    history: [] as string[],
-    readText: () => state.value,
-    writeText: (text: string) => {
-      state.value = text
-      state.history.push(text)
-    }
-  }
-  return state
-}

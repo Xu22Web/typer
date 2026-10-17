@@ -57,7 +57,7 @@ const limitations = [
   '无法向"以管理员身份运行"的窗口注入按键（Windows UIPI 限制）——目标程序需与本体权限一致',
   '锁定屏幕、UAC 弹窗、安全桌面（Ctrl+Alt+Del 界面）无法注入',
   '部分安全软件会拦截合成按键，此时会返回可读错误而不是静默失败',
-  '少数游戏或自绘界面只认扫描码，请改用"剪贴板粘贴"模式',
+  '少数游戏或自绘界面只认扫描码、或忽略 WM_CHAR，无法通过合成按键输入',
   '非 US 布局下"真实按键"依赖目标窗口的布局；不确定时请开启"全部用 Unicode 注入"',
   '中文等字符使用 Unicode 注入，不经过输入法；但真实按键输入字母时，目标窗口若开着中文输入法可能被其截获'
 ]
@@ -90,10 +90,10 @@ async function open(url: string): Promise<void> {
       <img class="mark" src="@renderer/assets/logo.svg" alt="" />
       <div class="meta">
         <h1>Typer</h1>
-        <p class="version mono">
-          版本 {{ info?.version ?? '—' }}
-          <span v-if="info && !info.supported" class="chip bad">当前平台不支持键盘注入</span>
-        </p>
+        <div class="version mono">
+          <div>版本 {{ info?.version ?? '—' }}</div>
+          <div v-if="info && !info.supported" class="chip bad">当前平台不支持键盘注入</div>
+        </div>
         <p class="tagline">把文本逐字符模拟输入到任意窗口的 Windows 桌面工具。</p>
       </div>
     </header>
@@ -102,7 +102,7 @@ async function open(url: string): Promise<void> {
 
     <section class="card">
       <div class="card-head">
-        <h2 class="card-title"><span class="icon i-mdi-link-variant" /> 相关链接</h2>
+        <h2 class="card-title"><span class="icon i-mdi-link-variant" /><span>相关链接</span></h2>
       </div>
       <div class="links">
         <button
@@ -121,11 +121,13 @@ async function open(url: string): Promise<void> {
 
     <section class="card">
       <div class="card-head">
-        <h2 class="card-title"><span class="icon i-mdi-lightbulb-outline" /> 它是怎么工作的</h2>
+        <h2 class="card-title">
+          <span class="icon i-mdi-lightbulb-outline" /><span>它是怎么工作的</span>
+        </h2>
       </div>
       <ul class="highlights">
         <li v-for="item in highlights" :key="item.title">
-          <span class="icon" :class="item.icon" />
+          <div class="icon" :class="item.icon" />
           <div>
             <strong>{{ item.title }}</strong>
             <p>{{ item.text }}</p>
@@ -137,10 +139,10 @@ async function open(url: string): Promise<void> {
     <ElCollapse class="more">
       <ElCollapseItem name="limits">
         <template #title>
-          <span class="collapse-title">
-            <span class="i-mdi-alert-outline" />
-            已知限制（{{ limitations.length }} 条）
-          </span>
+          <div class="collapse-title">
+            <div class="i-mdi-alert-outline" />
+            <div>已知限制（{{ limitations.length }} 条）</div>
+          </div>
         </template>
         <ul class="limits">
           <li v-for="item in limitations" :key="item">{{ item }}</li>
@@ -149,7 +151,10 @@ async function open(url: string): Promise<void> {
 
       <ElCollapseItem name="license">
         <template #title>
-          <span class="collapse-title"><span class="i-mdi-license" /> 使用须知与许可</span>
+          <div class="collapse-title">
+            <div class="i-mdi-license" />
+            <div>使用须知与许可</div>
+          </div>
         </template>
         <div class="license">
           <p>
@@ -277,7 +282,7 @@ async function open(url: string): Promise<void> {
 }
 
 .collapse-title {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   gap: 8px;
   font-size: 13px;

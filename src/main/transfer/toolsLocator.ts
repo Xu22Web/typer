@@ -41,7 +41,7 @@ export class ToolsDirNotFoundError extends Error {
   constructor(candidates: string[], options: { isPackaged?: boolean } = {}) {
     const hint =
       options.isPackaged === false
-        ? `\n开发模式下 ${RECV_SCRIPT_FILE} 是构建产物：请先运行 npm run build:tools 生成它`
+        ? `\n开发模式下 ${RECV_SCRIPT_FILE} 是构建产物：请先运行 pnpm build:tools 生成它`
         : ''
     super(
       `找不到文件传输脚本目录（应以 ${RECV_SCRIPT_FILE} 为准），已尝试：\n` +

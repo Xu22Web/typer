@@ -4,9 +4,13 @@
 // 帧一定是单行、纯 ASCII、无空白：目标是终端或串口，回车即提交，任何控制字符都会把数据搅乱，所以二进制必须先编码。
 
 import { createHash } from 'node:crypto'
+import { deflateRawSync, inflateRawSync } from 'node:zlib'
 
-/** 载荷编码：hex（最抗终端干扰，默认）/ base64（紧凑）/ 转义文本（按字符切分）。 */
-export type FrameEncoding = 'hex' | 'b64' | 'txt'
+/**
+ * 载荷编码：hex（最抗终端干扰）/ base64（紧凑）/ 转义文本（按字符切分）/
+ * gzb64（逐片 deflate 后再 base64，文本类文件只有十六进制约三分之一的字符数）。
+ */
+export type FrameEncoding = 'hex' | 'b64' | 'txt' | 'gzb64'
 
 /** 可当字节序列使用的输入。 */
 export type BytesLike = Uint8Array | string | ArrayBuffer | ArrayBufferView
@@ -23,9 +27,11 @@ export const MARKERS = {
 } as const
 
 /** 全部受支持的载荷编码。 */
-export const ENCODINGS: readonly FrameEncoding[] = ['hex', 'b64', 'txt']
-export const DEFAULT_CHUNK_BYTES = 1024
-export const DEFAULT_MAX_FRAME_CHARS = 4096
+export const ENCODINGS: readonly FrameEncoding[] = ['hex', 'b64', 'txt', 'gzb64']
+export const DEFAULT_CHUNK_BYTES = 8192
+export const DEFAULT_MAX_FRAME_CHARS = 24576
+/** `gzb64` 的 deflate 等级：默认 6 级，压缩率与耗时的平衡点。 */
+export const COMPRESSION_LEVEL = 6
 /** 硬上限：单片字节数（更大的片在终端/剪贴板上几乎必然失败）。 */
 export const MAX_CHUNK_BYTES = 1024 * 1024
 /** 硬上限：单帧字符数（接收端要先把整行读进内存）。 */
@@ -191,6 +197,7 @@ export function encodeBytes(bytes: BytesLike, enc: FrameEncoding): string {
   }
   if (enc === 'b64') return Buffer.from(input).toString('base64')
   if (enc === 'txt') throw new FrameError('enc', 'txt 编码请使用 escapeText（需要按字符切分）')
+  if (enc === 'gzb64') throw new FrameError('enc', 'gzb64 请使用 encodePayload（需要先压缩再编码）')
   throw new FrameError('enc', `不支持的编码 ${String(enc)}`)
 }
 
@@ -229,10 +236,86 @@ export function decodeBytes(payload: string, enc: FrameEncoding): Uint8Array {
   if (enc === 'txt') {
     throw new FrameError('enc', 'txt 载荷请使用 unescapeText（需要按字符切分）')
   }
+  if (enc === 'gzb64') {
+    throw new FrameError('enc', 'gzb64 请使用 decodePayload（载荷是压缩字节的 Base64）')
+  }
   throw new FrameError('enc', `不支持的编码 ${String(enc)}`)
 }
 
-const TEXT_ESCAPES: Record<string, string> = { '\\': '\\\\', '\r': '\\r', '\n': '\\n', '\t': '\\t' }
+/**
+ * @description 载荷字符串实际使用的底层编码（`gzb64` 的载荷是"压缩后字节"的 Base64）
+ * @param enc 帧声明的编码
+ * @returns 底层编码
+ */
+export function payloadEncoding(enc: FrameEncoding): 'hex' | 'b64' | 'txt' {
+  return enc === 'gzb64' ? 'b64' : enc
+}
+
+/**
+ * @description 原始字节 → 线上字节：`gzb64` 先做 deflate 压缩，其余编码原样返回
+ *
+ * 数据帧声明的 `bytes` / `crc32` / `sha16` 一律按**线上字节**计算，
+ * 这样"收到的片有没有坏"在解压之前就能判出来。
+ * @param raw 原始字节
+ * @param enc 帧声明的编码
+ * @returns 线上字节
+ */
+export function toWireBytes(raw: BytesLike, enc: FrameEncoding): Uint8Array {
+  const bytes = toBytes(raw)
+  if (enc !== 'gzb64') return bytes
+  return new Uint8Array(deflateRawSync(bytes, { level: COMPRESSION_LEVEL }))
+}
+
+/**
+ * @description 线上字节 → 原始字节：`gzb64` 用 inflate 还原，其余编码原样返回
+ * @param wire 线上字节
+ * @param enc 帧声明的编码
+ * @returns 原始字节
+ */
+export function fromWireBytes(wire: BytesLike, enc: FrameEncoding): Uint8Array {
+  const bytes = toBytes(wire)
+  if (enc !== 'gzb64') return bytes
+  try {
+    return new Uint8Array(inflateRawSync(bytes))
+  } catch {
+    throw new FrameError('enc', 'gzb64 分片无法解压（数据损坏或片被截断）')
+  }
+}
+
+/**
+ * @description 原始字节 → 数据帧载荷：先转成线上字节，再按底层编码写成单行字符串
+ * @param raw 原始字节
+ * @param enc 帧声明的编码
+ * @returns 线上字节与其对应的载荷字符串
+ */
+export function encodePayload(
+  raw: BytesLike,
+  enc: FrameEncoding
+): { wire: Uint8Array; payload: string } {
+  if (enc === 'txt') throw new FrameError('enc', 'txt 编码请使用 escapeText（需要按字符切分）')
+  const wire = toWireBytes(raw, enc)
+  return { wire, payload: encodeBytes(wire, payloadEncoding(enc)) }
+}
+
+/**
+ * @description 数据帧载荷 → 线上字节（还没解压）
+ * @param payload 载荷字符串
+ * @param enc 帧声明的编码
+ * @returns 线上字节
+ */
+export function decodePayload(payload: string, enc: FrameEncoding): Uint8Array {
+  return decodeBytes(payload, payloadEncoding(enc))
+}
+
+const TEXT_ESCAPES: Record<string, string> = {
+  '\\': '\\\\',
+  '\r': '\\r',
+  '\n': '\\n',
+  '\t': '\\t',
+  // 空格必须转义：帧是空格分隔的。用两字符的 `\s` 而不是四字符的 `\x20`，
+  // 缩进密集的源码因此少打近三成字符（解不开的旧接收端会因 CRC 不符而明确报错，不会静默写坏数据）。
+  ' ': '\\s'
+}
 
 /**
  * @description 文本 → 单行转义载荷（`txt` 编码），按字符边界切分，CJK / emoji 原样保留；
@@ -299,6 +382,11 @@ export function unescapeText(payload: string): string {
     }
     if (next === 't') {
       out += '\t'
+      index += 1
+      continue
+    }
+    if (next === 's') {
+      out += ' '
       index += 1
       continue
     }
@@ -785,7 +873,7 @@ export function planTextChunks(
 
 /**
  * @description 估算一帧的字符数（用于校验 `maxFrameChars`）
- * @param meta 帧字段（可给出 payloadChars，因为 txt 编码转义后的长度无法只靠字节数推出）
+ * @param meta 帧字段（`bytes` 是**线上字节数**；txt 编码转义后的长度无法只靠字节数推出，可显式给出 payloadChars）
  * @returns 估算的字符数
  */
 export function estimateDataFrameChars(meta: {
@@ -816,9 +904,9 @@ export function estimateDataFrameChars(meta: {
   const payload =
     meta.payloadChars !== undefined
       ? meta.payloadChars
-      : meta.enc === 'hex'
+      : payloadEncoding(meta.enc) === 'hex'
         ? meta.bytes * 2
-        : meta.enc === 'b64'
+        : payloadEncoding(meta.enc) === 'b64'
           ? Math.ceil(meta.bytes / 3) * 4
           : meta.bytes
   return header + payload

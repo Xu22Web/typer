@@ -12,6 +12,7 @@ import { IPC } from './channels'
 import {
   IpcValidationError,
   parseExternalUrl,
+  parseFloatDelta,
   parseImportRequest,
   parseSettingsPayload,
   parseStartRequest,
@@ -47,6 +48,8 @@ export interface WindowControls {
   toggleMaximize: () => void
   close: () => void
   isMaximized: () => boolean
+  /** 召回并聚焦主窗口（进度浮窗点击"回到主窗口"时用） */
+  focusMain: () => void
 }
 
 export interface RegisterIpcOptions {
@@ -62,6 +65,8 @@ export interface RegisterIpcOptions {
   updates?: UpdateControls
   /** 文件传输会话；缺省时不注册传输频道。 */
   transfer?: TransferControls
+  /** 进度浮窗；缺省时不注册浮窗频道。 */
+  float?: FloatControls
   /** 在默认浏览器打开外链。 */
   openExternal?: (url: string) => Promise<void> | void
   logger?: Logger
@@ -95,6 +100,18 @@ export interface UpdateControls {
   cancelDownload: () => void
   install: () => UpdateState
   state: () => UpdateState
+}
+
+/** 进度浮窗的 IPC 面（拖动 / 吸附 / 展开由渲染进程驱动）。 */
+export interface FloatControls {
+  expand: () => void
+  collapse: () => void
+  dragBy: (dx: number, dy: number) => void
+  drop: () => void
+  /** 无条件吸附到最近的边（卡片上的"贴边"按钮） */
+  dock: () => void
+  /** 渲染进程请求开始 / 结束"窗口接收鼠标"（贴边时默认穿透） */
+  setInteractive: (interactive: boolean) => void
 }
 
 /**
@@ -134,7 +151,8 @@ export function registerIpcHandlers(options: RegisterIpcOptions): string[] {
     updates,
     transfer,
     openExternal,
-    logger
+    logger,
+    float: floatControls
   } = options
   const registered: string[] = []
 
@@ -311,6 +329,37 @@ export function registerIpcHandlers(options: RegisterIpcOptions): string[] {
     })
 
     register(IPC.windowIsMaximized, () => windowControls.isMaximized())
+
+    register(IPC.windowFocusMain, () => {
+      windowControls.focusMain()
+    })
+  }
+
+  if (floatControls) {
+    register(IPC.floatExpand, () => {
+      floatControls.expand()
+    })
+
+    register(IPC.floatCollapse, () => {
+      floatControls.collapse()
+    })
+
+    register(IPC.floatDrag, (_event, payload) => {
+      const delta = parseFloatDelta(payload)
+      floatControls.dragBy(delta.dx, delta.dy)
+    })
+
+    register(IPC.floatDrop, () => {
+      floatControls.drop()
+    })
+
+    register(IPC.floatDock, () => {
+      floatControls.dock()
+    })
+
+    register(IPC.floatInteractive, (_event, payload) => {
+      floatControls.setInteractive(payload === true)
+    })
   }
 
   if (updates) {

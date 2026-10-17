@@ -20,32 +20,53 @@ export interface PlanOptions {
   layout?: LayoutId | string
   /** 全部走 Unicode 注入：与布局无关、最稳，但不是真实按键事件 */
   forceUnicodeForAll?: boolean
+  /**
+   * 换行怎么下发：`enter` 用真回车键，`cr` 用 Unicode CR（0x0D）报文。
+   *
+   * 目标窗口若开着中文输入法，候选窗可能把真回车当成"提交候选"吃掉，换行就不会到达目标程序；
+   * Unicode 报文绕过输入法，因此数据类传输（文件帧）用 `cr`。
+   */
+  lineEnding?: LineEnding
   /** 造错设置；`null` / 省略表示不打错 */
   typo?: TypoOptions | null
 }
+
+/** 换行下发方式：真回车键 / Unicode CR 报文 */
+export type LineEnding = 'enter' | 'cr'
 
 export type CharResolution =
   | { kind: 'key'; action: KeyAction; source: 'real' }
   | {
       kind: 'unicode'
       actions: UnicodeAction[]
-      source: 'nonAscii' | 'layoutFallback'
+      source: 'nonAscii' | 'layoutFallback' | 'lineBreak'
     }
   | { kind: 'skip' }
 
 /**
- * @description 单字符 → 注入方式；换行与 Tab 始终使用真实按键（与布局无关）
+ * @description 单字符 → 注入方式；Tab 始终使用真实按键（与布局无关），换行按 `lineEnding` 决定
  * @param char 单个码点
  * @param layout 目标窗口使用的键盘布局
  * @param forceUnicodeForAll 是否强制全部走 Unicode 注入
+ * @param lineEnding 换行用真回车键还是 Unicode CR 报文
  * @returns 真实按键 / Unicode 报文 / 跳过
  */
 export function resolveChar(
   char: string,
   layout: KeyboardLayout,
-  forceUnicodeForAll = false
+  forceUnicodeForAll = false,
+  lineEnding: LineEnding = 'enter'
 ): CharResolution {
   if (char === '\n') {
+    if (lineEnding === 'cr') {
+      // 真实回车在有输入法的窗口里可能被候选窗当成"提交候选"吃掉（换行根本没到目标程序），
+      // 数据类传输必须与输入法状态无关，因此改用 Unicode CR 报文。
+      return {
+        kind: 'unicode',
+        actions: [{ kind: 'unicode', codeUnit: 0x0d, char }],
+        source: 'lineBreak'
+      }
+    }
     return {
       kind: 'key',
       action: { kind: 'key', vk: VK.ENTER, modifiers: [], char },
@@ -91,6 +112,7 @@ interface PlanCollector {
 interface IterateContext {
   layout: KeyboardLayout
   forceUnicodeForAll: boolean
+  lineEnding: LineEnding
   typo: TypoOptions | null
   collector?: PlanCollector
 }
@@ -107,7 +129,12 @@ function* emitChar(
   context: IterateContext,
   options: { countStats: boolean }
 ): Generator<KeystrokeAction> {
-  const resolution = resolveChar(char, context.layout, context.forceUnicodeForAll)
+  const resolution = resolveChar(
+    char,
+    context.layout,
+    context.forceUnicodeForAll,
+    context.lineEnding
+  )
 
   if (resolution.kind === 'skip') return
 
@@ -227,6 +254,7 @@ export function* iterateActions(
   yield* iterateCodes(toCodePoints(text), {
     layout: getLayout(options.layout),
     forceUnicodeForAll: options.forceUnicodeForAll ?? false,
+    lineEnding: options.lineEnding ?? 'enter',
     typo: options.typo ?? null
   })
 }
@@ -251,6 +279,7 @@ export function buildPlan(input: string, options: PlanOptions = {}): TypingPlan 
     ...iterateCodes(codes, {
       layout: getLayout(options.layout),
       forceUnicodeForAll: options.forceUnicodeForAll ?? false,
+      lineEnding: options.lineEnding ?? 'enter',
       typo: options.typo ?? null,
       collector
     })
@@ -286,6 +315,7 @@ export function countTypedActions(input: string, options: PlanOptions = {}): num
   const iterator = iterateCodes(toCodePoints(text), {
     layout: getLayout(options.layout),
     forceUnicodeForAll: options.forceUnicodeForAll ?? false,
+    lineEnding: options.lineEnding ?? 'enter',
     typo: options.typo ?? null,
     collector
   })

@@ -195,28 +195,35 @@ $poll.add_Tick({
     })
 $poll.Start()
 
+# 抢焦点重试：Windows 前台锁有时会拒绝第一次 SetForegroundWindow，短时间内再试几次。
+#
+# 必须建在**脚本作用域**：事件回调看不到"创建它的那个处理函数"里的局部变量，
+# 所以把 $retry 写成 add_Shown 里的局部变量时，回调里的 $retry.Stop() 会抛
+# "不能对 Null 值表达式调用方法。"（PowerShell 下 Application.ThreadException 接不住它，
+# 只会弹模态错误框把整个测试挂住）。下面所有回调都只读写 $script: 作用域的变量。
+$script:attempts = 0
+$script:maxAttempts = 8
+$retry = New-Object System.Windows.Forms.Timer
+$retry.Interval = 300
+$retry.add_Tick({
+        $script:attempts++
+        $ok = [TyperFocus]::ForceForeground($form.Handle)
+        if ($ok -or $script:attempts -ge $script:maxAttempts) {
+            $retry.Stop()
+            $state = if ($ok) { 'ready:focus' } else { 'ready:nofocus' }
+            try { [System.IO.File]::WriteAllText($readyFile, $state, $utf8NoBom) } catch { }
+            & $log "focus retry done: $state (attempts=$script:attempts)"
+        }
+    })
+
 $form.add_Shown({
         [void]$box.Focus()
         & $publish
         $state = if ([TyperFocus]::ForceForeground($form.Handle)) { 'ready:focus' } else { 'ready:nofocus' }
         try { [System.IO.File]::WriteAllText($readyFile, $state, $utf8NoBom) } catch { }
         & $log "shown; state=$state; form=$($form.Handle) boxFocused=$($box.Focused)"
-
-        # 短时间内重试抢焦点（Windows 前台锁有时会拒绝第一次请求）
-        $retry = New-Object System.Windows.Forms.Timer
-        $retry.Interval = 300
-        $script:attempts = 0
-        $retry.add_Tick({
-                $script:attempts++
-                $ok = [TyperFocus]::ForceForeground($form.Handle)
-                if ($ok -or $script:attempts -ge 8) {
-                    $retry.Stop()
-                    $state = if ($ok) { 'ready:focus' } else { 'ready:nofocus' }
-                    try { [System.IO.File]::WriteAllText($readyFile, $state, $utf8NoBom) } catch { }
-                    & $log "focus retry done: $state (attempts=$script:attempts)"
-                }
-            })
-        $retry.Start()
+        # 只在第一次没抢到焦点时重试：已经拿到焦点还去动前台窗口，会干扰正在进行的注入
+        if ($state -eq 'ready:nofocus') { $retry.Start() }
     })
 
 $timer = New-Object System.Windows.Forms.Timer

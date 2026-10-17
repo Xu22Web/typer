@@ -1,13 +1,12 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createDriver } from '@main/typing/drivers'
-import { ProtocolError } from '@main/typing/drivers/protocol'
+import { ProtocolError, type HostItem } from '@main/typing/drivers/protocol'
 import {
   isSupportedPlatform,
   unsupportedPlatformError,
   WindowsSendInputDriver
 } from '@main/typing/drivers/WindowsSendInputDriver'
 import {
-  createFakeClipboard,
   createFakeSpawn,
   type AutoRespondOutcome,
   type FakeChildProcess,
@@ -16,7 +15,6 @@ import {
 
 interface HarnessOptions {
   requestTimeoutMs?: number
-  restoreClipboard?: boolean
   /** @description 覆盖某个指令的应答，例如让 type 报告注入不足或延迟响应 */
   override?: (request: Record<string, unknown>) => AutoRespondOutcome | undefined
   dryRun?: boolean
@@ -32,13 +30,20 @@ function standardResponder(request: Record<string, unknown>): AutoRespondOutcome
     case 'ping':
       return { data: { os: 'Windows 11', psVersion: '5.1', dryRun: false, inputSize: 40 } }
     case 'type': {
-      const items = (request.items as Array<{ t: string; mods?: string[] }>) ?? []
-      const requested = items.reduce((sum, item) => {
-        if (item.t === 'key') return sum + 2 + 2 * (item.mods?.length ?? 0)
-        if (item.t === 'unicode') return sum + 2
-        return sum
-      }, 0)
-      return { data: { requested, injected: requested, items: items.length } }
+      // 协议 v2：扁平数组 ops/vals/mods/delays（mods 是位掩码，1 bit = 一个修饰键）
+      const ops = (request.ops as number[]) ?? []
+      const mods = (request.mods as number[]) ?? []
+      let requested = 0
+      for (let i = 0; i < ops.length; i++) {
+        if (ops[i] === 0) {
+          let modifiers = 0
+          for (let bit = 1; bit <= 8; bit <<= 1) if (((mods[i] ?? 0) & bit) !== 0) modifiers++
+          requested += 2 + 2 * modifiers
+        } else if (ops[i] === 1) {
+          requested += 2
+        }
+      }
+      return { data: { requested, injected: requested, items: ops.length } }
     }
     case 'releaseAll':
       return { data: { released: 11 } }
@@ -54,34 +59,29 @@ function standardResponder(request: Record<string, unknown>): AutoRespondOutcome
 }
 
 /**
- * @description 组装驱动、假宿主、假剪贴板，并提供取最近子进程与全部请求的便捷方法
- * @param options 超时、剪贴板恢复、应答覆盖与 dry-run 开关
+ * @description 组装驱动与假宿主，并提供取最近子进程与全部请求的便捷方法
+ * @param options 超时、应答覆盖与 dry-run 开关
  * @returns 测试用的驱动夹具
  */
 function createHarness(options: HarnessOptions = {}): {
   driver: WindowsSendInputDriver
   spawn: FakeSpawn
-  clipboard: ReturnType<typeof createFakeClipboard>
   child(): FakeChildProcess
   requests(): Array<Record<string, unknown>>
 } {
   const spawn = createFakeSpawn({
     autoRespond: (request) => options.override?.(request) ?? standardResponder(request)
   })
-  const clipboard = createFakeClipboard('原剪贴板')
   const driver = new WindowsSendInputDriver({
     spawn: spawn.fn,
     hostScriptPath: 'C:\\app\\scripts\\typing-host.ps1',
-    clipboard,
     requestTimeoutMs: options.requestTimeoutMs ?? 1000,
-    restoreClipboard: options.restoreClipboard ?? true,
     dryRun: options.dryRun
   })
 
   return {
     driver,
     spawn,
-    clipboard,
     child: () => spawn.children[spawn.children.length - 1] as FakeChildProcess,
     requests: () => spawn.children.flatMap((item) => item.parsedRequests())
   }
@@ -128,10 +128,11 @@ describe('WindowsSendInputDriver 注入', () => {
 
     expect(result).toEqual({ requested: 6, injected: 6, items: 2 })
     const typeRequest = h.requests().find((request) => request.cmd === 'type')
-    expect(typeRequest?.items).toEqual([
-      { t: 'key', vk: 0x48, mods: ['shift'], delay: 10 },
-      { t: 'unicode', cu: 0x4e2d, delay: 10 }
-    ])
+    // 协议 v2：扁平数组；shift 位掩码为 2
+    expect(typeRequest?.ops).toEqual([0, 1])
+    expect(typeRequest?.vals).toEqual([0x48, 0x4e2d])
+    expect(typeRequest?.mods).toEqual([2, 0])
+    expect(typeRequest?.delays).toEqual([10, 10])
   })
 
   it('空批次直接返回，不打扰宿主', async () => {
@@ -181,6 +182,32 @@ describe('WindowsSendInputDriver 注入', () => {
     }
   })
 
+  it('超时预算按动作数放量（大批次不会被固定上限掐掉）', async () => {
+    vi.useFakeTimers()
+    try {
+      const items: HostItem[] = Array.from({ length: 1000 }, () => ({
+        t: 'key',
+        vk: 0x41,
+        mods: [],
+        delay: 0
+      }))
+      const h = createHarness({
+        requestTimeoutMs: 100,
+        // 旧预算 = 100 + 0 + 5000 = 5100ms；新预算 = 100 + 2000×10 + 5000 = 25100ms
+        override: (request) =>
+          request.cmd === 'type'
+            ? { data: { requested: 2000, injected: 2000, items: 1000 }, delayMs: 8000 }
+            : undefined
+      })
+
+      const pending = h.driver.send(items)
+      await vi.advanceTimersByTimeAsync(9000)
+      await expect(pending).resolves.toEqual({ requested: 2000, injected: 2000, items: 1000 })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('releaseAll / foreground / probe 使用约定的指令名', async () => {
     const h = createHarness()
     await h.driver.start()
@@ -193,31 +220,28 @@ describe('WindowsSendInputDriver 注入', () => {
     expect(commands).toContain('foreground')
     expect(commands).toContain('probe')
   })
-})
 
-describe('WindowsSendInputDriver 粘贴回退', () => {
-  it('写剪贴板 → 发 Ctrl+V → 恢复原剪贴板', async () => {
+  it('cancel 只写一条 cancel，不等响应', async () => {
     const h = createHarness()
     await h.driver.start()
-    await h.driver.paste('中文内容')
-
-    expect(h.clipboard.readText()).toBe('原剪贴板')
-    const typeRequest = h.requests().find((request) => request.cmd === 'type')
-    expect(typeRequest?.items).toEqual([{ t: 'key', vk: 0x56, mods: ['ctrl'], delay: 0 }])
+    h.driver.cancel()
+    expect(h.requests().some((request) => request.cmd === 'cancel')).toBe(true)
   })
 
-  it('空文本不触碰剪贴板', async () => {
-    const h = createHarness()
+  it('被中止打断的批次（cancelled）不算注入不足', async () => {
+    const h = createHarness({
+      override: (request) => {
+        if (request.cmd !== 'type') return standardResponder(request)
+        return { data: { requested: 8, injected: 4, items: 4, cancelled: true } }
+      }
+    })
     await h.driver.start()
-    await h.driver.paste('')
-    expect(h.clipboard.history).toEqual([])
-  })
-
-  it('restoreClipboard = false 时保留粘贴内容', async () => {
-    const h = createHarness({ restoreClipboard: false })
-    await h.driver.start()
-    await h.driver.paste('留下的内容')
-    expect(h.clipboard.readText()).toBe('留下的内容')
+    const result = await h.driver.send([
+      { t: 'unicode', cu: 0x41, delay: 1 },
+      { t: 'unicode', cu: 0x42, delay: 1 }
+    ])
+    expect(result.cancelled).toBe(true)
+    expect(result.injected).toBe(4)
   })
 })
 
@@ -242,7 +266,6 @@ describe('平台支持判定与驱动工厂', () => {
     try {
       createDriver({
         platform: 'darwin',
-        clipboard: createFakeClipboard(),
         locator: { isPackaged: false, appPath: '/app', resourcesPath: '/res' }
       })
       throw new Error('应当抛错')
@@ -257,7 +280,6 @@ describe('平台支持判定与驱动工厂', () => {
     expect(() =>
       createDriver({
         platform: 'win32',
-        clipboard: createFakeClipboard(),
         locator: {
           isPackaged: false,
           appPath: 'C:\\app',
@@ -271,7 +293,6 @@ describe('平台支持判定与驱动工厂', () => {
   it('createDriver 在 Windows 上能找到脚本时返回真实驱动', () => {
     const driver = createDriver({
       platform: 'win32',
-      clipboard: createFakeClipboard(),
       locator: {
         isPackaged: false,
         appPath: 'C:\\app',

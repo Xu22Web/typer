@@ -8,6 +8,7 @@ import type {
   TransferPrepareProgress
 } from '@shared/transfer/transfer'
 import { CHUNK_PRESETS, TRANSFER_LIMITS } from '@shared/transfer/transfer'
+import { formatDuration } from '@shared/format/duration'
 
 /**
  * 文件传输状态（模块级单例）：准备分片、算发送计划、导入续传状态、开始发送。
@@ -209,9 +210,9 @@ async function start(): Promise<void> {
       result.state === 'completed' ? 'info' : 'warn',
       result.error
         ? `文件传输结束：${result.error}`
-        : `文件传输结束：${result.state}｜发送 ${result.plan?.ranges ?? ''}｜耗时 ${Math.round(
-            result.elapsedMs / 1000
-          )}s`
+        : `文件传输结束：${result.state}｜发送 ${result.plan?.ranges ?? ''}｜耗时 ${formatDuration(
+            result.elapsedMs
+          )}`
     )
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)

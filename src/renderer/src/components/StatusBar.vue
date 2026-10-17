@@ -28,26 +28,26 @@ const running = computed(() => typing.isRunning.value)
 
 <template>
   <footer class="statusbar">
-    <span class="state">
-      <span class="dot" :class="tone" />
-      {{ STATE_LABELS[typing.state.value] }}
+    <div class="state">
+      <div class="dot" :class="tone" />
+      <div>{{ STATE_LABELS[typing.state.value] }}</div>
       <template v-if="running">
-        <span class="sep">·</span>
-        <span class="mono">{{ percent }}%</span>
+        <div class="sep">·</div>
+        <div class="mono">{{ percent }}%</div>
       </template>
-    </span>
+    </div>
 
-    <span v-if="running" class="target ellipsis" :title="typing.targetWindow.value">
+    <div v-if="running" class="target ellipsis" :title="typing.targetWindow.value">
       输入到 {{ typing.targetWindow.value }}
-    </span>
+    </div>
 
     <div class="spacer" />
 
-    <span class="privacy">
-      <span class="i-mdi-shield-check-outline" />
-      内容仅在本机处理，默认不落盘
-    </span>
-    <span class="sep collapsible">·</span>
+    <div class="privacy">
+      <div class="i-mdi-shield-check-outline" />
+      <div>内容仅在本机处理，默认不落盘</div>
+    </div>
+    <div class="sep collapsible">·</div>
     <Versions class="collapsible" />
   </footer>
 </template>
@@ -69,7 +69,7 @@ const running = computed(() => typing.isRunning.value)
 }
 
 .state {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   gap: 7px;
   flex: none;
@@ -83,7 +83,7 @@ const running = computed(() => typing.isRunning.value)
 }
 
 .privacy {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   gap: 5px;
   flex: none;

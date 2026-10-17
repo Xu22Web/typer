@@ -24,8 +24,7 @@ describeE2E('焦点守护（系统级）', () => {
 
     driver = new WindowsSendInputDriver({
       spawn: nodeSpawnAdapter,
-      hostScriptPath: HOST_SCRIPT,
-      clipboard: { readText: () => '', writeText: () => {} }
+      hostScriptPath: HOST_SCRIPT
     })
     await driver.start()
   }, 120_000)

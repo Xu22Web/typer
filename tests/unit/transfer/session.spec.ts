@@ -231,7 +231,7 @@ describe('tools 定位与导出', () => {
     expect(dir).toBe(join(root, 'tools'))
   })
 
-  it('开发模式下缺构建产物时提示先运行 npm run build:tools', () => {
+  it('开发模式下缺构建产物时提示先运行 pnpm build:tools', () => {
     expect(() =>
       resolveToolsDir({
         isPackaged: false,
@@ -239,7 +239,7 @@ describe('tools 定位与导出', () => {
         resourcesPath: join(work, 'nope'),
         exists: () => false
       })
-    ).toThrow(/npm run build:tools/)
+    ).toThrow(/pnpm build:tools/)
   })
 
   it('打包后优先在 resources 下查找；找不到时报出全部候选路径', () => {
@@ -256,24 +256,20 @@ describe('tools 定位与导出', () => {
     ).toThrow(ToolsDirNotFoundError)
   })
 
-  it('导出只复制产物、启动脚本与 README，不把 .ts 源码与类型声明带给用户', () => {
+  it('导出只包含产物、启动脚本与说明文档，不带仓库里的源码', () => {
     const toolsDir = join(work, 'tools-src')
-    mkdirSync(join(toolsDir, 'lib'), { recursive: true })
+    mkdirSync(toolsDir, { recursive: true })
+    // 与 `pnpm build:tools` 之后的真实 tools/ 一致：两个产物 + 说明文档，外加一个不该被带走的源码
     writeFileSync(join(toolsDir, 'typer-recv.mjs'), '// 接收端构建产物\n')
     writeFileSync(join(toolsDir, 'run.bat'), '@echo off\r\n')
-    writeFileSync(join(toolsDir, 'typer-recv.ts'), 'export const dummy = 1\n')
-    writeFileSync(join(toolsDir, 'typer-recv.d.mts'), 'export declare const dummy: number\n')
     writeFileSync(join(toolsDir, 'README.md'), '# 使用说明\n')
-    writeFileSync(join(toolsDir, 'lib', 'frame.mjs'), '// 旧的线格式实现\n')
+    writeFileSync(join(toolsDir, 'typer-recv.ts'), 'export const dummy = 1\n')
 
     const destination = join(work, 'exported')
     const copied = copyToolsTo(toolsDir, destination)
 
-    expect(copied.sort()).toEqual(
-      [join('lib', 'frame.mjs'), 'README.md', 'run.bat', 'typer-recv.mjs'].sort() as string[]
-    )
+    expect(copied.sort()).toEqual(['README.md', 'run.bat', 'typer-recv.mjs'])
     expect(readdirSync(destination)).not.toContain('typer-recv.ts')
-    expect(readdirSync(destination)).not.toContain('typer-recv.d.mts')
     expect(existsSync(join(destination, 'typer-recv.mjs'))).toBe(true)
     expect(existsSync(join(destination, 'run.bat'))).toBe(true)
     expect(existsSync(join(destination, 'README.md'))).toBe(true)

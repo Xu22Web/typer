@@ -2,6 +2,7 @@ import { computed, ref } from 'vue'
 import type { ComputedRef, Ref } from 'vue'
 import type { ProgressSnapshot } from '@main/typing/engine/progress'
 import type { EngineSnapshot, EngineState } from '@main/typing/engine/states'
+import { formatDuration } from '@shared/format/duration'
 
 /**
  * 引擎状态（模块级单例）：主进程推来的状态/进度/日志，加上开始·暂停·继续·停止等动作。
@@ -88,6 +89,24 @@ async function init(): Promise<void> {
   await refreshForeground()
 }
 
+/** @description 只订阅主进程的状态/进度/日志推送；供进度浮窗这类轻量视图使用（不探测前台窗口、不读应用信息） */
+function initEvents(): void {
+  wire()
+}
+
+/**
+ * @description 拉一次当前状态快照。
+ * 浮窗是"运行开始后才创建"的窗口，早于它发生的状态推送收不到，不对齐一次就会整段倒计时都显示"待机"。
+ */
+async function syncStatus(): Promise<void> {
+  try {
+    const snapshot = await window.api.typing.status()
+    state.value = snapshot.state
+  } catch {
+    // 读不到时保持默认值，不影响后续推送
+  }
+}
+
 /** @description 把内容区的文本交给引擎开始输入；倒计时与注入节奏都由设置决定 */
 async function start(): Promise<void> {
   if (busy.value || text.value.length === 0) return
@@ -98,9 +117,9 @@ async function start(): Promise<void> {
   )
   try {
     const summary = await window.api.typing.start(text.value)
-    lastSummary.value = `状态 ${summary.state}｜${summary.typed}/${summary.total} 个动作｜耗时 ${Math.round(
-      summary.elapsedMs / 1000
-    )}s｜种子 ${summary.seed}`
+    lastSummary.value = `状态 ${summary.state}｜${summary.typed}/${summary.total} 个动作｜耗时 ${formatDuration(
+      summary.elapsedMs
+    )}｜种子 ${summary.seed}`
     pushLog(
       summary.state === 'completed' ? 'info' : 'warn',
       summary.error ? `结束：${summary.error}` : `结束：${lastSummary.value}`
@@ -176,6 +195,8 @@ export function useTyping(): {
   isRunning: ComputedRef<boolean>
   canStart: ComputedRef<boolean>
   init: () => Promise<void>
+  initEvents: () => void
+  syncStatus: () => Promise<void>
   start: () => Promise<void>
   pause: () => Promise<void>
   resume: () => Promise<void>
@@ -198,6 +219,8 @@ export function useTyping(): {
     isRunning: computed(() => ['countdown', 'running', 'paused'].includes(state.value)),
     canStart: computed(() => !busy.value && text.value.length > 0 && !unsupported.value),
     init,
+    initEvents,
+    syncStatus,
     start,
     pause,
     resume,

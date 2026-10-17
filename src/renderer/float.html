@@ -1,0 +1,25 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <title>Typer · 进度</title>
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:"
+    />
+    <style>
+      /* 浮窗是透明窗口：外壳背景必须让位，否则会被不透明底色填满 */
+      html,
+      body,
+      #app {
+        background: transparent !important;
+        background-image: none !important;
+      }
+    </style>
+  </head>
+
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/windows/float/index.ts"></script>
+  </body>
+</html>

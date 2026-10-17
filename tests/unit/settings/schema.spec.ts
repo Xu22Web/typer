@@ -25,11 +25,9 @@ describe('normalizeSettings', () => {
   it('类型错误时回退默认值', () => {
     const settings = normalizeSettings({
       startDelayMs: '很快',
-      insertMode: 42,
       verifyStuckKeys: 'yes'
     })
     expect(settings.startDelayMs).toBe(DEFAULT_SETTINGS.startDelayMs)
-    expect(settings.insertMode).toBe(DEFAULT_SETTINGS.insertMode)
     expect(settings.verifyStuckKeys).toBe(DEFAULT_SETTINGS.verifyStuckKeys)
   })
 
@@ -58,12 +56,45 @@ describe('normalizeSettings', () => {
   })
 
   it('枚举值非法时回退默认，合法时保留', () => {
-    expect(normalizeSettings({ insertMode: 'telepathy' }).insertMode).toBe('auto')
-    expect(normalizeSettings({ insertMode: 'paste' }).insertMode).toBe('paste')
     expect(normalizeSettings({ focusGuard: 'chaos' }).focusGuard).toBe('warn')
     expect(normalizeSettings({ focusGuard: 'strict' }).focusGuard).toBe('strict')
     expect(normalizeSettings({ timing: { speedMode: 'warp' } }).timing.speedMode).toBe('cps')
     expect(normalizeSettings({ typo: { style: 'random' } }).typo.style).toBe('adjacent')
+  })
+
+  it('注入档位与传输节奏：非法值回退默认', () => {
+    expect(normalizeSettings({ injection: { profile: 'warp' } }).injection.profile).toBe('normal')
+    expect(normalizeSettings({ transfer: { paceMode: 'warp' } }).transfer.paceMode).toBe('safe')
+    expect(normalizeSettings({ transfer: { paceMode: 'fast' } }).transfer.paceMode).toBe('fast')
+  })
+
+  it('极速档放开字符/秒与每批动作数的上限', () => {
+    const turbo = normalizeSettings({
+      injection: { profile: 'turbo' },
+      chunkSize: 512,
+      timing: { cps: 2000 }
+    })
+    expect(turbo.chunkSize).toBe(512)
+    expect(turbo.timing.cps).toBe(2000)
+
+    // 同一份数值在标准档会被夹回人速区间
+    const normal = normalizeSettings({
+      injection: { profile: 'normal' },
+      chunkSize: 512,
+      timing: { cps: 2000 }
+    })
+    expect(normal).toMatchObject({ chunkSize: 64, timing: { cps: 200 } })
+  })
+
+  it('"不限速"只在极速档有效，标准档退回字符/秒', () => {
+    expect(
+      normalizeSettings({ injection: { profile: 'turbo' }, timing: { speedMode: 'max' } }).timing
+        .speedMode
+    ).toBe('max')
+    expect(
+      normalizeSettings({ injection: { profile: 'normal' }, timing: { speedMode: 'max' } }).timing
+        .speedMode
+    ).toBe('cps')
   })
 
   it('非法布局回退 us', () => {
@@ -78,10 +109,15 @@ describe('normalizeSettings', () => {
   })
 
   it('部分字段缺失时其余保持默认', () => {
-    const settings = normalizeSettings({ clipboard: { importCharset: 'gbk' } })
-    expect(settings.clipboard.importCharset).toBe('gbk')
-    expect(settings.clipboard.restore).toBe(true)
+    const settings = normalizeSettings({ files: { importCharset: 'gbk' } })
+    expect(settings.files.importCharset).toBe('gbk')
     expect(settings.timing.cps).toBe(DEFAULT_SETTINGS.timing.cps)
+  })
+
+  it('旧的 clipboard 分组被丢弃（粘贴注入已移除）', () => {
+    const settings = normalizeSettings({ clipboard: { restore: false, importCharset: 'gbk' } })
+    expect('clipboard' in settings).toBe(false)
+    expect(settings.files.importCharset).toBe('auto')
   })
 
   it('序列化再归一化是幂等的', () => {
@@ -154,8 +190,6 @@ describe('toEngineSettings', () => {
   it('把设置投影成引擎需要的结构', () => {
     const settings = normalizeSettings({
       startDelayMs: 1234,
-      insertMode: 'paste',
-      autoPasteThreshold: 300,
       chunkSize: 5,
       seed: 99,
       focusGuard: 'strict',
@@ -166,16 +200,15 @@ describe('toEngineSettings', () => {
 
     expect(toEngineSettings(settings)).toEqual({
       startDelayMs: 1234,
-      insertMode: 'paste',
-      autoPasteThreshold: 300,
       chunkSize: 5,
       layout: 'de',
       forceUnicodeForAll: true,
       focusGuard: 'strict',
       seed: 99,
       verifyStuckKeys: settings.verifyStuckKeys,
+      profile: 'normal',
+      transferPace: 'safe',
       interFrameDelayMs: settings.transfer.interFrameDelayMs,
-      pasteFrameIncludesNewline: settings.transfer.pasteFrameIncludesNewline,
       timing: settings.timing,
       typo: { rate: 0.1, style: 'transpose', correction: 'none' }
     })
@@ -183,12 +216,39 @@ describe('toEngineSettings', () => {
 
   it('文件传输设置：默认值、夹取与非法枚举回退', () => {
     expect(DEFAULT_SETTINGS.transfer).toEqual({
-      encoding: 'hex',
-      chunkBytes: 1024,
-      maxFrameChars: 4096,
-      interFrameDelayMs: 400,
-      pasteFrameIncludesNewline: true
+      encoding: 'gzb64',
+      paceMode: 'safe',
+      chunkBytes: 8192,
+      maxFrameChars: 24576,
+      interFrameDelayMs: 120
     })
+
+    // 从未改过传输设置的用户（存盘值等于旧默认值）升级后直接采用新默认值
+    expect(
+      normalizeSettings({
+        transfer: {
+          encoding: 'hex',
+          paceMode: 'safe',
+          chunkBytes: 1024,
+          maxFrameChars: 4096,
+          interFrameDelayMs: 400
+        }
+      }).transfer
+    ).toEqual(DEFAULT_SETTINGS.transfer)
+
+    // 只要改过某一项，就完整保留用户的选择
+    const customized = normalizeSettings({
+      transfer: {
+        encoding: 'hex',
+        paceMode: 'fast',
+        chunkBytes: 1024,
+        maxFrameChars: 4096,
+        interFrameDelayMs: 400
+      }
+    })
+    expect(customized.transfer.encoding).toBe('hex')
+    expect(customized.transfer.chunkBytes).toBe(1024)
+    expect(customized.transfer.paceMode).toBe('fast')
 
     const clamped = normalizeSettings({
       transfer: { chunkBytes: 99999999, maxFrameChars: 1, interFrameDelayMs: 99999 }
@@ -197,10 +257,37 @@ describe('toEngineSettings', () => {
     expect(clamped.transfer.maxFrameChars).toBe(NUMERIC_BOUNDS.maxFrameChars[0])
     expect(clamped.transfer.interFrameDelayMs).toBe(TRANSFER_LIMITS.interFrameDelayMs[1])
 
-    const fallback = normalizeSettings({
-      transfer: { encoding: 'rot13', pasteFrameIncludesNewline: 'yes' }
+    const fallback = normalizeSettings({ transfer: { encoding: 'rot13' } })
+    expect(fallback.transfer.encoding).toBe(DEFAULT_SETTINGS.transfer.encoding)
+  })
+
+  it('浮窗摆放设置：默认值、非法枚举回退与坐标夹取', () => {
+    expect(DEFAULT_SETTINGS.floating).toEqual({
+      mode: 'docked',
+      edge: 'right',
+      offset: 24,
+      x: 0,
+      y: 0
     })
-    expect(fallback.transfer.encoding).toBe('hex')
-    expect(fallback.transfer.pasteFrameIncludesNewline).toBe(true)
+
+    const fallback = normalizeSettings({ floating: { mode: '中间', edge: '中间', offset: 'x' } })
+    expect(fallback.floating).toEqual(DEFAULT_SETTINGS.floating)
+
+    const clamped = normalizeSettings({ floating: { edge: 'top', offset: -999_999 } })
+    expect(clamped.floating.edge).toBe('top')
+    expect(clamped.floating.offset).toBe(NUMERIC_BOUNDS.floatOffset[0])
+
+    const floating = normalizeSettings({
+      floating: { mode: 'floating', x: 400, y: 300 }
+    })
+    expect(floating.floating.mode).toBe('floating')
+    expect(floating.floating.x).toBe(400)
+    expect(floating.floating.y).toBe(300)
+  })
+
+  it('局部更新浮窗设置时保留其它项（嵌套分组逐层合并）', () => {
+    const base = normalizeSettings({ floating: { edge: 'bottom', offset: 320 } })
+    const merged = mergeSettings(base, { floating: { offset: 480 } })
+    expect(merged.floating).toEqual({ mode: 'docked', edge: 'bottom', offset: 480, x: 0, y: 0 })
   })
 })

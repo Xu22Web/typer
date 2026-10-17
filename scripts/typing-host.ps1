@@ -41,8 +41,11 @@ $ErrorActionPreference = 'Stop'
 # ---------------------------------------------------------------------------
 $nativeSource = @'
 using System;
+using System.Collections.Generic;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Threading;
 
 public static class TyperNative
 {
@@ -116,6 +119,21 @@ public static class TyperNative
     [DllImport("user32.dll")]
     private static extern short GetAsyncKeyState(int vKey);
 
+    // 高精度等待用的内核定时器。Windows 的默认定时器粒度约 15.6ms，Thread.Sleep(1) 实际会睡
+    // 十几毫秒，所以这里用高分辨率可等待定时器（Win10 1803+）把等待时间交给内核；
+    // 创建失败（老系统）时退回 timeBeginPeriod(1) + Sleep。
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern IntPtr CreateWaitableTimerExW(IntPtr attributes, string name, uint flags, uint access);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool SetWaitableTimer(IntPtr timer, ref long dueTime, int period, IntPtr routine, IntPtr arg, bool resume);
+
+    [DllImport("kernel32.dll")]
+    private static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
+
+    [DllImport("winmm.dll")]
+    private static extern uint timeBeginPeriod(uint milliseconds);
+
     public static int InputSize()
     {
         return Marshal.SizeOf(typeof(INPUT));
@@ -165,6 +183,443 @@ public static class TyperNative
     public static bool IsKeyDown(int vk)
     {
         return (GetAsyncKeyState(vk) & 0x8000) != 0;
+    }
+
+    // -----------------------------------------------------------------------
+    // 批量注入：把整个动作批（含 chord 组装）放在 C# 里做完，一次/几次 SendInput 发出去
+    //
+    // 为什么搬到这里：PowerShell 侧每字符要调 6~8 次函数、做 3 次数组拷贝，
+    // 实测这部分开销与"每字符一次跨边界调用"叠加后会把吞吐压到百级；
+    // 而让 C# 拿着扁平的整数数组直接组装 INPUT[]，可以省掉几乎全部托管侧开销。
+    // 注意 Add-Type 在 Windows PowerShell 5.1 上用的是 C# 5 编译器，这里不能用
+    // 字符串插值 / 表达式体成员等新语法。
+    // -----------------------------------------------------------------------
+    public const int OP_KEY = 0;
+    public const int OP_UNICODE = 1;
+    public const int OP_WAIT = 2;
+
+    public const int MOD_CTRL = 1;
+    public const int MOD_SHIFT = 2;
+    public const int MOD_ALT = 4;
+    public const int MOD_WIN = 8;
+
+    /// 单次 SendInput 最多提交的事件数。
+    /// 批次越大，单次调用越容易被填满的输入队列拖住（实测阻塞时长可达数百毫秒），
+    /// "停止"也就要等在途的那一次调用返回；256 个事件（128 个字符）是吞吐与响应性的折中。
+    public const int MAX_EVENTS_PER_CALL = 256;
+
+    /// 需要 KEYEVENTF_EXTENDEDKEY 的虚拟键（方向键、Home/End、小键盘除号等）
+    private static readonly int[] ExtendedKeys = new int[] {
+        0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x2C, 0x2D, 0x2E,
+        0x5B, 0x5C, 0x5D, 0x6F, 0xA3, 0xA5, 0x90
+    };
+
+    /// 修饰键的按下顺序（抬起时相反）。布局里每个键位最多带一个修饰键，因此顺序不构成行为差异。
+    private static readonly int[] ModifierBits = new int[] { MOD_CTRL, MOD_SHIFT, MOD_ALT, MOD_WIN };
+    private static readonly int[] ModifierVks = new int[] { 0x11, 0x10, 0x12, 0x5B };
+
+    /// 本次会话按下的修饰键（供 releaseAll 优先释放）
+    private static readonly List<int> HeldModifiers = new List<int>();
+    private static readonly object HeldLock = new object();
+
+    /// 紧急中止标志：由后台读线程在收到 cancel 指令时递增。
+    ///
+    /// 用"代次"而不是布尔值：每条指令入队时记下当时的中止代次，
+    /// 只有代次在指令被读入之后又变过（说明 cancel 是这一批开始之后才到的）才打断。
+    /// 否则上一轮遗留的 cancel 会误伤下一次运行的第一批。
+    private static int CancelEpochValue = 0;
+
+    /// 当前正在执行的批次所对应的中止代次（主线程专用，WaitMs 也读它）
+    internal static int ActiveEpoch = 0;
+
+    public static void RequestCancel()
+    {
+        System.Threading.Interlocked.Increment(ref CancelEpochValue);
+    }
+
+    public static int CancelEpoch
+    {
+        get { return System.Threading.Volatile.Read(ref CancelEpochValue); }
+    }
+
+    internal static bool StopRequested
+    {
+        get { return System.Threading.Volatile.Read(ref CancelEpochValue) != ActiveEpoch; }
+    }
+
+    public static int[] HeldModifierVks()
+    {
+        lock (HeldLock) { return HeldModifiers.ToArray(); }
+    }
+
+    public static void ClearHeldModifiers()
+    {
+        lock (HeldLock) { HeldModifiers.Clear(); }
+    }
+
+    private static bool IsExtended(int vk)
+    {
+        for (int i = 0; i < ExtendedKeys.Length; i++)
+        {
+            if (ExtendedKeys[i] == vk) return true;
+        }
+        return false;
+    }
+
+    private static INPUT KeyEvent(int vk, bool up, bool sendScan)
+    {
+        INPUT input = new INPUT();
+        input.type = INPUT_KEYBOARD;
+        input.U.ki.wVk = (ushort)vk;
+        input.U.ki.wScan = sendScan ? VirtualKeyToScanCode((uint)vk) : (ushort)0;
+        uint flags = up ? KEYEVENTF_KEYUP : 0;
+        if (IsExtended(vk)) flags |= KEYEVENTF_EXTENDEDKEY;
+        input.U.ki.dwFlags = flags;
+        input.U.ki.time = 0;
+        input.U.ki.dwExtraInfo = IntPtr.Zero;
+        return input;
+    }
+
+    private static INPUT UnicodeEvent(int codeUnit, bool up)
+    {
+        INPUT input = new INPUT();
+        input.type = INPUT_KEYBOARD;
+        // KEYEVENTF_UNICODE 要求 wVk = 0，字符放在 wScan（UTF-16 码元）
+        input.U.ki.wVk = 0;
+        input.U.ki.wScan = (ushort)codeUnit;
+        input.U.ki.dwFlags = KEYEVENTF_UNICODE | (up ? KEYEVENTF_KEYUP : 0);
+        input.U.ki.time = 0;
+        input.U.ki.dwExtraInfo = IntPtr.Zero;
+        return input;
+    }
+
+    /// 自旋精修的尾段（毫秒）：这段用自旋保证节奏，其余时间交给内核定时器阻塞。
+    /// 实测 2000 次 1ms 等待：尾段 0.3ms → 平均 1.10ms、CPU 0.16ms/次；
+    /// 全程自旋 → 平均 1.00ms 但要 1.05ms CPU/次（吃满一个核，整台机器跟着卡）。
+    private const double SPIN_TAIL_MS = 0.3;
+
+    /// 压力阀阈值：一次 SendInput 超过这个时长就认为输入队列已经被填满。
+    /// 正常（队列有空位）一次 32 个事件的 SendInput 只要几十微秒。
+    private const double VALVE_TRIGGER_MS = 1.0;
+
+    /// 压力阀的额外等待系数：阻塞本身已经把节奏拖慢了，这里只补一点让队列退到不饱和，
+    /// 系数取 1 以上会把"目标端的真实速度"再打一次折（实测 2.0 时吞吐只剩 1/3）
+    private const double VALVE_GAIN = 0.5;
+
+    /// 压力阀单次补充上限（一次卡顿不该让后面的节奏冻住）
+    private const double VALVE_MAX_EXTRA_MS = 4.0;
+
+    private const uint TIMER_ALL_ACCESS = 0x1F0003;
+    private const uint CREATE_WAITABLE_TIMER_HIGH_RESOLUTION = 0x00000002;
+
+    private static IntPtr WaitTimer = IntPtr.Zero;
+    private static bool WaitTimerTried = false;
+
+    /// 复用的事件缓冲区（单线程使用；SendInput 只读它）
+    private static INPUT[] Scratch = new INPUT[MAX_EVENTS_PER_CALL];
+
+    /// 上一次 FlushBatch 里 SendInput 自身的耗时：压力阀靠它判断队列是否已经满了
+    private static long LastFlushTicks = 0;
+
+    private static IntPtr EnsureWaitTimer()
+    {
+        if (!WaitTimerTried)
+        {
+            WaitTimerTried = true;
+            WaitTimer = CreateWaitableTimerExW(IntPtr.Zero, null, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+            if (WaitTimer == IntPtr.Zero) timeBeginPeriod(1);
+        }
+        return WaitTimer;
+    }
+
+    /// 精确等待：内核定时器阻塞掉大头，最后 0.3ms 自旋精修
+    private static void WaitMs(double ms)
+    {
+        if (ms <= 0) return;
+        long ticksPerMs = Stopwatch.Frequency / 1000;
+        long deadline = Stopwatch.GetTimestamp() + (long)(ms * ticksPerMs);
+        IntPtr timer = EnsureWaitTimer();
+
+        while (true)
+        {
+            if (StopRequested) return;
+            long remainingTicks = deadline - Stopwatch.GetTimestamp();
+            if (remainingTicks <= 0) return;
+            double remainingMs = (double)remainingTicks / ticksPerMs;
+            if (remainingMs <= SPIN_TAIL_MS)
+            {
+                Thread.SpinWait(60);
+                continue;
+            }
+
+            double blockMs = remainingMs - SPIN_TAIL_MS;
+            if (timer != IntPtr.Zero)
+            {
+                long due = -(long)(blockMs * 10000.0); // 负数 = 相对时间，单位 100ns
+                SetWaitableTimer(timer, ref due, 0, IntPtr.Zero, IntPtr.Zero, false);
+                WaitForSingleObject(timer, (uint)Math.Ceiling(blockMs) + 20);
+            }
+            else
+            {
+                int sleepMs = (int)Math.Floor(blockMs);
+                Thread.Sleep(sleepMs < 1 ? 1 : sleepMs);
+            }
+        }
+    }
+
+    private static int FlushBatch(List<INPUT> pending, bool dryRun)
+    {
+        int count = pending.Count;
+        LastFlushTicks = 0;
+        if (count == 0) return 0;
+        if (dryRun) { pending.Clear(); return count; }
+
+        // 复用一块缓冲区：每批都 ToArray() 会在高吞吐时产生大量短命数组
+        if (Scratch.Length < count) Scratch = new INPUT[count];
+        pending.CopyTo(Scratch, 0);
+        pending.Clear();
+        long started = Stopwatch.GetTimestamp();
+        uint sent = SendInput((uint)count, Scratch, Marshal.SizeOf(typeof(INPUT)));
+        LastFlushTicks = Stopwatch.GetTimestamp() - started;
+        if (sent != (uint)count)
+        {
+            throw new InvalidOperationException(
+                "SendInput 只注入了 " + sent + "/" + count + " 个事件（可能被 UIPI 或安全软件拦截）");
+        }
+        return count;
+    }
+
+    /// <summary>
+    /// 每次 flush 之后都要记一次账（不只带延迟的断批）：
+    /// 零延迟的大批次同样会把输入队列灌满，只是没有"下一个等待"可以借机降速。
+    /// 返回值是本次应当补等的毫秒数，0 表示队列还有空位。
+    /// </summary>
+    private static double ValveWaitAfterFlush(bool dryRun, long ticksPerMs,
+        ref int blockedCalls, ref double blockedMs, ref double maxBlockedMs, ref double valveMs)
+    {
+        if (dryRun) return 0;
+        double flushMs = (double)LastFlushTicks / ticksPerMs;
+        if (flushMs > maxBlockedMs) maxBlockedMs = flushMs;
+        if (flushMs < VALVE_TRIGGER_MS) return 0;
+        blockedCalls++;
+        blockedMs += flushMs;
+        double extra = flushMs * VALVE_GAIN;
+        if (extra > VALVE_MAX_EXTRA_MS) extra = VALVE_MAX_EXTRA_MS;
+        valveMs += extra;
+        return extra;
+    }
+
+    private static void AppendKeyChord(List<INPUT> pending, int vk, int modifiers, bool sendScan)
+    {
+        int pressed = 0;
+        for (int i = 0; i < ModifierBits.Length; i++)
+        {
+            if ((modifiers & ModifierBits[i]) == 0) continue;
+            int modVk = ModifierVks[i];
+            pending.Add(KeyEvent(modVk, false, sendScan));
+            pressed |= ModifierBits[i];
+            lock (HeldLock) { if (!HeldModifiers.Contains(modVk)) HeldModifiers.Add(modVk); }
+        }
+
+        pending.Add(KeyEvent(vk, false, sendScan));
+        pending.Add(KeyEvent(vk, true, sendScan));
+
+        for (int i = ModifierBits.Length - 1; i >= 0; i--)
+        {
+            if ((pressed & ModifierBits[i]) == 0) continue;
+            int modVk = ModifierVks[i];
+            pending.Add(KeyEvent(modVk, true, sendScan));
+            lock (HeldLock) { HeldModifiers.Remove(modVk); }
+        }
+    }
+
+    /// 释放一批虚拟键（只发抬起事件）。用于 releaseAll：一次调用发完整批，避免逐个 VK 一次 SendInput。
+    public static int SendKeyUps(int[] vks, bool dryRun)
+    {
+        if (vks.Length == 0) return 0;
+        if (dryRun) return vks.Length;
+
+        List<INPUT> pending = new List<INPUT>(vks.Length);
+        for (int i = 0; i < vks.Length; i++)
+        {
+            pending.Add(KeyEvent(vks[i], true, false));
+        }
+        return FlushBatch(pending, false);
+    }
+
+    /// 一次请求的全部动作：组装 chord、按 delay 断批、注入。
+    /// 返回 { requested, injected, blockedMs, maxBlockedMs, valveMs, blockedCalls }：
+    /// 前两个以底层输入事件数计，后四个是"目标端消化不过来"的证据（毫秒 / 次数）。
+    ///
+    /// 约定：`delays[i]` 是"执行第 i 个动作之前要等多久"；纯等待动作（OP_WAIT）把时长也放在
+    /// 这里、`vals[i]` 留 0，于是它天然走"断批 + 等待"这条路径，不需要单独分支。
+    ///
+    /// 压力阀：SendInput 把事件交给系统输入流后立即返回，但目标线程消化不过来时队列会被填满，
+    /// 之后的每次 SendInput 都要在队列里等空位（实测一次调用从几十微秒涨到几毫秒）。队列常年
+    /// 是满的时候，整台机器的输入处理都会排在它后面——鼠标都会卡。所以这里把"被拖住的时长"
+    /// 按倍数补进下一次等待，让队列回到不饱和的状态；节奏因此会自适应到目标端真正跟得上的速度。
+    ///
+    /// `perItem`：每个动作单独一次 SendInput。数据帧（文件传输）必须开启——实测真实终端下
+    /// 一次投递多个字符时，目标端输入缓冲紧张会静默丢掉其中一部分；逐动作投递则零丢失。
+    public static int[] SendBatch(int[] ops, int[] vals, int[] mods, double[] delays, bool sendScan, bool perItem, bool dryRun, int cancelEpoch)
+    {
+        int requested = 0;
+        int injected = 0;
+        int blockedCalls = 0;
+        double blockedMs = 0;
+        double maxBlockedMs = 0;
+        double valveMs = 0;
+        long ticksPerMs = Stopwatch.Frequency / 1000;
+        List<INPUT> pending = new List<INPUT>(256);
+        ActiveEpoch = cancelEpoch;
+
+        for (int i = 0; i < ops.Length; i++)
+        {
+            // 中止：丢掉还没提交的事件。每个按键都是完整的 down/up 对（含修饰键），
+            // 整对丢弃不会留下按下的键，因此这里不需要先 Flush 再退出。
+            if (StopRequested)
+            {
+                pending.Clear();
+                return new int[] {
+                    requested, injected,
+                    (int)Math.Round(blockedMs), (int)Math.Round(maxBlockedMs),
+                    (int)Math.Round(valveMs), blockedCalls, 1
+                };
+            }
+
+            double delay = delays[i];
+            if (delay > 0)
+            {
+                // 有停顿才断批：先送出手头的事件，再等待，保证"什么时候打出去"与逐动作发送一致
+                injected += FlushBatch(pending, dryRun);
+                double flushMs = (double)LastFlushTicks / ticksPerMs;
+                double extra = ValveWaitAfterFlush(dryRun, ticksPerMs,
+                    ref blockedCalls, ref blockedMs, ref maxBlockedMs, ref valveMs);
+                // 阻塞本身已经是"等待"：把它从下个间隔里扣掉，否则队列排满时会被重复计入，
+                // 实际吞吐会掉到目标端能力的三分之一
+                double remaining = delay - (flushMs < delay ? flushMs : delay);
+                if (remaining > 0) WaitMs(remaining);
+                if (extra > 0) WaitMs(extra);
+            }
+
+            int op = ops[i];
+            if (op == OP_KEY)
+            {
+                int modifiers = mods[i];
+                if ((modifiers & ~(MOD_CTRL | MOD_SHIFT | MOD_ALT | MOD_WIN)) != 0)
+                {
+                    throw new ArgumentOutOfRangeException("mods", "未知的修饰键位：" + modifiers);
+                }
+                int modCount = 0;
+                for (int b = 0; b < ModifierBits.Length; b++)
+                {
+                    if ((modifiers & ModifierBits[b]) != 0) modCount++;
+                }
+                requested += 2 + 2 * modCount;
+                AppendKeyChord(pending, vals[i], modifiers, sendScan);
+            }
+            else if (op == OP_UNICODE)
+            {
+                int codeUnit = vals[i];
+                if (codeUnit < 0 || codeUnit > 0xFFFF)
+                {
+                    throw new ArgumentOutOfRangeException("vals", "非法的 UTF-16 码元：" + codeUnit);
+                }
+                requested += 2;
+                pending.Add(UnicodeEvent(codeUnit, false));
+                pending.Add(UnicodeEvent(codeUnit, true));
+            }
+            else if (op != OP_WAIT)
+            {
+                throw new ArgumentOutOfRangeException("ops", "未知动作类型：" + op);
+            }
+
+            if (pending.Count >= (perItem ? 2 : MAX_EVENTS_PER_CALL))
+            {
+                injected += FlushBatch(pending, dryRun);
+                // 没有计划等待可以"借机"降速时，就在这里补等：否则零延迟大批次会长期占满输入队列
+                double extra = ValveWaitAfterFlush(dryRun, ticksPerMs,
+                    ref blockedCalls, ref blockedMs, ref maxBlockedMs, ref valveMs);
+                if (extra > 0) WaitMs(extra);
+            }
+        }
+
+        injected += FlushBatch(pending, dryRun);
+        // 最后一批只记账、不再补等（后面没有动作了，补等只会白等）
+        ValveWaitAfterFlush(dryRun, ticksPerMs,
+            ref blockedCalls, ref blockedMs, ref maxBlockedMs, ref valveMs);
+        return new int[] {
+            requested,
+            injected,
+            (int)Math.Round(blockedMs),
+            (int)Math.Round(maxBlockedMs),
+            (int)Math.Round(valveMs),
+            blockedCalls,
+            0
+        };
+    }
+}
+
+/// 标准输入的后台读取：主线程可能长时间停在 SendBatch 里（慢目标下一批要几百毫秒），
+/// 因此把读 stdin 放到独立线程：cancel 指令当场置位中止标志，其余指令排队交给主线程。
+public static class TyperHostPipe
+{
+    /// 一条待处理指令：正文 + 读入时的中止代次
+    public sealed class Line
+    {
+        public string Text;
+        public int Epoch;
+
+        public Line(string text, int epoch)
+        {
+            Text = text;
+            Epoch = epoch;
+        }
+    }
+
+    private static readonly System.Collections.Concurrent.BlockingCollection<Line> Queue =
+        new System.Collections.Concurrent.BlockingCollection<Line>();
+    private static bool Started = false;
+
+    public static void Start()
+    {
+        if (Started) return;
+        Started = true;
+        Thread reader = new Thread(ReadLoop);
+        reader.IsBackground = true;
+        reader.Name = "typer-stdin";
+        reader.Start();
+    }
+
+    private static void ReadLoop()
+    {
+        while (true)
+        {
+            string line;
+            try { line = Console.In.ReadLine(); }
+            catch { line = null; }
+            if (line == null)
+            {
+                Queue.CompleteAdding();
+                return;
+            }
+            if (line.IndexOf("\"cancel\"", StringComparison.Ordinal) >= 0)
+            {
+                TyperNative.RequestCancel();
+                continue;
+            }
+            if (line.Trim().Length == 0) continue;
+            // 记下读入这一刻的代次：之后再来的 cancel 才算"这一批的中止"
+            try { Queue.Add(new Line(line, TyperNative.CancelEpoch)); }
+            catch (InvalidOperationException) { return; }
+        }
+    }
+
+    /// 取下一条待处理指令；stdin 关闭后返回 null
+    public static Line Take()
+    {
+        try { return Queue.Take(); }
+        catch (InvalidOperationException) { return null; }
     }
 }
 '@
@@ -223,181 +678,26 @@ function Send-Fail {
 }
 
 # ---------------------------------------------------------------------------
-# 高精度等待
 # ---------------------------------------------------------------------------
-$stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
-$ticksPerMs = [double][System.Diagnostics.Stopwatch]::Frequency / 1000.0
-
-function Wait-Milliseconds {
-    param([double]$Milliseconds)
-
-    if ($Milliseconds -le 0) { return }
-
-    $deadline = $stopwatch.ElapsedTicks + [long]($Milliseconds * $ticksPerMs)
-    while ($stopwatch.ElapsedTicks -lt $deadline) {
-        $remainingMs = ($deadline - $stopwatch.ElapsedTicks) / $ticksPerMs
-        if ($remainingMs -gt 2.0) {
-            # 留 1ms 余量，最后一段用 SpinWait 精修
-            Start-Sleep -Milliseconds ([int]($remainingMs - 1.0))
-        } else {
-            [System.Threading.Thread]::SpinWait(40)
-        }
-    }
-}
-
+# 释放修饰键
 # ---------------------------------------------------------------------------
-# 键位表
-# ---------------------------------------------------------------------------
-$modifierVk = @{
-    shift = 0x10
-    ctrl  = 0x11
-    alt   = 0x12
-    win   = 0x5B
-}
-
-# 需要 KEYEVENTF_EXTENDEDKEY 的虚拟键
-$extendedKeys = @(
-    0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x2C, 0x2D, 0x2E,
-    0x5B, 0x5C, 0x5D, 0x6F, 0xA3, 0xA5, 0x90
-)
-
-function Test-ExtendedKey {
-    param([int]$Vk)
-    return $extendedKeys -contains $Vk
-}
-
-# ---------------------------------------------------------------------------
-# 注入
-# ---------------------------------------------------------------------------
-$script:modifiersHeld = New-Object System.Collections.Generic.List[int]
-
-function New-ChordBuilder {
-    return @{
-        vks   = (New-Object System.Collections.Generic.List[uint16])
-        scans = (New-Object System.Collections.Generic.List[uint16])
-        flags = (New-Object System.Collections.Generic.List[uint32])
-    }
-}
-
-function Add-ChordEvent {
-    param($Builder, [int]$Vk, [int]$Scan, [uint32]$Flags)
-    [void]$Builder.vks.Add([uint16]$Vk)
-    [void]$Builder.scans.Add([uint16]$Scan)
-    [void]$Builder.flags.Add([uint32]$Flags)
-}
-
-function Add-KeyDown {
-    param($Builder, [int]$Vk, [bool]$SendScan)
-
-    $scan = 0
-    if ($SendScan) { $scan = [TyperNative]::VirtualKeyToScanCode([uint32]$Vk) }
-    $flags = [uint32]0
-    if (Test-ExtendedKey -Vk $Vk) { $flags = $flags -bor 0x0001 }
-    Add-ChordEvent -Builder $Builder -Vk $Vk -Scan $scan -Flags $flags
-}
-
-function Add-KeyUp {
-    param($Builder, [int]$Vk, [bool]$SendScan)
-
-    $scan = 0
-    if ($SendScan) { $scan = [TyperNative]::VirtualKeyToScanCode([uint32]$Vk) }
-    $flags = [uint32]0x0002
-    if (Test-ExtendedKey -Vk $Vk) { $flags = $flags -bor 0x0001 }
-    Add-ChordEvent -Builder $Builder -Vk $Vk -Scan $scan -Flags $flags
-}
-
-function Add-UnicodeEvent {
-    param($Builder, [int]$CodeUnit, [bool]$KeyUp)
-
-    # KEYEVENTF_UNICODE 要求 wVk = 0，字符放在 wScan（UTF-16 码元）
-    $flags = [uint32]0x0004
-    if ($KeyUp) { $flags = $flags -bor 0x0002 }
-    Add-ChordEvent -Builder $Builder -Vk 0 -Scan $CodeUnit -Flags $flags
-}
-
-function Invoke-KeyAction {
-    param($Item, [bool]$SendScan, [bool]$IsDryRun)
-
-    $vk = [int]$Item.vk
-    $mods = @($Item.mods)
-    $builder = New-ChordBuilder
-
-    foreach ($mod in $mods) {
-        $modVk = $modifierVk[[string]$mod]
-        if ($null -eq $modVk) {
-            throw "未知修饰键：$mod"
-        }
-        Add-KeyDown -Builder $builder -Vk $modVk -SendScan $SendScan
-        [void]$script:modifiersHeld.Add([int]$modVk)
-    }
-
-    Add-KeyDown -Builder $builder -Vk $vk -SendScan $SendScan
-    Add-KeyUp -Builder $builder -Vk $vk -SendScan $SendScan
-
-    for ($i = $mods.Count - 1; $i -ge 0; $i--) {
-        $modVk = $modifierVk[[string]$mods[$i]]
-        Add-KeyUp -Builder $builder -Vk $modVk -SendScan $SendScan
-        [void]$script:modifiersHeld.Remove([int]$modVk)
-    }
-
-    if ($IsDryRun) { return [int]$builder.vks.Count }
-
-    $sent = [TyperNative]::SendChord($builder.vks.ToArray(), $builder.scans.ToArray(), $builder.flags.ToArray())
-    $expected = $builder.vks.Count
-    if ($sent -ne $expected) {
-        throw "SendInput 只注入了 $sent/$expected 个事件（可能被 UIPI 或安全软件拦截）"
-    }
-    return [int]$expected
-}
-
-function Invoke-UnicodeAction {
-    param($Item, [bool]$IsDryRun)
-
-    $codeUnit = [int]$Item.cu
-    if ($codeUnit -lt 0 -or $codeUnit -gt 0xFFFF) {
-        throw "非法的 UTF-16 码元：$codeUnit"
-    }
-
-    $builder = New-ChordBuilder
-    Add-UnicodeEvent -Builder $builder -CodeUnit $codeUnit -KeyUp $false
-    Add-UnicodeEvent -Builder $builder -CodeUnit $codeUnit -KeyUp $true
-
-    if ($IsDryRun) { return [int]$builder.vks.Count }
-
-    $sent = [TyperNative]::SendChord($builder.vks.ToArray(), $builder.scans.ToArray(), $builder.flags.ToArray())
-    $expected = $builder.vks.Count
-    if ($sent -ne $expected) {
-        throw "SendInput 只注入了 $sent/$expected 个事件（可能被 UIPI 或安全软件拦截）"
-    }
-    return [int]$expected
-}
-
 function Invoke-ReleaseAll {
     param([bool]$IsDryRun)
 
-    $released = 0
-    # 先释放本次会话记录按下的修饰键（异常中断时可能残留）
-    foreach ($vk in @($script:modifiersHeld)) {
-        if (-not $IsDryRun) {
-            $builder = New-ChordBuilder
-            Add-KeyUp -Builder $builder -Vk $vk -SendScan $false
-            [void][TyperNative]::SendChord($builder.vks.ToArray(), $builder.scans.ToArray(), $builder.flags.ToArray())
-        }
-        $released++
-    }
-    $script:modifiersHeld.Clear()
+    # 先释放本次会话记录按下的修饰键（异常中断时可能残留），再兜底释放所有修饰键（幂等、不产生字符）
+    $held = @([TyperNative]::HeldModifierVks())
+    [TyperNative]::ClearHeldModifiers()
+    $targets = @($held) + @(0x10, 0x11, 0x12, 0x5B, 0x5C, 0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5)
 
-    # 再兜底释放所有修饰键（幂等，不会产生字符）
-    foreach ($vk in @(0x10, 0x11, 0x12, 0x5B, 0x5C, 0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5)) {
-        if ($IsDryRun) { $released++; continue }
-        $builder = New-ChordBuilder
-        Add-KeyUp -Builder $builder -Vk $vk -SendScan $false
-        [void][TyperNative]::SendChord($builder.vks.ToArray(), $builder.scans.ToArray(), $builder.flags.ToArray())
-        $released++
+    $unique = New-Object System.Collections.Generic.List[int]
+    foreach ($vk in $targets) {
+        $value = [int]$vk
+        if (-not $unique.Contains($value)) { [void]$unique.Add($value) }
     }
 
-    return $released
+    return [TyperNative]::SendKeyUps($unique.ToArray(), $IsDryRun)
 }
+
 
 function Get-ProbeResult {
     $stuck = New-Object System.Collections.Generic.List[int]
@@ -419,9 +719,14 @@ if ($null -ne $compileError) {
 $osDescription = [System.Environment]::OSVersion.VersionString
 $psVersion = $PSVersionTable.PSVersion.ToString()
 
+# 读 stdin 交给后台线程：主线程在注入时也要能立刻收到 cancel
+[TyperHostPipe]::Start()
+
 while ($true) {
-    $line = [Console]::In.ReadLine()
-    if ($null -eq $line) { break }
+    $message = [TyperHostPipe]::Take()
+    if ($null -eq $message) { break }
+    $line = $message.Text
+    $epoch = $message.Epoch
     if ($line.Trim().Length -eq 0) { continue }
 
     $request = $null
@@ -447,42 +752,52 @@ while ($true) {
             }
 
             'type' {
-                $items = @($request.items)
+                # 扁平数组（协议 v2）：ops/vals/mods/delays 一一对应，chord 组装在 C# 里完成，
+                # 这样每字符不再产生多次 PowerShell 函数调用与数组拷贝
+                $ops = @($request.ops)
+                $vals = @($request.vals)
+                $mods = @($request.mods)
+                $delays = @($request.delays)
                 $sendScan = $true
                 if ($null -ne $request.sendScanCodes) { $sendScan = [bool]$request.sendScanCodes }
+                # 数据帧：每个动作单独一次 SendInput（一次投递多个字符时，目标端输入缓冲紧张会静默丢字符）
+                $perItem = $request.perItem -eq $true
 
-                # requested / injected 都以"底层输入事件数"为单位：
-                # 一个按键动作 = 按下 + 抬起 = 2 个事件（含修饰键时更多），
-                # 这样才能真正校验 SendInput 是否把每个事件都投递成功。
-                $expectedEvents = 0
-                $injected = 0
-                foreach ($item in $items) {
-                    $delay = 0
-                    if ($null -ne $item.delay) { $delay = [double]$item.delay }
-                    Wait-Milliseconds -Milliseconds $delay
-
-                    switch ([string]$item.t) {
-                        'key' {
-                            $expectedEvents += 2 + 2 * @($item.mods).Count
-                            $injected += Invoke-KeyAction -Item $item -SendScan $sendScan -IsDryRun ([bool]$DryRun)
-                        }
-                        'unicode' {
-                            $expectedEvents += 2
-                            $injected += Invoke-UnicodeAction -Item $item -IsDryRun ([bool]$DryRun)
-                        }
-                        'wait' {
-                            $ms = 0
-                            if ($null -ne $item.ms) { $ms = [double]$item.ms }
-                            Wait-Milliseconds -Milliseconds $ms
-                        }
-                        default { throw "未知动作类型：$($item.t)" }
-                    }
+                if ($ops.Count -ne $vals.Count -or $ops.Count -ne $mods.Count -or $ops.Count -ne $delays.Count) {
+                    throw "协议错误：ops/vals/mods/delays 长度不一致"
                 }
 
+                $count = $ops.Count
+                $opArray = New-Object int[] $count
+                $valArray = New-Object int[] $count
+                $modArray = New-Object int[] $count
+                $delayArray = New-Object double[] $count
+                for ($i = 0; $i -lt $count; $i++) {
+                    $opArray[$i] = [int]$ops[$i]
+                    $valArray[$i] = [int]$vals[$i]
+                    $modArray[$i] = [int]$mods[$i]
+                    $delayArray[$i] = [double]$delays[$i]
+                }
+
+                $result = [TyperNative]::SendBatch($opArray, $valArray, $modArray, $delayArray, $sendScan, $perItem, [bool]$DryRun, [int]$epoch)
+
+                # 顺带把"本批结束时谁在前台"带回去：焦点守护每批都要查一次，
+                # 单独发一条 foreground 指令会多一次进程往返（实测约 1ms/批）
+                $hwnd = [TyperNative]::ForegroundWindow()
                 Send-Ok -Id $id -Data @{
-                    requested = $expectedEvents
-                    injected  = $injected
-                    items     = $items.Count
+                    requested    = [int]$result[0]
+                    injected     = [int]$result[1]
+                    items        = $count
+                    blockedMs    = [int]$result[2]
+                    maxBlockedMs = [int]$result[3]
+                    valveMs      = [int]$result[4]
+                    blockedCalls = [int]$result[5]
+                    cancelled    = ([int]$result[6] -eq 1)
+                    foreground   = @{
+                        hwnd  = $hwnd
+                        pid   = [int][TyperNative]::WindowProcessId($hwnd)
+                        title = [TyperNative]::WindowTitle($hwnd)
+                    }
                 }
             }
 
