@@ -680,32 +680,43 @@ async function restoreDefaults(): Promise<void> {
         </template>
       </div>
 
-      <!-- 目录锚点：滚动时高亮当前所在分组，点击平滑跳转 -->
+      <!--
+        目录锚点：父级是分类标题，子级是各设置组（层级与页面标题一致）。
+        子链接必须放在 sub-link 插槽里——默认插槽是"替换标题文字"的，
+        放进去会变成 <a> 嵌套 <a>，点击还会冒泡回父级、跳到分类标题。
+      -->
       <ElAnchor
         class="settings-anchor"
         container="main.main"
-        :offset="120"
-        :bound="120"
+        :offset="16"
+        :bound="64"
+        select-scroll-top
         direction="vertical"
         type="default"
         @click="onAnchorClick"
       >
         <ElAnchorLink href="#cat-common" title="通用">
-          <ElAnchorLink href="#g-appearance" title="外观" />
-          <ElAnchorLink href="#g-start" title="启动与批次" />
-          <ElAnchorLink href="#g-focus" title="焦点与热键" />
-          <ElAnchorLink href="#g-privacy" title="隐私" />
-          <ElAnchorLink href="#g-update" title="更新" />
+          <template #sub-link>
+            <ElAnchorLink href="#g-appearance" title="外观" />
+            <ElAnchorLink href="#g-start" title="启动与批次" />
+            <ElAnchorLink href="#g-focus" title="焦点与热键" />
+            <ElAnchorLink href="#g-privacy" title="隐私" />
+            <ElAnchorLink href="#g-update" title="更新" />
+          </template>
         </ElAnchorLink>
         <ElAnchorLink href="#cat-text" title="文本输入">
-          <ElAnchorLink href="#g-pace" title="节奏与随机性" />
-          <ElAnchorLink href="#g-pause" title="停顿节奏" />
-          <ElAnchorLink href="#g-typo" title="错字与纠正" />
-          <ElAnchorLink href="#g-keyboard" title="键盘布局" />
-          <ElAnchorLink href="#g-import" title="文本导入" />
+          <template #sub-link>
+            <ElAnchorLink href="#g-pace" title="节奏与随机性" />
+            <ElAnchorLink href="#g-pause" title="停顿节奏" />
+            <ElAnchorLink href="#g-typo" title="错字与纠正" />
+            <ElAnchorLink href="#g-keyboard" title="键盘布局" />
+            <ElAnchorLink href="#g-import" title="文本导入" />
+          </template>
         </ElAnchorLink>
         <ElAnchorLink href="#cat-file" title="文件输入">
-          <ElAnchorLink href="#g-transfer" title="文件传输" />
+          <template #sub-link>
+            <ElAnchorLink href="#g-transfer" title="文件传输" />
+          </template>
         </ElAnchorLink>
       </ElAnchor>
     </div>
@@ -766,10 +777,93 @@ async function restoreDefaults(): Promise<void> {
   align-self: start;
   max-height: calc(100vh - var(--titlebar-h) - var(--statusbar-h) - 80px);
   overflow-y: auto;
-  padding: 2px 0 2px 10px;
+  padding: 2px 0;
 
+  /* 缩进自己按层级做：EP 的 padding-indent 只作用于整份清单，父子两级区分不出来 */
+  --el-anchor-padding-indent: 0px;
+  --el-anchor-bg-color: transparent;
+  --el-anchor-font-size: 12.5px;
+  --el-anchor-line-height: 20px;
+  --el-anchor-color: var(--text-3);
+  --el-anchor-active-color: var(--accent);
+  --el-anchor-marker-bg-color: var(--accent);
+  /* EP 的 hover 规则读的是全局 --el-hover-color，本项目没引它的全量变量，这里补上 */
+  --el-hover-color: var(--text-1);
+
+  /* 整条目录的轨道线，激活项的小竖条压在上面 */
+  &::before {
+    content: '';
+    position: absolute;
+    top: 4px;
+    bottom: 4px;
+    left: 0;
+    width: 1px;
+    background: var(--stroke-strong);
+  }
+
+  :deep(.el-anchor__list) {
+    padding-left: 0;
+  }
+
+  /* 目录项是点击目标而不是正文链接：去掉全局 a:hover 的下划线，改用底色反馈 */
   :deep(.el-anchor__link) {
-    font-size: 12.5px;
+    display: block;
+    padding: 4px 6px 4px 14px;
+    border-radius: var(--radius-sm);
+    text-decoration: none;
+    transition:
+      color var(--dur-fast) var(--ease-standard),
+      background-color var(--dur-fast) var(--ease-standard);
+
+    &:hover,
+    &:focus {
+      background: var(--ctrl-fill-hover);
+      text-decoration: none;
+    }
+  }
+
+  /* 一级：分类标题，字重和亮度都高于组名 */
+  :deep(> .el-anchor__list > .el-anchor__item > .el-anchor__link) {
+    font-weight: 600;
+    color: var(--text-2);
+
+    &:not(.is-active):hover,
+    &:not(.is-active):focus {
+      color: var(--text-1);
+    }
+
+    &.is-active {
+      color: var(--accent);
+    }
+  }
+
+  /* 二级：设置组名，缩进一格、常规字重（嵌套清单挂在 __item 下，不是 __list 下） */
+  :deep(
+    > .el-anchor__list > .el-anchor__item > .el-anchor__list > .el-anchor__item > .el-anchor__link
+  ) {
+    padding-left: 26px;
+    font-weight: 400;
+    color: var(--text-3);
+
+    &:not(.is-active):hover,
+    &:not(.is-active):focus {
+      color: var(--text-1);
+    }
+
+    &.is-active {
+      color: var(--accent);
+    }
+  }
+
+  /* 分类之间留白，让两级的归属关系看得出来 */
+  :deep(> .el-anchor__list > .el-anchor__item + .el-anchor__item) {
+    margin-top: 6px;
+  }
+
+  :deep(.el-anchor__marker) {
+    width: 3px;
+    height: 14px;
+    border-radius: 2px;
   }
 }
 
