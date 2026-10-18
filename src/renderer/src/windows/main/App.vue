@@ -27,6 +27,8 @@ onMounted(() => {
 
   <StatusBar />
   <CountdownOverlay />
+  <!-- 首次启动的新手引导：目标是输入页上的元素，默认路由就是输入页 -->
+  <FirstRunTour />
 </template>
 
 <style scoped lang="scss">
@@ -37,6 +39,7 @@ onMounted(() => {
 }
 
 .main {
+  position: relative;
   flex: 1;
   min-width: 0;
   overflow-y: auto;

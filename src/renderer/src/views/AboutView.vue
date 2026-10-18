@@ -71,6 +71,17 @@ onMounted(async () => {
   }
 })
 
+const router = useRouter()
+const onboarding = useOnboardingStore()
+
+/**
+ * @description 回到输入页并重播新手引导（引导目标都在输入页上）
+ */
+function replayTour(): void {
+  void router.push('/')
+  onboarding.restartTour()
+}
+
 /**
  * @description 用系统浏览器打开外部链接
  * @param url 目标地址
@@ -99,6 +110,20 @@ async function open(url: string): Promise<void> {
     </header>
 
     <UpdateCenter />
+
+    <section class="card">
+      <div class="card-head">
+        <h2 class="card-title"><span class="icon i-mdi-map-marker-path" /><span>快速入门</span></h2>
+      </div>
+      <div class="quickstart">
+        <p class="desc">
+          首次启动的漫游式引导可以随时重看：回到输入页，逐步认识内容区、目标窗口与开始流程。
+        </p>
+        <ElButton size="small" @click="replayTour()">
+          <span class="i-mdi-replay" /><span>重新查看新手引导</span>
+        </ElButton>
+      </div>
+    </section>
 
     <section class="card">
       <div class="card-head">
@@ -208,6 +233,23 @@ async function open(url: string): Promise<void> {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
   gap: 8px;
+}
+
+.quickstart {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  justify-content: space-between;
+  flex-wrap: wrap;
+
+  .desc {
+    margin: 0;
+    font-size: 12.5px;
+    line-height: 1.7;
+    color: var(--text-2);
+    flex: 1;
+    min-width: 220px;
+  }
 }
 
 .link {

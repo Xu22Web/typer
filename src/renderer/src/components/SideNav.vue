@@ -18,7 +18,12 @@ const { available } = useUpdate()
   <nav class="sidenav">
     <ul class="list">
       <li v-for="item in items" :key="item.to">
-        <RouterLink class="item" :to="item.to" :title="item.hint">
+        <RouterLink
+          :id="item.to === '/settings' ? 'tour-sidenav-settings' : undefined"
+          class="item"
+          :to="item.to"
+          :title="item.hint"
+        >
           <div class="nav-indicator" />
           <div class="icon" :class="item.icon" />
           <div class="label">{{ item.label }}</div>

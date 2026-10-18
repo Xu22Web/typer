@@ -73,7 +73,7 @@ async function insertToolScriptFromFile(): Promise<void> {
     <header class="page-header">
       <div class="header-row">
         <h1>输入</h1>
-        <div class="mode-switch" role="tablist" aria-label="输入模式">
+        <div id="tour-mode-switch" class="mode-switch" role="tablist" aria-label="输入模式">
           <button
             class="mode-option"
             type="button"
@@ -131,6 +131,7 @@ async function insertToolScriptFromFile(): Promise<void> {
             <h2 class="card-title"><span class="icon i-mdi-target" /><span>目标窗口</span></h2>
             <div class="spacer" />
             <button
+              id="tour-target-refresh-wide"
               class="icon-btn ghost"
               type="button"
               title="重新检测目标窗口"
@@ -199,7 +200,13 @@ async function insertToolScriptFromFile(): Promise<void> {
         <ElButton v-else :disabled="!typing.isRunning.value" @click="typing.pause()">
           <span class="i-mdi-pause" /><span>暂停</span>
         </ElButton>
-        <ElButton type="danger" plain :disabled="!typing.isRunning.value" @click="typing.stop()">
+        <ElButton
+          id="tour-stop"
+          type="danger"
+          plain
+          :disabled="!typing.isRunning.value"
+          @click="typing.stop()"
+        >
           <span class="i-mdi-stop" /><span>停止</span>
         </ElButton>
         <RouterLink class="link-btn" to="/logs">
@@ -208,7 +215,7 @@ async function insertToolScriptFromFile(): Promise<void> {
         </RouterLink>
       </div>
 
-      <div class="primary">
+      <div id="tour-start" class="primary">
         <ElButton
           type="primary"
           size="large"

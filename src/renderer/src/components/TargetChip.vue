@@ -15,6 +15,7 @@ const detected = computed(() => typing.targetWindow.value !== '未检测')
     <div class="i-mdi-target name-icon" />
     <div class="name ellipsis">{{ typing.targetWindow.value }}</div>
     <button
+      id="tour-target-refresh-chip"
       class="icon-btn ghost"
       type="button"
       title="重新检测目标窗口"

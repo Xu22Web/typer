@@ -480,6 +480,95 @@ a:hover {
 }
 
 /* ==========================================================================
+   新手引导（ElTour）：Win11 教学气泡——窄卡片、8px 圆角、紧凑排版
+   ========================================================================== */
+
+/*
+ * 引导文案都是一两句话，EP 默认 520px 的宽度会把文字拉得很长；
+ * 380px + 12.5px 正文接近 Win11 教学提示（Teaching Tip）的密度。
+ * 卡片与浮窗同款：卡片底色 + 1px 描边 + 柔和投影。
+ *
+ * EP 的 tour 样式由 unplugin-vue-components 解析 FirstRunTour.vue 模板里的
+ * ElTour/ElTourStep 时自动注入，注入时机可能晚于本文件，
+ * 因此统一加 `:root` 前缀压特异性（与 el-collapse 的做法一致）；
+ * 尺寸/字号走 EP 的 CSS 变量，结构细节用字面量覆盖。
+ */
+:root .el-tour__content {
+  --el-tour-width: 380px;
+  --el-tour-border-radius: var(--radius-md);
+  --el-tour-title-font-size: 14px;
+  --el-tour-title-font-weight: 600;
+  --el-tour-font-size: 12.5px;
+  --el-tour-close-color: var(--text-3);
+
+  padding: 14px 18px 12px;
+  background: var(--card-bg);
+  border: 1px solid var(--stroke);
+  box-shadow: var(--shadow-flyout);
+}
+
+:root .el-tour__header {
+  padding-bottom: 6px;
+}
+
+/* 关闭按钮收进右上角后，为标题让位的空间同步收紧 */
+:root .el-tour__header.show-close {
+  padding-right: 30px;
+}
+
+:root .el-tour__body {
+  color: var(--text-2);
+  line-height: 1.7;
+}
+
+:root .el-tour__footer {
+  padding-top: 10px;
+}
+
+/* 关闭按钮：紧凑圆形图标按钮（与标题栏按钮同款），悬停不用强调色 */
+:root .el-tour__closebtn {
+  width: 28px;
+  height: 28px;
+  top: 8px;
+  right: 8px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition:
+    background-color var(--dur-fast) var(--ease-standard),
+    color var(--dur-fast) var(--ease-standard);
+}
+
+:root .el-tour__closebtn:hover,
+:root .el-tour__closebtn:focus {
+  background: var(--ctrl-fill);
+}
+
+:root .el-tour__closebtn:hover .el-tour__close,
+:root .el-tour__closebtn:focus .el-tour__close {
+  color: var(--text-1);
+}
+
+/* 指示点：5px 更克制，未激活用控件填充色 */
+:root .el-tour__content .el-tour-indicator {
+  width: 5px;
+  height: 5px;
+  margin-right: 5px;
+  background: var(--ctrl-fill-hover);
+}
+
+:root .el-tour__content .el-tour-indicator.is-active {
+  background: var(--accent);
+}
+
+/* 步骤按钮：比 EP 的 small 略高一点，与全局按钮节奏一致（按钮容器是连字符类名） */
+:root .el-tour__content .el-tour-buttons .el-button {
+  height: 28px;
+  padding: 0 14px;
+}
+
+/* ==========================================================================
    主题切换的圆形扩散过渡
    ========================================================================== */
 

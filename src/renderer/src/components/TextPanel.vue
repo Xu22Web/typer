@@ -81,6 +81,7 @@ function clear(): void {
     </div>
 
     <ElInput
+      id="tour-text-input"
       v-model="typing.text.value"
       class="editor-input"
       type="textarea"
