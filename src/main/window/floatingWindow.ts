@@ -61,6 +61,8 @@ export interface FloatingWindowController {
   expand: () => void
   /** 收回成细条 */
   collapse: () => void
+  /** 页面收缩动画结束的回执：把窗口收回细条尺寸（主进程另有兜底超时） */
+  collapseDone: () => void
   /** 拖动位移（渲染进程上报增量，单位 DIP）；拖离边缘后即为自由浮动 */
   dragBy: (dx: number, dy: number) => void
   /** 拖动落定：靠近边缘则吸附成细条，否则保持自由浮动 */
@@ -77,9 +79,11 @@ export interface FloatingWindowController {
   dispose: () => void
 }
 
-/** 展开 / 收起 / 吸附动画时长（毫秒） */
-const EXPAND_MS = 200
-const COLLAPSE_MS = 170
+/** 展开 / 收起动画时长（毫秒），与浮窗页面 CSS 的 clip-path 过渡保持一致 */
+const REVEAL_MS = 200
+/** 收起兜底超时：页面动画结束回执没到（页面异常 / 减弱动效）时强制收回细条 */
+const COLLAPSE_FALLBACK_MS = REVEAL_MS + 420
+/** 吸附动画时长（毫秒） */
 const SNAP_MS = 160
 /** 补间帧间隔：约 60fps */
 const FRAME_MS = 16
@@ -205,25 +209,48 @@ export function createFloatingWindow(options: FloatingWindowOptions): FloatingWi
     step()
   }
 
-  /** @description 展开成卡片 */
+  /** @description 展开成卡片：窗口尺寸一步到位，揭示动画由页面在合成层完成 */
   const doExpand = (): void => {
     if (!window || window.isDestroyed() || state === 'expanded') return
     if (state === 'floating' || placement.mode !== 'docked') return
+    clearCollapseTimer()
     setState('expanded')
-    animateTo(cardBounds(workArea(), placement), EXPAND_MS)
+    // 逐帧 setBounds 透明窗口会触发同步 DWM 重组，观感卡顿；这里只切一次
+    animationToken += 1
+    window.setBounds(cardBounds(workArea(), placement))
   }
 
-  /** @description 收回到细条 */
+  /** 等待页面收缩动画回执的兜底计时器 */
+  let collapseTimer: ReturnType<typeof setTimeout> | null = null
+
+  /** @description 清掉收起兜底计时器 */
+  const clearCollapseTimer = (): void => {
+    if (!collapseTimer) return
+    clearTimeout(collapseTimer)
+    collapseTimer = null
+  }
+
+  /**
+   * @description 收起动画的终点：把窗口收回细条尺寸并恢复点击穿透。
+   * 由页面动画结束回执触发；计时器兜底也会走到这里，因此要做状态守卫
+   */
+  const finishCollapse = (): void => {
+    clearCollapseTimer()
+    if (!window || window.isDestroyed() || !visible) return
+    if (state !== 'docked' || placement.mode !== 'docked') return
+    animationToken += 1
+    window.setBounds(barBounds(workArea(), placement))
+    forceInteractive = false
+    applyClickThrough()
+  }
+
+  /** @description 收回到细条：先把形态切成 docked（页面随之播放收缩动画），动画结束后再收尺寸 */
   const doCollapse = (): void => {
     if (!window || window.isDestroyed() || state !== 'expanded') return
     if (placement.mode !== 'docked') return
     setState('docked')
-    animateTo(barBounds(workArea(), placement), COLLAPSE_MS)
-    setTimeout(() => {
-      if (state !== 'docked') return
-      forceInteractive = false
-      applyClickThrough()
-    }, COLLAPSE_MS + 20)
+    clearCollapseTimer()
+    collapseTimer = setTimeout(finishCollapse, COLLAPSE_FALLBACK_MS)
   }
 
   /** @description 进入自由浮动：先切成卡片尺寸，再按当前窗口位置记录坐标 */
@@ -359,6 +386,7 @@ export function createFloatingWindow(options: FloatingWindowOptions): FloatingWi
   return {
     show: () => {
       visible = true
+      clearCollapseTimer()
       try {
         if (!window || window.isDestroyed()) window = build()
         if (window.isMinimized()) window.restore()
@@ -390,6 +418,7 @@ export function createFloatingWindow(options: FloatingWindowOptions): FloatingWi
     },
     hide: () => {
       visible = false
+      clearCollapseTimer()
       animationToken += 1
       state = placement.mode === 'floating' ? 'floating' : 'docked'
       forceInteractive = false
@@ -403,6 +432,9 @@ export function createFloatingWindow(options: FloatingWindowOptions): FloatingWi
     },
     collapse: () => {
       doCollapse()
+    },
+    collapseDone: () => {
+      finishCollapse()
     },
     dragBy: (dx: number, dy: number) => {
       if (!window || window.isDestroyed()) return
@@ -494,6 +526,7 @@ export function createFloatingWindow(options: FloatingWindowOptions): FloatingWi
     dispose: () => {
       visible = false
       ready = false
+      clearCollapseTimer()
       animationToken += 1
       dragActive = false
       stopWatching()

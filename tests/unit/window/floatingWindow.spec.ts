@@ -185,9 +185,30 @@ describe('浮窗控制器 · 贴边细条与卡片', () => {
     await vi.advanceTimersByTimeAsync(400)
     expect(states.at(-1)?.state).toBe('docked')
 
-    await vi.advanceTimersByTimeAsync(400)
+    // 收起动画由页面播放，结束后回执；主进程收到回执才收回细条尺寸
+    controller.collapseDone()
     expect(fake.bounds).toEqual(barBounds(WORK_AREA, { edge: 'right', offset: 24 }))
     expect(fake.ignoreCalls.at(-1)).toEqual({ ignore: true, options: { forward: true } })
+    controller.dispose()
+  })
+
+  it('页面收起回执缺席时，兜底超时也会收回细条', async () => {
+    const { controller, states } = create()
+    controller.show()
+    const bar = barBounds(WORK_AREA, { edge: 'right', offset: 24 })
+
+    fake.cursor = { x: bar.x - 2, y: bar.y + 20 }
+    await vi.advanceTimersByTimeAsync(120)
+    fake.cursor = { x: 10, y: 10 }
+    await vi.advanceTimersByTimeAsync(400)
+    expect(states.at(-1)?.state).toBe('docked')
+    expect(fake.bounds).toEqual(
+      cardBounds(WORK_AREA, { mode: 'docked', edge: 'right', offset: 24 })
+    )
+
+    // 回执一直不来（页面异常 / 减弱动效丢事件）：兜底计时器到点后强制收回
+    await vi.advanceTimersByTimeAsync(700)
+    expect(fake.bounds).toEqual(barBounds(WORK_AREA, { edge: 'right', offset: 24 }))
     controller.dispose()
   })
 

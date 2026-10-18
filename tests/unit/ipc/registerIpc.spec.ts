@@ -53,6 +53,7 @@ interface FakeFloatControls {
   calls: string[]
   expand: () => void
   collapse: () => void
+  collapseDone: () => void
   dragBy: (dx: number, dy: number) => void
   drop: () => void
   dock: () => void
@@ -68,6 +69,7 @@ function createFakeFloatControls(): FakeFloatControls {
     calls: [],
     expand: () => controls.calls.push('expand'),
     collapse: () => controls.calls.push('collapse'),
+    collapseDone: () => controls.calls.push('collapseDone'),
     dragBy: (dx, dy) => controls.calls.push(`drag:${dx},${dy}`),
     drop: () => controls.calls.push('drop'),
     dock: () => controls.calls.push('dock'),

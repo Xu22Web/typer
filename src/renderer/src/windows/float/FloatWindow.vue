@@ -1,4 +1,5 @@
 <script setup lang="ts" vapor>
+import { BAR_THICKNESS } from '@main/window/floatDock'
 import { STATE_LABELS } from '@main/typing/engine/states'
 import { formatDuration } from '@shared/format/duration'
 
@@ -6,7 +7,8 @@ import { formatDuration } from '@shared/format/duration'
  * 进度浮窗：主窗口在开始输入时最小化，这里让进度始终可见。
  *
  * - 贴边时只有一条细进度条（横竖随贴的边），不含任何其它内容
- * - 鼠标靠近细条：主进程把窗口换成卡片，显示进度数据与暂停/停止
+ * - 鼠标靠近细条：主进程把窗口一步切成卡片尺寸，页面里从细条截面"长"出完整卡片
+ *   （尺寸动画在合成层完成，逐帧 setBounds 透明窗口会卡顿）
  * - 拖动卡片离开屏幕边缘：变成自由浮动窗口，停在哪里就在哪里；再拖到边缘才重新吸附
  */
 const typing = useTyping()
@@ -17,6 +19,45 @@ typing.initEvents()
 /** 主进程推来的浮窗形态与贴边方向 */
 const viewState = ref<'docked' | 'expanded' | 'floating'>('docked')
 const edge = ref<'left' | 'right' | 'top' | 'bottom'>('right')
+
+/** 页面揭示动画时长（毫秒），与 CSS 过渡一致；收起回执与主进程兜底超时都按它算 */
+const REVEAL_MS = 200
+
+/**
+ * 卡片是否裁剪成"细条截面"：展开动画的起点、收起动画的终点。
+ * 尺寸不变、只动 clip-path，动画全程留在合成层
+ */
+const clipped = ref(false)
+
+/** 是否禁用裁剪过渡：展开前要"无过渡"地瞬移到起点，避免先向反方向收一下 */
+const clipInstant = ref(false)
+
+/** 系统是否要求减弱动效（减弱时直接切换，不播动画） */
+const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches
+
+/**
+ * @description 形态切换时驱动揭示动画：展开从细条截面放开，收起裁回截面后回执主进程
+ * @param next 新形态
+ * @param prev 旧形态
+ */
+watch(viewState, (next, prev) => {
+  if (next === 'expanded') {
+    // 先无过渡地瞬移到细条截面，双 rAF 确保起点已提交，再放开过渡长成卡片
+    clipInstant.value = true
+    clipped.value = true
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        clipInstant.value = false
+        clipped.value = false
+      })
+    )
+  } else if (prev === 'expanded' && next === 'docked') {
+    // 裁回细条截面（与透明度淡出同时进行），动画结束后通知主进程收回窗口尺寸
+    clipped.value = true
+    const wait = reducedMotion ? 30 : REVEAL_MS + 40
+    setTimeout(() => void window.api.float.collapseDone(), wait)
+  }
+})
 
 /** 细条是竖的（贴左右边）还是横的（贴上下边） */
 const vertical = computed(() => edge.value === 'left' || edge.value === 'right')
@@ -157,7 +198,11 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="float-root" :class="[`edge-${edge}`, { vertical }]">
+  <div
+    class="float-root"
+    :class="[`edge-${edge}`, { vertical }]"
+    :style="{ '--bar-px': `${BAR_THICKNESS}px` }"
+  >
     <!-- 贴边：只有一条进度条 -->
     <div class="bar" :class="{ hidden: showCard }">
       <div
@@ -167,7 +212,10 @@ onMounted(async () => {
     </div>
 
     <!-- 展开 / 自由浮动：完整卡片 -->
-    <div class="card" :class="{ hidden: !showCard, free: floating }">
+    <div
+      class="card"
+      :class="{ hidden: !showCard, free: floating, clipped, 'clip-instant': clipInstant }"
+    >
       <header
         class="card-head"
         title="按住可拖动；拖到屏幕边缘会自动吸附"
@@ -243,18 +291,47 @@ onMounted(async () => {
   cursor: default;
 }
 
-/* 卡片与细条叠在同一个窗口里：切换形态时只改不透明度，
+/* 卡片与细条叠在同一个窗口里：切换形态时只改不透明度与裁剪，
    DOM 不卸载，拖动中的指针捕获才不会因为节点被移除而丢失。 */
 .card,
 .bar {
   position: absolute;
   inset: 0;
-  transition: opacity var(--dur-fast) var(--ease-standard);
+}
+
+.card {
+  clip-path: inset(0);
+  transition:
+    opacity var(--dur-fast) var(--ease-standard),
+    clip-path 200ms var(--ease-standard);
 }
 
 .hidden {
   opacity: 0;
   pointer-events: none;
+}
+
+/* 揭示动画的起点 / 终点：裁剪到贴边细条的截面，
+   卡片沿贴边方向"长出来 / 缩回去"（合成层动画，窗口尺寸不动） */
+.float-root.edge-right .card.clipped {
+  clip-path: inset(0 0 0 calc(100% - var(--bar-px)));
+}
+
+.float-root.edge-left .card.clipped {
+  clip-path: inset(0 calc(100% - var(--bar-px)) 0 0);
+}
+
+.float-root.edge-top .card.clipped {
+  clip-path: inset(0 0 calc(100% - var(--bar-px)) 0);
+}
+
+.float-root.edge-bottom .card.clipped {
+  clip-path: inset(calc(100% - var(--bar-px)) 0 0 0);
+}
+
+/* 展开前瞬移到起点用：跳过 clip-path 过渡 */
+.card.clip-instant {
+  transition: none;
 }
 
 /* ---------- 贴边细条 ---------- */
