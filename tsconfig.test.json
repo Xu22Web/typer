@@ -6,7 +6,8 @@
     "src/main/**/*",
     "src/shared/**/*",
     "src/preload/**/*",
-    "tests/**/*"
+    "tests/**/*",
+    "src/renderer/src/auto-imports.d.ts"
   ],
   "compilerOptions": {
     "composite": false,

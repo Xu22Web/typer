@@ -1,5 +1,3 @@
-import { computed, ref } from 'vue'
-import type { ComputedRef, Ref } from 'vue'
 import { toPlainPayload } from '@main/ipc/plainPayload'
 import type { Settings } from '@main/settings/types'
 

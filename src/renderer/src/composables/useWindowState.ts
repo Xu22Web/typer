@@ -1,6 +1,3 @@
-import { computed, ref } from 'vue'
-import type { ComputedRef, Ref } from 'vue'
-
 /**
  * 自绘标题栏的窗口状态（模块级单例）。
  * 最大化状态由主进程推送：双击标题栏、Win+↑、拖到屏幕上边缘都会改变它，

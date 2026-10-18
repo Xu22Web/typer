@@ -1,5 +1,3 @@
-import { computed, ref } from 'vue'
-import type { ComputedRef, Ref } from 'vue'
 import type { UpdateCheckResult, UpdateProgress, UpdateState } from '@main/update/types'
 
 /**

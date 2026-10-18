@@ -1,5 +1,3 @@
-import { ref } from 'vue'
-import type { Ref } from 'vue'
 import { formatBytes } from '@shared/transfer/transfer'
 
 /**

@@ -1,5 +1,3 @@
-import { computed, ref } from 'vue'
-import type { ComputedRef, Ref } from 'vue'
 import type { TransferToolScriptPayload } from '@main/ipc/contracts'
 import type {
   ResumeMatch,

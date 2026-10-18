@@ -45,12 +45,11 @@ export default defineConfig({
       }
     },
     plugins: [
-      vue({
-        features: {
-          // Vue 3.6+ Vapor Mode
-          vapor: true
-        }
-      }),
+      // Vue 3.6+ Vapor Mode：文件级 opt-in——每个 SFC 的 <script setup> 必须显式写 vapor
+      // 属性（约定由 tests/unit/renderer/vaporConvention.spec.ts 守护）。
+      // 不开 features.vapor 强制开关：个别需要按 vdom 编译的例外组件（如 ElTour 的
+      // FirstRunTour，见其文件头注释）只要不写属性即可，不必扭曲写法
+      vue(),
       // Vue DevTools（仅 dev）；launchEditor 支持编辑器跳转
       vueDevtools({
         launchEditor: 'code'
@@ -59,7 +58,8 @@ export default defineConfig({
       // 组件与组合式函数都不需要手写 import：dev / build 时会动态生成 dts
       AutoImport({
         imports: ['vue', 'pinia', 'vue-router'],
-        dirs: [resolve('src/renderer/src/composables')],
+        // 组合式函数与 Pinia setup store 都是 use* 形态，一并自动注册
+        dirs: [resolve('src/renderer/src/composables'), resolve('src/renderer/src/store')],
         resolvers: [ElementPlusResolver()],
         dts: resolve('src/renderer/src/auto-imports.d.ts'),
         eslintrc: {
