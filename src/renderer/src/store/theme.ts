@@ -1,14 +1,13 @@
-import { ref } from 'vue'
-import { defineStore } from 'pinia'
-
-/** 主题状态：只保存"是否深色"，持久化到 localStorage，刷新后保持 */
+/** 主题状态：是否深色与是否跟随系统，持久化到 localStorage，刷新后保持 */
 export const useThemeStore = defineStore(
   'theme',
   () => {
-    /** 是否使用深色主题（默认深色，与 Windows 应用观感一致） */
+    /** 是否使用深色主题（跟随系统开启时由系统偏好决定） */
     const dark = ref(true)
+    /** 是否跟随系统的亮暗偏好；任何手动切换都会把它关掉 */
+    const followSystem = ref(true)
 
-    return { dark }
+    return { dark, followSystem }
   },
   { persist: true }
 )
