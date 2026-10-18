@@ -28,6 +28,17 @@ const restoring = ref(false)
 const limits = TRANSFER_LIMITS
 const typing = useTyping()
 
+/** 主题设置即时生效，不进设置草稿 */
+const { isDark, followSystem, setDark, setFollowSystem } = useTheme()
+
+/**
+ * @description 阻止锚点链接的默认 hash 跳转：路由是 hash 模式，交给浏览器会把路由切走
+ * @param event 锚点链接的点击事件
+ */
+function onAnchorClick(event: MouseEvent): void {
+  event.preventDefault()
+}
+
 /** 当前档位的能力表：字符/秒与每批动作数的可选区间随档位变化 */
 const profileLimits = computed(() => {
   const profile = draft.value?.injection.profile ?? 'normal'
@@ -198,7 +209,8 @@ async function restoreDefaults(): Promise<void> {
     <header class="page-header">
       <h1>设置</h1>
       <p class="page-desc">
-        调整输入节奏、随机性与焦点行为。设置保存在
+        按「通用 / 文本输入 / 文件输入」分组：通用对所有输入方式生效，后两组只描述各自输入方式的
+        设置。设置保存在
         <code>%APPDATA%\Typer\settings.json</code>，写入是原子的，损坏时会自动回退默认值。
       </p>
     </header>
@@ -212,410 +224,491 @@ async function restoreDefaults(): Promise<void> {
       :description="error"
     />
 
-    <template v-if="draft">
-      <section class="card group">
-        <h2 class="group-title">
-          <span class="icon i-mdi-play-circle-outline" /><span>启动与模式</span>
-        </h2>
+    <div class="settings-layout">
+      <div class="settings-main">
+        <h2 id="cat-common" class="category">通用</h2>
 
-        <div class="row">
-          <div class="label">
-            <div>倒计时</div>
-            <small>点击开始后等待多久才真正输入，留出切换窗口的时间</small>
+        <section id="g-appearance" class="card group">
+          <h2 class="group-title"><span class="icon i-mdi-theme-light-dark" /><span>外观</span></h2>
+
+          <div class="row">
+            <div class="label">
+              <div>跟随系统</div>
+              <small>开启后随 Windows 的亮暗设置自动切换</small>
+            </div>
+            <ElSwitch :model-value="followSystem" @change="setFollowSystem($event as boolean)" />
           </div>
-          <ElInputNumber v-model="draft.startDelayMs" :min="0" :max="60000" :step="500" />
-          <div class="unit">毫秒</div>
-        </div>
 
-        <div class="row">
-          <div class="label">
-            <div>注入档位</div>
-            <small>
-              标准：逐字下发，节奏与停止最灵敏；极速：攒批下发并放开每字符 1ms 下限，
-              实际速度由目标窗口的消化能力决定
-            </small>
-          </div>
-          <ElSegmented
-            :model-value="draft.injection.profile"
-            :options="[
-              { label: '标准', value: 'normal' },
-              { label: '极速', value: 'turbo' }
-            ]"
-            @change="applyProfile($event as 'normal' | 'turbo')"
-          />
-        </div>
-
-        <div class="row">
-          <div class="label">
-            <div>每批动作数</div>
-            <small>值越大下发开销越小；停止始终按动作取消，只有暂停会在批与批之间生效</small>
-          </div>
-          <ElInputNumber
-            v-model="draft.chunkSize"
-            :min="profileLimits.chunkSize[0]"
-            :max="profileLimits.chunkSize[1]"
-          />
-          <div class="unit">个</div>
-        </div>
-
-        <div class="row">
-          <div class="label">
-            <div>随机种子</div>
-            <small>0 表示每次运行都不同；填固定值可复现同一套节奏</small>
-          </div>
-          <ElInputNumber v-model="draft.seed" :min="0" :max="4294967295" />
-        </div>
-      </section>
-
-      <section class="card group">
-        <h2 class="group-title">
-          <span class="icon i-mdi-speedometer" /><span>速度与随机性</span>
-        </h2>
-        <p class="group-desc">
-          只作用于<strong>文本输入</strong>；文件传输是数据传输，为可复现与速度使用固定节奏
-          （只有「文件传输」里的片间断顿生效）。
-        </p>
-
-        <div class="row">
-          <div class="label">
-            <div>速度模式</div>
-            <small>按字符、按词、直接指定每两个动作之间的间隔，或在极速档下不限速</small>
-          </div>
-          <ElSegmented v-model="draft.timing.speedMode" :options="speedModeOptions" />
-        </div>
-
-        <div v-if="draft.timing.speedMode === 'cps'" class="row">
-          <div class="label"><div>字符/秒</div></div>
-          <ElSlider
-            v-model="draft.timing.cps"
-            :min="profileLimits.cps[0]"
-            :max="profileLimits.cps[1]"
-            :step="0.5"
-            class="control"
-          />
-          <div class="value mono">{{ draft.timing.cps }}</div>
-        </div>
-
-        <div v-if="draft.timing.speedMode === 'wpm'" class="row">
-          <div class="label"><div>词/分钟</div></div>
-          <ElSlider v-model="draft.timing.wpm" :min="10" :max="1000" :step="10" class="control" />
-          <div class="value mono">{{ draft.timing.wpm }}</div>
-        </div>
-
-        <div v-if="draft.timing.speedMode === 'interval'" class="row">
-          <div class="label"><div>固定间隔</div></div>
-          <ElInputNumber v-model="draft.timing.baseIntervalMs" :min="1" :max="2000" />
-          <div class="unit">毫秒</div>
-        </div>
-
-        <div class="row">
-          <div class="label">
-            <div>抖动幅度</div>
-            <small>在基础间隔上附加的随机浮动，让节奏不像机器</small>
-          </div>
-          <ElSlider v-model="draft.timing.jitterMs" :min="0" :max="500" class="control" />
-          <div class="value mono">±{{ draft.timing.jitterMs }}ms</div>
-        </div>
-
-        <div class="row">
-          <div class="label"><div>抖动分布</div></div>
-          <ElSegmented
-            v-model="draft.timing.distribution"
-            :options="[
-              { label: '正态（更自然）', value: 'gaussian' },
-              { label: '均匀', value: 'uniform' }
-            ]"
-          />
-        </div>
-      </section>
-
-      <section class="card group">
-        <h2 class="group-title"><span class="icon i-mdi-timer-sand" /><span>停顿节奏</span></h2>
-        <p class="group-desc">
-          让输入在标点、换行处自然停顿，避免"一口气打完"的机械感；文件模式下不生效。
-        </p>
-
-        <div class="row">
-          <div class="label"><div>标点后</div></div>
-          <ElInputNumber v-model="draft.timing.punctuationPauseMs" :min="0" :max="2000" />
-          <div class="unit">毫秒</div>
-        </div>
-        <div class="row">
-          <div class="label"><div>空格后</div></div>
-          <ElInputNumber v-model="draft.timing.wordPauseMs" :min="0" :max="1000" />
-          <div class="unit">毫秒</div>
-        </div>
-        <div class="row">
-          <div class="label"><div>换行后</div></div>
-          <ElInputNumber v-model="draft.timing.newlinePauseMs" :min="0" :max="5000" />
-          <div class="unit">毫秒</div>
-        </div>
-        <div class="row">
-          <div class="label"><div>空行后</div></div>
-          <ElInputNumber v-model="draft.timing.paragraphPauseMs" :min="0" :max="5000" />
-          <div class="unit">毫秒</div>
-        </div>
-        <div class="row">
-          <div class="label">
-            <div>周期性休息</div>
-            <small>每输入 N 个字符停顿一次；0 表示关闭</small>
-          </div>
-          <ElInputNumber v-model="draft.timing.burstSize" :min="0" :max="1000" />
-          <div class="unit">字符后休息</div>
-          <ElInputNumber v-model="draft.timing.burstPauseMs" :min="0" :max="10000" :step="100" />
-          <div class="unit">毫秒</div>
-        </div>
-      </section>
-
-      <section class="card group">
-        <h2 class="group-title">
-          <span class="icon i-mdi-backspace-outline" /><span>错字与纠正</span>
-        </h2>
-        <p class="group-desc">
-          按概率打错再退格纠正，让输入过程更像真人；设为 0 即完全无误。文件模式下始终不打错字
-          （错字会破坏帧数据，只能靠重传补救）。
-        </p>
-
-        <div class="row">
-          <div class="label"><div>错字概率</div></div>
-          <ElSlider v-model="draft.typo.rate" :min="0" :max="0.2" :step="0.005" class="control" />
-          <div class="value mono">{{ (draft.typo.rate * 100).toFixed(1) }}%</div>
-        </div>
-        <div class="row">
-          <div class="label"><div>错字方式</div></div>
-          <ElSelect v-model="draft.typo.style" class="control">
-            <ElOption label="相邻键位" value="adjacent" />
-            <ElOption label="形近字" value="lookalike" />
-            <ElOption label="相邻字符颠倒" value="transpose" />
-          </ElSelect>
-        </div>
-        <div class="row">
-          <div class="label">
-            <div>自动纠正</div>
-            <small>开启后会补上退格与正确字符</small>
-          </div>
-          <ElSwitch v-model="draft.typo.correction" active-value="auto" inactive-value="none" />
-        </div>
-      </section>
-
-      <section class="card group">
-        <h2 class="group-title">
-          <span class="icon i-mdi-keyboard-settings-outline" /><span>键盘布局</span>
-        </h2>
-        <p class="group-desc">
-          真实按键由<strong>目标窗口的布局</strong>解释。不确定目标布局时，直接开"全部用 Unicode
-          注入"最稳。
-        </p>
-
-        <div class="row">
-          <div class="label"><div>目标窗口布局</div></div>
-          <ElSelect v-model="draft.keyboard.layout" class="control">
-            <ElOption label="English (US)" value="us" />
-            <ElOption label="English (UK)" value="uk" />
-            <ElOption label="Deutsch" value="de" />
-            <ElOption label="Français" value="fr" />
-            <ElOption label="Español" value="es" />
-          </ElSelect>
-        </div>
-        <div class="row">
-          <div class="label">
-            <div>全部用 Unicode 注入</div>
-            <small>与布局、输入法无关（输入法在中文态时会吞掉真实按键）</small>
-          </div>
-          <ElSwitch v-model="draft.keyboard.forceUnicodeForAll" />
-        </div>
-      </section>
-
-      <section class="card group">
-        <h2 class="group-title">
-          <span class="icon i-mdi-target-account" /><span>焦点与热键</span>
-        </h2>
-        <p class="group-desc">
-          输入过程中若前台窗口变了，可能把字打到别的程序上；焦点守护用来兜底。
-        </p>
-
-        <div class="row">
-          <div class="label"><div>焦点守护</div></div>
-          <ElSegmented
-            v-model="draft.focusGuard"
-            :options="[
-              { label: '关闭', value: 'off' },
-              { label: '仅提示', value: 'warn' },
-              { label: '严格（变化即中止）', value: 'strict' }
-            ]"
-          />
-        </div>
-        <div class="row">
-          <div class="label">
-            <div>紧急停止热键</div>
-            <small>全局热键，焦点在别的窗口时也能中断</small>
-          </div>
-          <ElInput v-model="draft.hotkeys.stop" class="control" />
-        </div>
-        <div class="row">
-          <div class="label"><div>暂停/继续热键</div></div>
-          <ElInput v-model="draft.hotkeys.togglePause" class="control" />
-        </div>
-        <div class="row">
-          <div class="label">
-            <div>完成后检测粘键</div>
-            <small>输入结束自检是否残留按下状态的修饰键</small>
-          </div>
-          <ElSwitch v-model="draft.verifyStuckKeys" />
-        </div>
-      </section>
-
-      <section class="card group">
-        <h2 class="group-title">
-          <span class="icon i-mdi-shield-lock-outline" /><span>隐私与导入</span>
-        </h2>
-
-        <div class="row">
-          <div class="label">
-            <div>保存输入内容到磁盘</div>
-            <small>默认关闭：内容只在内存里处理</small>
-          </div>
-          <ElSwitch v-model="draft.privacy.persistContent" />
-        </div>
-        <div class="row">
-          <div class="label"><div>保存设置到磁盘</div></div>
-          <ElSwitch v-model="draft.privacy.persistSettings" />
-        </div>
-        <div class="row">
-          <div class="label">
-            <div>导入文件编码</div>
-            <small>「导入文本」读取文件时使用的编码</small>
-          </div>
-          <ElSelect v-model="draft.files.importCharset" class="control">
-            <ElOption label="自动识别" value="auto" />
-            <ElOption label="UTF-8" value="utf8" />
-            <ElOption label="UTF-16 LE" value="utf16le" />
-            <ElOption label="GBK / GB18030" value="gbk" />
-          </ElSelect>
-        </div>
-      </section>
-
-      <section class="card group">
-        <h2 class="group-title">
-          <span class="icon i-mdi-file-arrow-up-down-outline" /><span>文件传输</span>
-        </h2>
-        <p class="group-desc">
-          把文件切成"每片一行"的帧逐片输入。接收端逐片校验、支持断点续传，合并后再校验整文件哈希；
-          编码与片大小决定"能不能顺利穿过目标终端"。"导出脚本"取走接收端脚本，或在文本页用它把脚本
-          直接"打"到目标机。
-        </p>
-
-        <div class="row">
-          <div class="label">
-            <div>默认编码</div>
-            <small>{{ encodingHint }}</small>
-          </div>
-          <ElSelect v-model="draft.transfer.encoding" class="control">
-            <ElOption
-              v-for="option in TRANSFER_ENCODING_OPTIONS"
-              :key="option.value"
-              :label="option.label"
-              :value="option.value"
+          <div class="row">
+            <div class="label">
+              <div>主题色</div>
+              <small>亮色或暗色；手动选择后自动停止跟随系统</small>
+            </div>
+            <ElSegmented
+              :model-value="isDark ? 'dark' : 'light'"
+              :options="[
+                { label: '亮色', value: 'light' },
+                { label: '暗色', value: 'dark' }
+              ]"
+              @change="void setDark(($event as string) === 'dark')"
             />
-          </ElSelect>
-        </div>
-
-        <div class="row">
-          <div class="label">
-            <div>传输节奏</div>
-            <small>
-              帧内每个字符都单独投递并留 1ms 间隔（这是数据不丢字符的下限）；极速档额外去掉片间断顿
-            </small>
           </div>
-          <ElSegmented
-            v-model="draft.transfer.paceMode"
-            :options="[
-              { label: '稳健', value: 'safe' },
-              { label: '极速', value: 'fast' }
-            ]"
-          />
-        </div>
+        </section>
 
-        <div class="row">
-          <div class="label">
-            <div>片大小</div>
-            <small>每片原始字节数；压缩编码下实际帧长通常只有原始字节数的四成左右</small>
-          </div>
-          <ElSelect
-            :model-value="presetId"
-            class="control"
-            @change="applyChunkPreset($event as string)"
-          >
-            <ElOption
-              v-for="preset in CHUNK_PRESETS"
-              :key="preset.id"
-              :label="`${preset.label} · ${formatBytes(preset.chunkBytes)}`"
-              :value="preset.id"
-            />
-          </ElSelect>
-        </div>
+        <template v-if="draft">
+          <section id="g-start" class="card group">
+            <h2 class="group-title">
+              <span class="icon i-mdi-play-circle-outline" /><span>启动与批次</span>
+            </h2>
 
-        <div class="row">
-          <div class="label">
-            <div>单帧字符上限</div>
-            <small>超出会拒绝开始：终端与剪贴板都会截断过长的行</small>
-          </div>
-          <ElInputNumber
-            v-model="draft.transfer.maxFrameChars"
-            class="control"
-            :min="limits.maxFrameChars[0]"
-            :max="limits.maxFrameChars[1]"
-            :step="1024"
-          />
-        </div>
+            <div class="row">
+              <div class="label">
+                <div>倒计时</div>
+                <small>点击开始后等待多久才真正输入，留出切换窗口的时间</small>
+              </div>
+              <ElInputNumber v-model="draft.startDelayMs" :min="0" :max="60000" :step="500" />
+              <div class="unit">毫秒</div>
+            </div>
 
-        <div class="row">
-          <div class="label">
-            <div>片间断顿</div>
-            <small>给接收端落盘与回显留时间；极速节奏档下固定为 0，这里只对稳健档生效</small>
-          </div>
-          <ElInputNumber
-            v-model="draft.transfer.interFrameDelayMs"
-            class="control"
-            :min="limits.interFrameDelayMs[0]"
-            :max="limits.interFrameDelayMs[1]"
-            :step="50"
-          />
-        </div>
+            <div class="row">
+              <div class="label">
+                <div>注入档位</div>
+                <small>
+                  标准：逐字下发，节奏与停止最灵敏；极速：攒批下发并放开每字符 1ms 下限，
+                  实际速度由目标窗口的消化能力决定
+                </small>
+              </div>
+              <ElSegmented
+                :model-value="draft.injection.profile"
+                :options="[
+                  { label: '标准', value: 'normal' },
+                  { label: '极速', value: 'turbo' }
+                ]"
+                @change="applyProfile($event as 'normal' | 'turbo')"
+              />
+            </div>
 
-        <div class="row">
-          <div class="label">
-            <div>接收脚本</div>
-            <small>零依赖（Node ≥ 16）；导出后双击同目录 run.bat 即可运行</small>
-          </div>
-          <div class="tools-actions">
-            <ElButton size="small" @click="exportTools">
-              <span class="i-mdi-export-variant" /><span>导出脚本</span>
-            </ElButton>
-            <ElButton size="small" text @click="revealTools">
-              <span class="i-mdi-folder-open-outline" /><span>打开目录</span>
-            </ElButton>
-          </div>
-        </div>
-      </section>
+            <div class="row">
+              <div class="label">
+                <div>每批动作数</div>
+                <small>值越大下发开销越小；停止始终按动作取消，只有暂停会在批与批之间生效</small>
+              </div>
+              <ElInputNumber
+                v-model="draft.chunkSize"
+                :min="profileLimits.chunkSize[0]"
+                :max="profileLimits.chunkSize[1]"
+              />
+              <div class="unit">个</div>
+            </div>
+          </section>
 
-      <section class="card group">
-        <h2 class="group-title">
-          <span class="icon i-mdi-cloud-download-outline" /><span>更新</span>
-        </h2>
+          <section id="g-focus" class="card group">
+            <h2 class="group-title">
+              <span class="icon i-mdi-target-account" /><span>焦点与热键</span>
+            </h2>
+            <p class="group-desc">
+              输入过程中若前台窗口变了，可能把字打到别的程序上；焦点守护用来兜底。
+            </p>
 
-        <div class="row">
-          <div class="label">
-            <div>启动时检查更新</div>
-            <small>只访问 GitHub 公开接口读取最新发布，不会上传任何本地信息</small>
-          </div>
-          <ElSwitch v-model="draft.update.checkOnStartup" />
-        </div>
-        <p class="group-desc">
-          也可以随时在 <RouterLink to="/about">关于</RouterLink> 页手动检查并安装新版本。
-        </p>
-      </section>
-    </template>
+            <div class="row">
+              <div class="label"><div>焦点守护</div></div>
+              <ElSegmented
+                v-model="draft.focusGuard"
+                :options="[
+                  { label: '关闭', value: 'off' },
+                  { label: '仅提示', value: 'warn' },
+                  { label: '严格（变化即中止）', value: 'strict' }
+                ]"
+              />
+            </div>
+            <div class="row">
+              <div class="label">
+                <div>紧急停止热键</div>
+                <small>全局热键，焦点在别的窗口时也能中断</small>
+              </div>
+              <ElInput v-model="draft.hotkeys.stop" class="control" />
+            </div>
+            <div class="row">
+              <div class="label"><div>暂停/继续热键</div></div>
+              <ElInput v-model="draft.hotkeys.togglePause" class="control" />
+            </div>
+            <div class="row">
+              <div class="label">
+                <div>完成后检测粘键</div>
+                <small>输入结束自检是否残留按下状态的修饰键</small>
+              </div>
+              <ElSwitch v-model="draft.verifyStuckKeys" />
+            </div>
+          </section>
+
+          <section id="g-privacy" class="card group">
+            <h2 class="group-title">
+              <span class="icon i-mdi-shield-lock-outline" /><span>隐私</span>
+            </h2>
+
+            <div class="row">
+              <div class="label">
+                <div>保存输入内容到磁盘</div>
+                <small>默认关闭：内容只在内存里处理</small>
+              </div>
+              <ElSwitch v-model="draft.privacy.persistContent" />
+            </div>
+            <div class="row">
+              <div class="label"><div>保存设置到磁盘</div></div>
+              <ElSwitch v-model="draft.privacy.persistSettings" />
+            </div>
+          </section>
+
+          <section id="g-update" class="card group">
+            <h2 class="group-title">
+              <span class="icon i-mdi-cloud-download-outline" /><span>更新</span>
+            </h2>
+
+            <div class="row">
+              <div class="label">
+                <div>启动时检查更新</div>
+                <small>只访问 GitHub 公开接口读取最新发布，不会上传任何本地信息</small>
+              </div>
+              <ElSwitch v-model="draft.update.checkOnStartup" />
+            </div>
+            <p class="group-desc">
+              也可以随时在 <RouterLink to="/about">关于</RouterLink> 页手动检查并安装新版本。
+            </p>
+          </section>
+
+          <h2 id="cat-text" class="category">文本输入</h2>
+
+          <section id="g-pace" class="card group">
+            <h2 class="group-title">
+              <span class="icon i-mdi-speedometer" /><span>节奏与随机性</span>
+            </h2>
+            <p class="group-desc">控制逐字输入的节奏与自然感，让输出不像机器。</p>
+
+            <div class="row">
+              <div class="label">
+                <div>随机种子</div>
+                <small>0 表示每次运行都不同；填固定值可复现同一套节奏</small>
+              </div>
+              <ElInputNumber v-model="draft.seed" :min="0" :max="4294967295" />
+            </div>
+
+            <div class="row">
+              <div class="label">
+                <div>速度模式</div>
+                <small>按字符、按词、直接指定每两个动作之间的间隔，或在极速档下不限速</small>
+              </div>
+              <ElSegmented v-model="draft.timing.speedMode" :options="speedModeOptions" />
+            </div>
+
+            <div v-if="draft.timing.speedMode === 'cps'" class="row">
+              <div class="label"><div>字符/秒</div></div>
+              <ElSlider
+                v-model="draft.timing.cps"
+                :min="profileLimits.cps[0]"
+                :max="profileLimits.cps[1]"
+                :step="0.5"
+                class="control"
+              />
+              <div class="value mono">{{ draft.timing.cps }}</div>
+            </div>
+
+            <div v-if="draft.timing.speedMode === 'wpm'" class="row">
+              <div class="label"><div>词/分钟</div></div>
+              <ElSlider
+                v-model="draft.timing.wpm"
+                :min="10"
+                :max="1000"
+                :step="10"
+                class="control"
+              />
+              <div class="value mono">{{ draft.timing.wpm }}</div>
+            </div>
+
+            <div v-if="draft.timing.speedMode === 'interval'" class="row">
+              <div class="label"><div>固定间隔</div></div>
+              <ElInputNumber v-model="draft.timing.baseIntervalMs" :min="1" :max="2000" />
+              <div class="unit">毫秒</div>
+            </div>
+
+            <div class="row">
+              <div class="label">
+                <div>抖动幅度</div>
+                <small>在基础间隔上附加的随机浮动，让节奏不像机器</small>
+              </div>
+              <ElSlider v-model="draft.timing.jitterMs" :min="0" :max="500" class="control" />
+              <div class="value mono">±{{ draft.timing.jitterMs }}ms</div>
+            </div>
+
+            <div class="row">
+              <div class="label"><div>抖动分布</div></div>
+              <ElSegmented
+                v-model="draft.timing.distribution"
+                :options="[
+                  { label: '正态（更自然）', value: 'gaussian' },
+                  { label: '均匀', value: 'uniform' }
+                ]"
+              />
+            </div>
+          </section>
+
+          <section id="g-pause" class="card group">
+            <h2 class="group-title"><span class="icon i-mdi-timer-sand" /><span>停顿节奏</span></h2>
+            <p class="group-desc">让输入在标点、换行处自然停顿，避免"一口气打完"的机械感。</p>
+
+            <div class="row">
+              <div class="label"><div>标点后</div></div>
+              <ElInputNumber v-model="draft.timing.punctuationPauseMs" :min="0" :max="2000" />
+              <div class="unit">毫秒</div>
+            </div>
+            <div class="row">
+              <div class="label"><div>空格后</div></div>
+              <ElInputNumber v-model="draft.timing.wordPauseMs" :min="0" :max="1000" />
+              <div class="unit">毫秒</div>
+            </div>
+            <div class="row">
+              <div class="label"><div>换行后</div></div>
+              <ElInputNumber v-model="draft.timing.newlinePauseMs" :min="0" :max="5000" />
+              <div class="unit">毫秒</div>
+            </div>
+            <div class="row">
+              <div class="label"><div>空行后</div></div>
+              <ElInputNumber v-model="draft.timing.paragraphPauseMs" :min="0" :max="5000" />
+              <div class="unit">毫秒</div>
+            </div>
+            <div class="row">
+              <div class="label">
+                <div>周期性休息</div>
+                <small>每输入 N 个字符停顿一次；0 表示关闭</small>
+              </div>
+              <ElInputNumber v-model="draft.timing.burstSize" :min="0" :max="1000" />
+              <div class="unit">字符后休息</div>
+              <ElInputNumber
+                v-model="draft.timing.burstPauseMs"
+                :min="0"
+                :max="10000"
+                :step="100"
+              />
+              <div class="unit">毫秒</div>
+            </div>
+          </section>
+
+          <section id="g-typo" class="card group">
+            <h2 class="group-title">
+              <span class="icon i-mdi-backspace-outline" /><span>错字与纠正</span>
+            </h2>
+            <p class="group-desc">按概率打错再退格纠正，让输入过程更像真人；设为 0 即完全无误。</p>
+
+            <div class="row">
+              <div class="label"><div>错字概率</div></div>
+              <ElSlider
+                v-model="draft.typo.rate"
+                :min="0"
+                :max="0.2"
+                :step="0.005"
+                class="control"
+              />
+              <div class="value mono">{{ (draft.typo.rate * 100).toFixed(1) }}%</div>
+            </div>
+            <div class="row">
+              <div class="label"><div>错字方式</div></div>
+              <ElSelect v-model="draft.typo.style" class="control">
+                <ElOption label="相邻键位" value="adjacent" />
+                <ElOption label="形近字" value="lookalike" />
+                <ElOption label="相邻字符颠倒" value="transpose" />
+              </ElSelect>
+            </div>
+            <div class="row">
+              <div class="label">
+                <div>自动纠正</div>
+                <small>开启后会补上退格与正确字符</small>
+              </div>
+              <ElSwitch v-model="draft.typo.correction" active-value="auto" inactive-value="none" />
+            </div>
+          </section>
+
+          <section id="g-keyboard" class="card group">
+            <h2 class="group-title">
+              <span class="icon i-mdi-keyboard-settings-outline" /><span>键盘布局</span>
+            </h2>
+            <p class="group-desc">
+              真实按键由<strong>目标窗口的布局</strong>解释。不确定目标布局时，直接开"全部用 Unicode
+              注入"最稳。
+            </p>
+
+            <div class="row">
+              <div class="label"><div>目标窗口布局</div></div>
+              <ElSelect v-model="draft.keyboard.layout" class="control">
+                <ElOption label="English (US)" value="us" />
+                <ElOption label="English (UK)" value="uk" />
+                <ElOption label="Deutsch" value="de" />
+                <ElOption label="Français" value="fr" />
+                <ElOption label="Español" value="es" />
+              </ElSelect>
+            </div>
+            <div class="row">
+              <div class="label">
+                <div>全部用 Unicode 注入</div>
+                <small>与布局、输入法无关（输入法在中文态时会吞掉真实按键）</small>
+              </div>
+              <ElSwitch v-model="draft.keyboard.forceUnicodeForAll" />
+            </div>
+          </section>
+
+          <section id="g-import" class="card group">
+            <h2 class="group-title">
+              <span class="icon i-mdi-file-import-outline" /><span>文本导入</span>
+            </h2>
+            <p class="group-desc">「导入文本」把磁盘上的文件装进输入框时使用的编码。</p>
+
+            <div class="row">
+              <div class="label"><div>导入文件编码</div></div>
+              <ElSelect v-model="draft.files.importCharset" class="control">
+                <ElOption label="自动识别" value="auto" />
+                <ElOption label="UTF-8" value="utf8" />
+                <ElOption label="UTF-16 LE" value="utf16le" />
+                <ElOption label="GBK / GB18030" value="gbk" />
+              </ElSelect>
+            </div>
+          </section>
+
+          <h2 id="cat-file" class="category">文件输入</h2>
+
+          <section id="g-transfer" class="card group">
+            <h2 class="group-title">
+              <span class="icon i-mdi-file-arrow-up-down-outline" /><span>文件传输</span>
+            </h2>
+            <p class="group-desc">
+              把文件切成"每片一行"的帧逐片输入。接收端逐片校验、支持断点续传，合并后再校验整文件哈希；
+              编码与片大小决定"能不能顺利穿过目标终端"。"导出脚本"取走接收端脚本（双击 run.bat
+              即可运行）。
+            </p>
+
+            <div class="row">
+              <div class="label">
+                <div>默认编码</div>
+                <small>{{ encodingHint }}</small>
+              </div>
+              <ElSelect v-model="draft.transfer.encoding" class="control">
+                <ElOption
+                  v-for="option in TRANSFER_ENCODING_OPTIONS"
+                  :key="option.value"
+                  :label="option.label"
+                  :value="option.value"
+                />
+              </ElSelect>
+            </div>
+
+            <div class="row">
+              <div class="label">
+                <div>传输节奏</div>
+                <small>
+                  稳健：帧内逐字符并留 1ms
+                  间隔（数据不丢字符的下限）；极速：去掉片间断顿，节奏交给压力阀
+                </small>
+              </div>
+              <ElSegmented
+                v-model="draft.transfer.paceMode"
+                :options="[
+                  { label: '稳健', value: 'safe' },
+                  { label: '极速', value: 'fast' }
+                ]"
+              />
+            </div>
+
+            <div class="row">
+              <div class="label">
+                <div>片大小</div>
+                <small>每片原始字节数；压缩编码下实际帧长通常只有原始字节数的四成左右</small>
+              </div>
+              <ElSelect
+                :model-value="presetId"
+                class="control"
+                @change="applyChunkPreset($event as string)"
+              >
+                <ElOption
+                  v-for="preset in CHUNK_PRESETS"
+                  :key="preset.id"
+                  :label="`${preset.label} · ${formatBytes(preset.chunkBytes)}`"
+                  :value="preset.id"
+                />
+              </ElSelect>
+            </div>
+
+            <div class="row">
+              <div class="label">
+                <div>单帧字符上限</div>
+                <small>超出会拒绝开始：终端与剪贴板都会截断过长的行</small>
+              </div>
+              <ElInputNumber
+                v-model="draft.transfer.maxFrameChars"
+                class="control"
+                :min="limits.maxFrameChars[0]"
+                :max="limits.maxFrameChars[1]"
+                :step="1024"
+              />
+            </div>
+
+            <div class="row">
+              <div class="label">
+                <div>片间断顿</div>
+                <small>给接收端落盘与回显留时间；极速节奏档下固定为 0，这里只对稳健档生效</small>
+              </div>
+              <ElInputNumber
+                v-model="draft.transfer.interFrameDelayMs"
+                class="control"
+                :min="limits.interFrameDelayMs[0]"
+                :max="limits.interFrameDelayMs[1]"
+                :step="50"
+              />
+            </div>
+
+            <div class="row">
+              <div class="label">
+                <div>接收脚本</div>
+                <small>零依赖（Node ≥ 16）；导出后双击同目录 run.bat 即可运行</small>
+              </div>
+              <div class="tools-actions">
+                <ElButton size="small" @click="exportTools">
+                  <span class="i-mdi-export-variant" /><span>导出脚本</span>
+                </ElButton>
+                <ElButton size="small" text @click="revealTools">
+                  <span class="i-mdi-folder-open-outline" /><span>打开目录</span>
+                </ElButton>
+              </div>
+            </div>
+          </section>
+        </template>
+      </div>
+
+      <!-- 目录锚点：滚动时高亮当前所在分组，点击平滑跳转 -->
+      <ElAnchor
+        class="settings-anchor"
+        container="main.main"
+        :offset="120"
+        :bound="120"
+        direction="vertical"
+        type="default"
+        @click="onAnchorClick"
+      >
+        <ElAnchorLink href="#cat-common" title="通用">
+          <ElAnchorLink href="#g-appearance" title="外观" />
+          <ElAnchorLink href="#g-start" title="启动与批次" />
+          <ElAnchorLink href="#g-focus" title="焦点与热键" />
+          <ElAnchorLink href="#g-privacy" title="隐私" />
+          <ElAnchorLink href="#g-update" title="更新" />
+        </ElAnchorLink>
+        <ElAnchorLink href="#cat-text" title="文本输入">
+          <ElAnchorLink href="#g-pace" title="节奏与随机性" />
+          <ElAnchorLink href="#g-pause" title="停顿节奏" />
+          <ElAnchorLink href="#g-typo" title="错字与纠正" />
+          <ElAnchorLink href="#g-keyboard" title="键盘布局" />
+          <ElAnchorLink href="#g-import" title="文本导入" />
+        </ElAnchorLink>
+        <ElAnchorLink href="#cat-file" title="文件输入">
+          <ElAnchorLink href="#g-transfer" title="文件传输" />
+        </ElAnchorLink>
+      </ElAnchor>
+    </div>
 
     <!-- 保存条：粘在底部，改动状态一目了然 -->
     <div class="savebar">
@@ -645,6 +738,49 @@ async function restoreDefaults(): Promise<void> {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+/* 分类标题：同一输入方式的设置卡片归在同一个分类下 */
+.category {
+  margin: 20px 0 6px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-2);
+
+  &:first-of-type {
+    margin-top: 4px;
+  }
+}
+
+/* 两栏：设置主体 + 右侧锚点目录；窄窗口收起目录 */
+.settings-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 148px;
+  gap: 24px;
+}
+
+/* 目录锚点：吸顶跟随滚动，链接高亮即当前所在分组 */
+.settings-anchor {
+  position: sticky;
+  top: 12px;
+  align-self: start;
+  max-height: calc(100vh - var(--titlebar-h) - var(--statusbar-h) - 80px);
+  overflow-y: auto;
+  padding: 2px 0 2px 10px;
+
+  :deep(.el-anchor__link) {
+    font-size: 12.5px;
+  }
+}
+
+@media (max-width: 1020px) {
+  .settings-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .settings-anchor {
+    display: none;
+  }
 }
 
 .group {
@@ -707,7 +843,6 @@ async function restoreDefaults(): Promise<void> {
 
   small {
     font-size: 12px;
-    line-height: 1.6;
     color: var(--text-3);
   }
 }
