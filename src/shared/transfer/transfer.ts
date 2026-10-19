@@ -121,7 +121,7 @@ export const CHUNK_PRESETS: readonly ChunkPreset[] = [
     label: '大片',
     chunkBytes: 65536,
     maxFrameChars: 262144,
-    description: '链路可靠时用于大文件（单帧约 35 K 字符，失败要重打这么多）'
+    description: '链路可靠时用于大文件（单帧约 105 K 字符，失败要重打这么多）'
   }
 ]
 

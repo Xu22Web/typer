@@ -30,7 +30,7 @@ export const IPC = {
   windowIsMaximized: 'window:is-maximized',
   /** 把最小化的主窗口召回并聚焦（进度浮窗点击时用） */
   windowFocusMain: 'window:focus-main',
-  /** 进度浮窗：拖动 / 落定吸附 / 展开 / 收起 / 收起动画完成回执 / 请求接收鼠标 */
+  /** 进度浮窗：拖动 / 落定吸附 / 展开 / 收起 / 请求接收鼠标 */
   floatDrag: 'float:drag',
   floatDrop: 'float:drop',
   floatDock: 'float:dock',
