@@ -270,15 +270,25 @@ const previewRows = computed(() => summary.value?.preview ?? [])
             </div>
           </dl>
           <div class="budget-row">
-            <span
-              v-for="budget in budgets"
-              :key="budget.minutes"
-              class="chip"
-              :class="budget.ok ? 'ok' : 'warn'"
-            >
-              {{ budget.label }} {{ budget.ok ? '可达' : `超 ${budget.ratio.toFixed(1)} 倍` }}
-            </span>
-            <span class="hint muted" :title="summary.compressionNote">
+            <span class="budget-caption">耗时预算</span>
+            <div class="budget-list">
+              <span
+                v-for="budget in budgets"
+                :key="budget.minutes"
+                class="chip budget-chip"
+                :class="budget.ok ? 'accent' : 'warn'"
+                :title="
+                  budget.ok
+                    ? `预计可以在 ${budget.label}内打完`
+                    : `预计超出 ${budget.label}预算 ${budget.ratio.toFixed(1)} 倍`
+                "
+              >
+                <span class="dot" :class="budget.ok ? 'ok' : 'warn'" />
+                <span class="budget-name">{{ budget.label }}</span>
+                <strong>{{ budget.ok ? '可达' : `超 ${budget.ratio.toFixed(1)} 倍` }}</strong>
+              </span>
+            </div>
+            <span class="budget-note" :title="`${summary.kind} · ${summary.compressionNote}`">
               {{ summary.kind }} · {{ summary.compressionNote }}
             </span>
           </div>
@@ -292,10 +302,10 @@ const previewRows = computed(() => summary.value?.preview ?? [])
           <div class="i-mdi-alert-outline text-icon" />
           <div class="notice-text">
             <template v-if="tone === 'danger'">
-              预计需要 {{ formatDuration(estimatedMs) }}。提速手段按效果排序：换 15
-              位符号表（默认）、 开启压缩、换更大的片（减少帧头）、把节奏换成「极速」。 已经是 15 位
-              + 压缩仍然很慢，说明文件本身几乎不可压缩——这类文件靠键入达不到 1 小时，
-              只能拆分发送或改用其它通道。
+              预计需要 {{ formatDuration(estimatedMs) }}。提速手段按效果排序：先确认字符档（5 位档零
+              Shift，6 位档字符更少但需要
+              Shift）、开启压缩、换更大的片（减少帧头）、把节奏换成「极速」。
+              文件本身几乎不可压缩时，键入方式达不到 1 小时，只能拆分发送或改用其它通道。
             </template>
             <template v-else>
               预计需要 {{ formatDuration(estimatedMs) }}，请确认目标窗口在倒计时结束前处于就绪状态。
@@ -669,6 +679,60 @@ const previewRows = computed(() => summary.value?.preview ?? [])
     color: var(--text-3);
     font-variant-numeric: tabular-nums;
   }
+}
+
+/*
+ * 预算行：左侧小标题 + 状态徽章 + 右侧压缩摘要。
+ * 窄窗口先压缩摘要（省略号 + title 兜底），再整体换行，避免把面板撑出横向滚动条。
+ */
+.budget-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  min-width: 0;
+}
+
+.budget-caption {
+  flex: none;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-3);
+  letter-spacing: 0.02em;
+}
+
+.budget-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+/* 徽章比普通 chip 更紧凑：状态点负责颜色，文字保持 11px */
+.budget-chip {
+  gap: 6px;
+  min-height: 24px;
+  padding: 0 9px;
+  font-size: 11px;
+
+  .budget-name {
+    color: inherit;
+    opacity: 0.86;
+  }
+
+  strong {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+.budget-note {
+  min-width: 0;
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .tone-ok {
