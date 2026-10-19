@@ -106,8 +106,6 @@ export interface UpdateControls {
 export interface FloatControls {
   expand: () => void
   collapse: () => void
-  /** 页面收缩动画结束的回执：主进程据此收回细条尺寸 */
-  collapseDone: () => void
   dragBy: (dx: number, dy: number) => void
   drop: () => void
   /** 无条件吸附到最近的边（卡片上的"贴边"按钮） */
@@ -346,10 +344,6 @@ export function registerIpcHandlers(options: RegisterIpcOptions): string[] {
 
     register(IPC.floatCollapse, () => {
       floatControls.collapse()
-    })
-
-    register(IPC.floatCollapseDone, () => {
-      floatControls.collapseDone()
     })
 
     register(IPC.floatDrag, (_event, payload) => {

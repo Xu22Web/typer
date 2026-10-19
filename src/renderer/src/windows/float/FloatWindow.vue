@@ -1,15 +1,14 @@
 <script setup lang="ts" vapor>
-import { BAR_THICKNESS } from '@main/window/floatDock'
+import { BAR_THICKNESS, CARD_GAP, cardRect, pillRect } from '@main/window/floatDock'
 import { STATE_LABELS } from '@main/typing/engine/states'
 import { formatDuration } from '@shared/format/duration'
 
 /**
  * 进度浮窗：主窗口在开始输入时最小化，这里让进度始终可见。
  *
- * - 贴边时只有一条细进度条（横竖随贴的边），不含任何其它内容
- * - 鼠标靠近细条：主进程把窗口一步切成卡片尺寸，页面里从细条截面"长"出完整卡片
- *   （尺寸动画在合成层完成，逐帧 setBounds 透明窗口会卡顿）
- * - 拖动卡片离开屏幕边缘：变成自由浮动窗口，停在哪里就在哪里；再拖到边缘才重新吸附
+ * - 贴边时只显示一条固定 8×132 的细进度条；窗口本身**始终是卡片尺寸**，运行期永不 resize
+ * - 鼠标靠近：细条淡出缩小，卡片从屏幕边缘滑进来（纯 transform，合成层动画）
+ * - 拖动卡片离开屏幕边缘：变成自由浮动窗口；拖回边缘再吸附成细条
  */
 const typing = useTyping()
 
@@ -20,50 +19,40 @@ typing.initEvents()
 const viewState = ref<'docked' | 'expanded' | 'floating'>('docked')
 const edge = ref<'left' | 'right' | 'top' | 'bottom'>('right')
 
-/** 页面揭示动画时长（毫秒），与 CSS 过渡一致；收起回执与主进程兜底超时都按它算 */
-const REVEAL_MS = 200
+/** 细条是否已隐去（展开或自由浮动时） */
+const pillHidden = computed(() => viewState.value !== 'docked')
+
+/** 卡片是否已滑出窗口（只有贴边收起时才滑出） */
+const cardHidden = computed(() => viewState.value === 'docked')
 
 /**
- * 卡片是否裁剪成"细条截面"：展开动画的起点、收起动画的终点。
- * 尺寸不变、只动 clip-path，动画全程留在合成层
+ * @description 把矩形转成内联样式，保证页面与主进程的 hover 命中用同一套几何
+ * @param rect 窗口内矩形
+ * @returns 内联样式对象
  */
-const clipped = ref(false)
-
-/** 是否禁用裁剪过渡：展开前要"无过渡"地瞬移到起点，避免先向反方向收一下 */
-const clipInstant = ref(false)
-
-/** 系统是否要求减弱动效（减弱时直接切换，不播动画） */
-const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches
-
-/**
- * @description 形态切换时驱动揭示动画：展开从细条截面放开，收起裁回截面后回执主进程
- * @param next 新形态
- * @param prev 旧形态
- */
-watch(viewState, (next, prev) => {
-  if (next === 'expanded') {
-    // 先无过渡地瞬移到细条截面，双 rAF 确保起点已提交，再放开过渡长成卡片
-    clipInstant.value = true
-    clipped.value = true
-    requestAnimationFrame(() =>
-      requestAnimationFrame(() => {
-        clipInstant.value = false
-        clipped.value = false
-      })
-    )
-  } else if (prev === 'expanded' && next === 'docked') {
-    // 裁回细条截面（与透明度淡出同时进行），动画结束后通知主进程收回窗口尺寸
-    clipped.value = true
-    const wait = reducedMotion ? 30 : REVEAL_MS + 40
-    setTimeout(() => void window.api.float.collapseDone(), wait)
+function toStyle(rect: {
+  x: number
+  y: number
+  width: number
+  height: number
+}): Record<string, string> {
+  return {
+    left: `${rect.x}px`,
+    top: `${rect.y}px`,
+    width: `${rect.width}px`,
+    height: `${rect.height}px`
   }
-})
+}
+
+/** 细条与卡片都是固定像素尺寸：窗口尺寸变化再也不会把它们拉伸成"巨宽" */
+const pillStyle = computed(() => toStyle(pillRect(edge.value)))
+const cardStyle = computed(() => toStyle(cardRect(edge.value)))
+
+/** 卡片滑出时需要多走的一段（卡片与屏幕边缘之间的间距 + 细条厚度） */
+const rootStyle = computed(() => ({ '--edge-travel': `${CARD_GAP + BAR_THICKNESS}px` }))
 
 /** 细条是竖的（贴左右边）还是横的（贴上下边） */
 const vertical = computed(() => edge.value === 'left' || edge.value === 'right')
-
-/** 是否显示卡片（展开或自由浮动） */
-const showCard = computed(() => viewState.value !== 'docked')
 
 /** 是否自由浮动（只有这时才给"贴边"按钮） */
 const floating = computed(() => viewState.value === 'floating')
@@ -198,24 +187,17 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div
-    class="float-root"
-    :class="[`edge-${edge}`, { vertical }]"
-    :style="{ '--bar-px': `${BAR_THICKNESS}px` }"
-  >
-    <!-- 贴边：只有一条进度条 -->
-    <div class="bar" :class="{ hidden: showCard }">
+  <div class="float-root" :class="[`edge-${edge}`, { vertical }]" :style="rootStyle">
+    <!-- 贴边：一条固定尺寸的进度条 -->
+    <div class="pill" :class="{ out: pillHidden }" :style="pillStyle">
       <div
-        class="bar-fill"
+        class="pill-fill"
         :style="{ [vertical ? 'height' : 'width']: fillSize, background: tone }"
       />
     </div>
 
-    <!-- 展开 / 自由浮动：完整卡片 -->
-    <div
-      class="card"
-      :class="{ hidden: !showCard, free: floating, clipped, 'clip-instant': clipInstant }"
-    >
+    <!-- 展开 / 自由浮动：完整卡片，从贴边方向滑入 -->
+    <div class="card" :class="{ out: cardHidden, free: floating }" :style="cardStyle">
       <header
         class="card-head"
         title="按住可拖动；拖到屏幕边缘会自动吸附"
@@ -291,54 +273,19 @@ onMounted(async () => {
   cursor: default;
 }
 
-/* 卡片与细条叠在同一个窗口里：切换形态时只改不透明度与裁剪，
-   DOM 不卸载，拖动中的指针捕获才不会因为节点被移除而丢失。 */
+/* 卡片与细条各占自己的固定像素区域，叠在同一个恒定尺寸的窗口里：
+   形态切换只改 transform / opacity，不会有布局重排或窗口 resize。
+   DOM 不卸载，拖动中的指针捕获也不会因为节点被移除而丢失。 */
 .card,
-.bar {
+.pill {
   position: absolute;
-  inset: 0;
-}
-
-.card {
-  clip-path: inset(0);
-  transition:
-    opacity var(--dur-fast) var(--ease-standard),
-    clip-path 200ms var(--ease-standard);
-}
-
-.hidden {
-  opacity: 0;
-  pointer-events: none;
-}
-
-/* 揭示动画的起点 / 终点：裁剪到贴边细条的截面，
-   卡片沿贴边方向"长出来 / 缩回去"（合成层动画，窗口尺寸不动） */
-.float-root.edge-right .card.clipped {
-  clip-path: inset(0 0 0 calc(100% - var(--bar-px)));
-}
-
-.float-root.edge-left .card.clipped {
-  clip-path: inset(0 calc(100% - var(--bar-px)) 0 0);
-}
-
-.float-root.edge-top .card.clipped {
-  clip-path: inset(0 0 calc(100% - var(--bar-px)) 0);
-}
-
-.float-root.edge-bottom .card.clipped {
-  clip-path: inset(calc(100% - var(--bar-px)) 0 0 0);
-}
-
-/* 展开前瞬移到起点用：跳过 clip-path 过渡 */
-.card.clip-instant {
-  transition: none;
+  box-sizing: border-box;
 }
 
 /* ---------- 贴边细条 ---------- */
 
-.bar {
+.pill {
   display: flex;
-  box-sizing: border-box;
   /* 进度和轨道之间留出内边距，否则填充贴着边缘，看不出是"条"还是"块" */
   padding: 2px;
   border-radius: 999px;
@@ -347,30 +294,43 @@ onMounted(async () => {
     0 0 0 1px var(--stroke),
     var(--shadow-flyout);
   overflow: hidden;
+  transform-origin: center;
+  /* 展开时细条立刻淡出；收起时（移除 .out）延迟淡入，等卡片先滑走 */
+  transition:
+    opacity 90ms linear,
+    transform 120ms var(--ease-standard);
+  transition-delay: 120ms;
+}
+
+.pill.out {
+  opacity: 0;
+  transform: scale(0.55);
+  pointer-events: none;
+  transition-delay: 0ms;
 }
 
 /* 贴左右边：竖条，进度自下而上生长，贴合"沿边"的观感 */
-.float-root.vertical .bar {
+.float-root.vertical .pill {
   flex-direction: column;
   justify-content: flex-end;
 }
 
 /* 贴上下边：横条，进度自左向右生长 */
-.float-root:not(.vertical) .bar {
+.float-root:not(.vertical) .pill {
   flex-direction: row;
   justify-content: flex-start;
 }
 
-/* 横截面始终占满轨道内侧，只让长度随进度变化 */
-.float-root.vertical .bar-fill {
+/* 横截面始终是细条自身的厚度，只让长度随进度变化 */
+.float-root.vertical .pill-fill {
   width: 100%;
 }
 
-.float-root:not(.vertical) .bar-fill {
+.float-root:not(.vertical) .pill-fill {
   height: 100%;
 }
 
-.bar-fill {
+.pill-fill {
   flex: none;
   border-radius: 999px;
   transition:
@@ -383,9 +343,6 @@ onMounted(async () => {
 
 .card {
   display: flex;
-  box-sizing: border-box;
-  width: 100%;
-  height: 100%;
   flex-direction: column;
   gap: 8px;
   padding: 10px 12px 12px;
@@ -394,6 +351,32 @@ onMounted(async () => {
   background: var(--card-bg);
   box-shadow: var(--shadow-flyout);
   cursor: default;
+  /* 从贴边方向滑进 / 滑出：窗口尺寸不变，动画只在合成层 */
+  transition:
+    transform 200ms var(--ease-standard),
+    opacity 160ms linear;
+}
+
+.card.out {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* 滑出量 = 自身尺寸 + 细条与边之间的间距，正好完全移出窗口 */
+.float-root.edge-right .card.out {
+  transform: translateX(calc(100% + var(--edge-travel)));
+}
+
+.float-root.edge-left .card.out {
+  transform: translateX(calc(-100% - var(--edge-travel)));
+}
+
+.float-root.edge-top .card.out {
+  transform: translateY(calc(-100% - var(--edge-travel)));
+}
+
+.float-root.edge-bottom .card.out {
+  transform: translateY(calc(100% + var(--edge-travel)));
 }
 
 .card-head {
@@ -546,8 +529,8 @@ onMounted(async () => {
 
 @media (prefers-reduced-motion: reduce) {
   .card,
-  .bar,
-  .bar-fill,
+  .pill,
+  .pill-fill,
   .fill,
   .ghost-act,
   .act {

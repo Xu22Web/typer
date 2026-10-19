@@ -102,7 +102,7 @@ vi.mock('electron', () => ({
 }))
 
 const { createFloatingWindow } = await import('@main/window/floatingWindow')
-const { DEFAULT_PLACEMENT, barBounds, cardBounds, CARD_WIDTH, CARD_HEIGHT } =
+const { DEFAULT_PLACEMENT, FLOAT_WINDOW_HEIGHT, FLOAT_WINDOW_WIDTH, pillBounds, windowBounds } =
   await import('@main/window/floatDock')
 
 type FloatController = Awaited<ReturnType<typeof createFloatingWindow>>
@@ -145,7 +145,10 @@ describe('浮窗控制器 · 贴边细条与卡片', () => {
     const { controller, states } = create()
     controller.show()
 
-    expect(fake.bounds).toEqual(barBounds(WORK_AREA, { edge: 'right', offset: 24 }))
+    // 窗口从创建起就是卡片尺寸（含阴影余量与贴边留白），贴边时不再缩小
+    expect(fake.bounds).toEqual(windowBounds(WORK_AREA, DEFAULT_PLACEMENT))
+    expect(fake.bounds.width).toBe(FLOAT_WINDOW_WIDTH)
+    expect(fake.bounds.height).toBe(FLOAT_WINDOW_HEIGHT)
     expect(states.at(-1)).toEqual({ state: 'docked', edge: 'right' })
     expect(fake.ignoreCalls.at(-1)).toEqual({ ignore: true, options: { forward: true } })
 
@@ -169,55 +172,32 @@ describe('浮窗控制器 · 贴边细条与卡片', () => {
   it('指针靠近细条展开成卡片，离开后收回细条', async () => {
     const { controller, states } = create()
     controller.show()
-    const bar = barBounds(WORK_AREA, { edge: 'right', offset: 24 })
+    const dock = { mode: 'docked' as const, edge: 'right' as const, offset: 24 }
+    const pill = pillBounds(WORK_AREA, dock)
+    const initial = { ...fake.bounds }
 
-    fake.cursor = { x: bar.x - 2, y: bar.y + 20 }
+    fake.cursor = { x: pill.x - 2, y: pill.y + 20 }
     await vi.advanceTimersByTimeAsync(120)
     expect(states.at(-1)?.state).toBe('expanded')
     expect(fake.ignoreCalls.at(-1)?.ignore).toBe(false)
-
-    await vi.advanceTimersByTimeAsync(300)
-    expect(fake.bounds).toEqual(
-      cardBounds(WORK_AREA, { mode: 'docked', edge: 'right', offset: 24 })
-    )
+    // 展开不改变窗口尺寸：动画完全在页面合成层完成
+    expect(fake.bounds).toEqual(initial)
 
     fake.cursor = { x: 10, y: 10 }
     await vi.advanceTimersByTimeAsync(400)
     expect(states.at(-1)?.state).toBe('docked')
-
-    // 收起动画由页面播放，结束后回执；主进程收到回执才收回细条尺寸
-    controller.collapseDone()
-    expect(fake.bounds).toEqual(barBounds(WORK_AREA, { edge: 'right', offset: 24 }))
+    // 收起同样不碰窗口几何
+    expect(fake.bounds).toEqual(initial)
     expect(fake.ignoreCalls.at(-1)).toEqual({ ignore: true, options: { forward: true } })
-    controller.dispose()
-  })
-
-  it('页面收起回执缺席时，兜底超时也会收回细条', async () => {
-    const { controller, states } = create()
-    controller.show()
-    const bar = barBounds(WORK_AREA, { edge: 'right', offset: 24 })
-
-    fake.cursor = { x: bar.x - 2, y: bar.y + 20 }
-    await vi.advanceTimersByTimeAsync(120)
-    fake.cursor = { x: 10, y: 10 }
-    await vi.advanceTimersByTimeAsync(400)
-    expect(states.at(-1)?.state).toBe('docked')
-    expect(fake.bounds).toEqual(
-      cardBounds(WORK_AREA, { mode: 'docked', edge: 'right', offset: 24 })
-    )
-
-    // 回执一直不来（页面异常 / 减弱动效丢事件）：兜底计时器到点后强制收回
-    await vi.advanceTimersByTimeAsync(700)
-    expect(fake.bounds).toEqual(barBounds(WORK_AREA, { edge: 'right', offset: 24 }))
     controller.dispose()
   })
 
   it('指针停在细条上时不会误判为"离开卡片"', async () => {
     const { controller, states } = create()
     controller.show()
-    const bar = barBounds(WORK_AREA, { edge: 'right', offset: 24 })
+    const pill = pillBounds(WORK_AREA, { edge: 'right', offset: 24 })
 
-    fake.cursor = { x: bar.x - 2, y: bar.y + 20 }
+    fake.cursor = { x: pill.x - 2, y: pill.y + 20 }
     await vi.advanceTimersByTimeAsync(600)
     expect(states.at(-1)?.state).toBe('expanded')
     controller.dispose()
@@ -226,10 +206,10 @@ describe('浮窗控制器 · 贴边细条与卡片', () => {
   it('拖动离开边缘后自由浮动：不吸附，并记住坐标', async () => {
     const { controller, states, placements } = create()
     controller.show()
-    const bar = barBounds(WORK_AREA, { edge: 'right', offset: 24 })
+    const pill = pillBounds(WORK_AREA, { edge: 'right', offset: 24 })
 
     // 先把卡片展开（拖动只发生在卡片上）
-    fake.cursor = { x: bar.x - 2, y: bar.y + 20 }
+    fake.cursor = { x: pill.x - 2, y: pill.y + 20 }
     await vi.advanceTimersByTimeAsync(400)
     expect(states.at(-1)?.state).toBe('expanded')
 
@@ -241,8 +221,9 @@ describe('浮窗控制器 · 贴边细条与卡片', () => {
     expect(states.at(-1)?.state).toBe('floating')
     expect(fake.bounds).toEqual(moved)
     expect(placements.at(-1)).toEqual({ mode: 'floating', x: moved.x, y: moved.y })
-    expect(moved.width).toBe(CARD_WIDTH)
-    expect(moved.height).toBe(CARD_HEIGHT)
+    // 自由浮动也是同一个窗口尺寸，拖动过程中没有 resize
+    expect(moved.width).toBe(FLOAT_WINDOW_WIDTH)
+    expect(moved.height).toBe(FLOAT_WINDOW_HEIGHT)
     controller.dispose()
   })
 
@@ -257,9 +238,9 @@ describe('浮窗控制器 · 贴边细条与卡片', () => {
     expect(states.at(-1)?.state).toBe('docked')
     expect(placements.at(-1)?.mode).toBe('docked')
     await vi.advanceTimersByTimeAsync(400)
-    // 拖到最左边 → 吸成左边的竖条
-    expect(fake.bounds.width).toBe(8)
-    expect(fake.bounds.height).toBe(132)
+    // 拖到最左边 → 吸成左边的竖条（窗口本身仍是固定尺寸）
+    expect(fake.bounds.width).toBe(FLOAT_WINDOW_WIDTH)
+    expect(fake.bounds.height).toBe(FLOAT_WINDOW_HEIGHT)
     expect(fake.bounds.x).toBe(0)
     controller.dispose()
   })
@@ -282,9 +263,9 @@ describe('浮窗控制器 · 贴边细条与卡片', () => {
     controller.dock()
     expect(states.at(-1)?.state).toBe('docked')
     await vi.advanceTimersByTimeAsync(400)
-    // 这个位置离底边最近 → 变成横向细条贴在底边
-    expect(fake.bounds.height).toBe(8)
-    expect(fake.bounds.y).toBe(WORK_AREA.height - 8)
+    // 这个位置离底边最近 → 贴到底边，窗口仍然贴死屏幕底部
+    expect(fake.bounds.height).toBe(FLOAT_WINDOW_HEIGHT)
+    expect(fake.bounds.y).toBe(WORK_AREA.height - FLOAT_WINDOW_HEIGHT)
     controller.dispose()
   })
 

@@ -1,17 +1,18 @@
 import { BrowserWindow, screen } from 'electron'
 
 import {
-  CARD_HEIGHT,
-  CARD_WIDTH,
   DEFAULT_PLACEMENT,
+  FLOAT_WINDOW_HEIGHT,
+  FLOAT_WINDOW_WIDTH,
   HOVER_PAD,
   SNAP_DISTANCE,
-  barBounds,
-  cardBounds,
+  cardScreenBounds,
   clampInto,
   hitBar,
   hitCard,
+  pillBounds,
   snapDock,
+  windowBounds,
   type Bounds,
   type DockEdge,
   type FloatPlacement,
@@ -57,12 +58,10 @@ export interface FloatingWindowController {
   hide: () => void
   /** 是否正在显示 */
   isVisible: () => boolean
-  /** 展开成卡片（鼠标靠近细条时自动调用） */
+  /** 展示成卡片（鼠标靠近细条时自动调用） */
   expand: () => void
   /** 收回成细条 */
   collapse: () => void
-  /** 页面收缩动画结束的回执：把窗口收回细条尺寸（主进程另有兜底超时） */
-  collapseDone: () => void
   /** 拖动位移（渲染进程上报增量，单位 DIP）；拖离边缘后即为自由浮动 */
   dragBy: (dx: number, dy: number) => void
   /** 拖动落定：靠近边缘则吸附成细条，否则保持自由浮动 */
@@ -79,10 +78,6 @@ export interface FloatingWindowController {
   dispose: () => void
 }
 
-/** 展开 / 收起动画时长（毫秒），与浮窗页面 CSS 的 clip-path 过渡保持一致 */
-const REVEAL_MS = 200
-/** 收起兜底超时：页面动画结束回执没到（页面异常 / 减弱动效）时强制收回细条 */
-const COLLAPSE_FALLBACK_MS = REVEAL_MS + 420
 /** 吸附动画时长（毫秒） */
 const SNAP_MS = 160
 /** 补间帧间隔：约 60fps */
@@ -108,7 +103,7 @@ function clamp(value: number, min: number, max: number): number {
 function normalizePlacement(placement: FloatPlacement, area: WorkArea): FloatPlacement {
   if (placement.mode === 'floating') {
     const safe = clampInto(
-      { x: placement.x, y: placement.y, width: CARD_WIDTH, height: CARD_HEIGHT },
+      { x: placement.x, y: placement.y, width: FLOAT_WINDOW_WIDTH, height: FLOAT_WINDOW_HEIGHT },
       area
     )
     return { mode: 'floating', x: safe.x, y: safe.y }
@@ -209,63 +204,32 @@ export function createFloatingWindow(options: FloatingWindowOptions): FloatingWi
     step()
   }
 
-  /** @description 展开成卡片：窗口尺寸一步到位，揭示动画由页面在合成层完成 */
+  /**
+   * @description 展开成卡片。窗口尺寸恒定，所以这里只切形态：
+   * 页面据此把细条淡出、卡片从屏幕边缘滑进来（纯合成层 transform，不触发窗口 resize）
+   */
   const doExpand = (): void => {
     if (!window || window.isDestroyed() || state === 'expanded') return
     if (state === 'floating' || placement.mode !== 'docked') return
-    clearCollapseTimer()
     setState('expanded')
-    // 逐帧 setBounds 透明窗口会触发同步 DWM 重组，观感卡顿；这里只切一次
-    animationToken += 1
-    window.setBounds(cardBounds(workArea(), placement))
   }
 
-  /** 等待页面收缩动画回执的兜底计时器 */
-  let collapseTimer: ReturnType<typeof setTimeout> | null = null
-
-  /** @description 清掉收起兜底计时器 */
-  const clearCollapseTimer = (): void => {
-    if (!collapseTimer) return
-    clearTimeout(collapseTimer)
-    collapseTimer = null
-  }
-
-  /**
-   * @description 收起动画的终点：把窗口收回细条尺寸并恢复点击穿透。
-   * 由页面动画结束回执触发；计时器兜底也会走到这里，因此要做状态守卫
-   */
-  const finishCollapse = (): void => {
-    clearCollapseTimer()
-    if (!window || window.isDestroyed() || !visible) return
-    if (state !== 'docked' || placement.mode !== 'docked') return
-    animationToken += 1
-    window.setBounds(barBounds(workArea(), placement))
-    forceInteractive = false
-    applyClickThrough()
-  }
-
-  /** @description 收回到细条：先把形态切成 docked（页面随之播放收缩动画），动画结束后再收尺寸 */
+  /** @description 收回到细条：页面播反向滑出动画，窗口尺寸不变 */
   const doCollapse = (): void => {
     if (!window || window.isDestroyed() || state !== 'expanded') return
     if (placement.mode !== 'docked') return
     setState('docked')
-    clearCollapseTimer()
-    collapseTimer = setTimeout(finishCollapse, COLLAPSE_FALLBACK_MS)
   }
 
-  /** @description 进入自由浮动：先切成卡片尺寸，再按当前窗口位置记录坐标 */
+  /** @description 进入自由浮动：记下当前窗口坐标（尺寸不变，不需要重新 setBounds） */
   const enterFloating = (): void => {
     if (!window || window.isDestroyed()) return
-    if (placement.mode === 'floating') {
-      setState('floating')
-      return
+    if (placement.mode !== 'floating') {
+      const current = window.getBounds()
+      placement = { mode: 'floating', x: current.x, y: current.y }
+      options.onPlacementChange?.(placement)
     }
-    const target = cardBounds(workArea(), placement)
-    animationToken += 1
-    window.setBounds(target)
-    placement = { mode: 'floating', x: target.x, y: target.y }
     setState('floating')
-    options.onPlacementChange?.(placement)
   }
 
   /**
@@ -287,7 +251,7 @@ export function createFloatingWindow(options: FloatingWindowOptions): FloatingWi
       if (state === 'docked') {
         leftAt = 0
         if (placement.mode !== 'docked') return
-        if (!hitBar(barBounds(area, placement), point)) {
+        if (!hitBar(pillBounds(area, placement), point)) {
           armed = true
           return
         }
@@ -298,11 +262,11 @@ export function createFloatingWindow(options: FloatingWindowOptions): FloatingWi
       if (state !== 'expanded') return
 
       // 展开后指针可能还停在细条上（卡片贴在细条旁边），这不算"离开"
-      if (hitCard(window.getBounds(), point, HOVER_PAD)) {
+      if (hitCard(cardScreenBounds(window.getBounds(), lastEdge()), point, HOVER_PAD)) {
         leftAt = 0
         return
       }
-      if (placement.mode === 'docked' && hitBar(barBounds(area, placement), point)) {
+      if (placement.mode === 'docked' && hitBar(pillBounds(area, placement), point)) {
         leftAt = 0
         return
       }
@@ -328,10 +292,7 @@ export function createFloatingWindow(options: FloatingWindowOptions): FloatingWi
 
   /** @description 创建浮窗实例（只创建一次，结束时只隐藏不销毁） */
   const build = (): BrowserWindow => {
-    const initial =
-      placement.mode === 'floating'
-        ? cardBounds(workArea(), placement)
-        : barBounds(workArea(), placement)
+    const initial = windowBounds(workArea(), placement)
 
     const created = new BrowserWindow({
       ...initial,
@@ -386,7 +347,6 @@ export function createFloatingWindow(options: FloatingWindowOptions): FloatingWi
   return {
     show: () => {
       visible = true
-      clearCollapseTimer()
       try {
         if (!window || window.isDestroyed()) window = build()
         if (window.isMinimized()) window.restore()
@@ -398,13 +358,8 @@ export function createFloatingWindow(options: FloatingWindowOptions): FloatingWi
         armed = true
         animationToken += 1
 
-        if (placement.mode === 'floating') {
-          state = 'floating'
-          window.setBounds(cardBounds(area, placement))
-        } else {
-          state = 'docked'
-          window.setBounds(barBounds(area, placement))
-        }
+        state = placement.mode === 'floating' ? 'floating' : 'docked'
+        window.setBounds(windowBounds(area, placement))
 
         emitState()
         if (ready && !window.isVisible()) window.showInactive()
@@ -418,7 +373,6 @@ export function createFloatingWindow(options: FloatingWindowOptions): FloatingWi
     },
     hide: () => {
       visible = false
-      clearCollapseTimer()
       animationToken += 1
       state = placement.mode === 'floating' ? 'floating' : 'docked'
       forceInteractive = false
@@ -432,9 +386,6 @@ export function createFloatingWindow(options: FloatingWindowOptions): FloatingWi
     },
     collapse: () => {
       doCollapse()
-    },
-    collapseDone: () => {
-      finishCollapse()
     },
     dragBy: (dx: number, dy: number) => {
       if (!window || window.isDestroyed()) return
@@ -482,7 +433,7 @@ export function createFloatingWindow(options: FloatingWindowOptions): FloatingWi
         placement = { mode: 'docked', ...docked }
         armed = false
         setState('docked')
-        animateTo(barBounds(area, placement), SNAP_MS)
+        animateTo(windowBounds(area, placement), SNAP_MS)
         setTimeout(() => {
           if (state !== 'docked') return
           forceInteractive = false
@@ -508,7 +459,7 @@ export function createFloatingWindow(options: FloatingWindowOptions): FloatingWi
       dragActive = false
       armed = false
       setState('docked')
-      animateTo(barBounds(area, placement), SNAP_MS)
+      animateTo(windowBounds(area, placement), SNAP_MS)
       options.onPlacementChange?.(placement)
       setTimeout(() => {
         if (state !== 'docked') return
@@ -526,7 +477,6 @@ export function createFloatingWindow(options: FloatingWindowOptions): FloatingWi
     dispose: () => {
       visible = false
       ready = false
-      clearCollapseTimer()
       animationToken += 1
       dragActive = false
       stopWatching()

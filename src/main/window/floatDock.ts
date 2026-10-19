@@ -42,7 +42,7 @@ export const BAR_LENGTH = 132
 /** 卡片尺寸：展开与自由浮动共用 */
 export const CARD_WIDTH = 236
 export const CARD_HEIGHT = 168
-/** 卡片与屏幕边缘的间距 */
+/** 卡片与细条之间的间距 */
 export const CARD_GAP = 8
 /** 沿边停靠时距离工作区两端的留白，避免贴着任务栏或窗口圆角 */
 export const EDGE_PADDING = 24
@@ -110,100 +110,130 @@ export function clampInto(bounds: Bounds, workArea: WorkArea): Bounds {
   }
 }
 
+/** 卡片阴影的余量：窗口比卡片大一圈，投影才不会被窗口边界裁掉 */
+export const SHADOW_PAD = 12
+
 /**
- * @description 贴边细条的窗口位置：紧贴工作区边缘（整条都在屏幕内，便于悬停与点击）
- * @param workArea 显示器工作区
- * @param dock 贴边状态（内部会先夹取）
- * @returns 细条窗口的 bounds
+ * 浮窗窗口的固定尺寸：贴边与自由浮动共用，运行期**永不改变窗口大小**。
+ * 沿贴边方向依次排布：细条 → 卡片间距 → 卡片 → 阴影余量。
+ * 这样细条/卡片都用固定像素定位，窗口尺寸变化再也不会把进度条拉伸成"巨宽"。
  */
-export function barBounds(workArea: WorkArea, dock: DockState): Bounds {
-  const safe = clampDock(dock, workArea)
-  switch (safe.edge) {
-    case 'left':
-      return { x: workArea.x, y: safe.offset, width: BAR_THICKNESS, height: BAR_LENGTH }
-    case 'right':
-      return {
-        x: workArea.x + workArea.width - BAR_THICKNESS,
-        y: safe.offset,
-        width: BAR_THICKNESS,
-        height: BAR_LENGTH
-      }
-    case 'top':
-      return { x: safe.offset, y: workArea.y, width: BAR_LENGTH, height: BAR_THICKNESS }
-    default:
-      return {
-        x: safe.offset,
-        y: workArea.y + workArea.height - BAR_THICKNESS,
-        width: BAR_LENGTH,
-        height: BAR_THICKNESS
-      }
+export const FLOAT_WINDOW_WIDTH = SHADOW_PAD + CARD_WIDTH + CARD_GAP + BAR_THICKNESS
+export const FLOAT_WINDOW_HEIGHT = SHADOW_PAD + CARD_HEIGHT + CARD_GAP + BAR_THICKNESS
+
+/**
+ * @description 卡片在窗口内的矩形（窗口坐标）：贴边侧留出细条与间距，另一轴居中
+ * @param edge 贴边方向
+ * @returns 卡片矩形（相对窗口左上角）
+ */
+export function cardRect(edge: DockEdge): Bounds {
+  const x =
+    edge === 'left'
+      ? FLOAT_WINDOW_WIDTH - SHADOW_PAD - CARD_WIDTH
+      : edge === 'right'
+        ? SHADOW_PAD
+        : (FLOAT_WINDOW_WIDTH - CARD_WIDTH) / 2
+  const y =
+    edge === 'top'
+      ? BAR_THICKNESS + CARD_GAP
+      : edge === 'bottom'
+        ? SHADOW_PAD
+        : (FLOAT_WINDOW_HEIGHT - CARD_HEIGHT) / 2
+  return { x, y, width: CARD_WIDTH, height: CARD_HEIGHT }
+}
+
+/**
+ * @description 细条在窗口内的矩形（窗口坐标）：贴着屏幕边缘，沿边居中
+ * @param edge 贴边方向
+ * @returns 细条矩形（相对窗口左上角）
+ */
+export function pillRect(edge: DockEdge): Bounds {
+  const vertical = isVerticalEdge(edge)
+  const x =
+    edge === 'left'
+      ? 0
+      : edge === 'right'
+        ? FLOAT_WINDOW_WIDTH - BAR_THICKNESS
+        : (FLOAT_WINDOW_WIDTH - BAR_LENGTH) / 2
+  const y =
+    edge === 'top'
+      ? 0
+      : edge === 'bottom'
+        ? FLOAT_WINDOW_HEIGHT - BAR_THICKNESS
+        : (FLOAT_WINDOW_HEIGHT - BAR_LENGTH) / 2
+  return {
+    x,
+    y,
+    width: vertical ? BAR_THICKNESS : BAR_LENGTH,
+    height: vertical ? BAR_LENGTH : BAR_THICKNESS
   }
 }
 
 /**
- * @description 卡片窗口的位置：贴边时从细条往屏幕内展开，自由浮动时用保存的坐标
+ * @description 贴边时窗口的位置：窗口贴死屏幕边缘，细条中心与保存的 offset 对齐
+ * @param workArea 显示器工作区
+ * @param dock 贴边状态（内部会先夹取）
+ * @returns 窗口 bounds（已夹进工作区）
+ */
+export function dockedWindowBounds(workArea: WorkArea, dock: DockState): Bounds {
+  const safe = clampDock(dock, workArea)
+  const width = FLOAT_WINDOW_WIDTH
+  const height = FLOAT_WINDOW_HEIGHT
+  if (isVerticalEdge(safe.edge)) {
+    const y = safe.offset + BAR_LENGTH / 2 - height / 2
+    const x = safe.edge === 'left' ? workArea.x : workArea.x + workArea.width - width
+    return clampInto({ x, y, width, height }, workArea)
+  }
+  const x = safe.offset + BAR_LENGTH / 2 - width / 2
+  const y = safe.edge === 'top' ? workArea.y : workArea.y + workArea.height - height
+  return clampInto({ x, y, width, height }, workArea)
+}
+
+/**
+ * @description 自由浮动时窗口的位置：沿用保存的窗口坐标并夹进工作区
+ * @param placement 当前摆放（floating 时带坐标）
+ * @param workArea 显示器工作区
+ * @returns 窗口 bounds
+ */
+export function floatingWindowBounds(placement: FloatPlacement, workArea: WorkArea): Bounds {
+  const x = placement.mode === 'floating' ? placement.x : workArea.x
+  const y = placement.mode === 'floating' ? placement.y : workArea.y
+  return clampInto({ x, y, width: FLOAT_WINDOW_WIDTH, height: FLOAT_WINDOW_HEIGHT }, workArea)
+}
+
+/**
+ * @description 按摆放计算窗口矩形：贴边用吸附位置，自由浮动用保存坐标
  * @param workArea 显示器工作区
  * @param placement 当前摆放
- * @returns 卡片窗口的 bounds（已夹进工作区）
+ * @returns 窗口 bounds
  */
-export function cardBounds(workArea: WorkArea, placement: FloatPlacement): Bounds {
-  if (placement.mode === 'floating') {
-    return clampInto(
-      { x: placement.x, y: placement.y, width: CARD_WIDTH, height: CARD_HEIGHT },
-      workArea
-    )
-  }
+export function windowBounds(workArea: WorkArea, placement: FloatPlacement): Bounds {
+  return placement.mode === 'floating'
+    ? floatingWindowBounds(placement, workArea)
+    : dockedWindowBounds(workArea, placement)
+}
 
-  const bar = barBounds(workArea, placement)
-  const barCenterX = bar.x + bar.width / 2
-  const barCenterY = bar.y + bar.height / 2
-  const minX = workArea.x + CARD_GAP
-  const minY = workArea.y + CARD_GAP
-  const maxX = workArea.x + workArea.width - CARD_WIDTH - CARD_GAP
-  const maxY = workArea.y + workArea.height - CARD_HEIGHT - CARD_GAP
+/**
+ * @description 细条在屏幕上的矩形：hover 命中判定用，与页面里画出的细条完全一致
+ * @param workArea 显示器工作区
+ * @param dock 贴边状态
+ * @returns 细条 bounds（屏幕坐标）
+ */
+export function pillBounds(workArea: WorkArea, dock: DockState): Bounds {
+  const win = dockedWindowBounds(workArea, dock)
+  const pill = pillRect(dock.edge)
+  return { x: win.x + pill.x, y: win.y + pill.y, width: pill.width, height: pill.height }
+}
 
-  switch (placement.edge) {
-    case 'left':
-      return clampInto(
-        {
-          x: bar.x + bar.width + CARD_GAP,
-          y: clamp(barCenterY - CARD_HEIGHT / 2, minY, maxY),
-          width: CARD_WIDTH,
-          height: CARD_HEIGHT
-        },
-        workArea
-      )
-    case 'right':
-      return clampInto(
-        {
-          x: bar.x - CARD_GAP - CARD_WIDTH,
-          y: clamp(barCenterY - CARD_HEIGHT / 2, minY, maxY),
-          width: CARD_WIDTH,
-          height: CARD_HEIGHT
-        },
-        workArea
-      )
-    case 'top':
-      return clampInto(
-        {
-          x: clamp(barCenterX - CARD_WIDTH / 2, minX, maxX),
-          y: bar.y + bar.height + CARD_GAP,
-          width: CARD_WIDTH,
-          height: CARD_HEIGHT
-        },
-        workArea
-      )
-    default:
-      return clampInto(
-        {
-          x: clamp(barCenterX - CARD_WIDTH / 2, minX, maxX),
-          y: bar.y - CARD_GAP - CARD_HEIGHT,
-          width: CARD_WIDTH,
-          height: CARD_HEIGHT
-        },
-        workArea
-      )
-  }
+/**
+ * @description 卡片在屏幕上的矩形：判断指针是否还停在卡片上
+ * @param win 窗口 bounds
+ * @param edge 贴边方向
+ * @returns 卡片 bounds（屏幕坐标）
+ */
+export function cardScreenBounds(win: Bounds, edge: DockEdge): Bounds {
+  const rect = cardRect(edge)
+  return { x: win.x + rect.x, y: win.y + rect.y, width: rect.width, height: rect.height }
 }
 
 /**

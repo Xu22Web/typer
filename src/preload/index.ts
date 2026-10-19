@@ -90,8 +90,6 @@ const api = {
     expand: () => invoke(IPC.floatExpand),
     /** 收回成贴边细条（鼠标离开后） */
     collapse: () => invoke(IPC.floatCollapse),
-    /** 收起动画播完的回执：主进程据此收回窗口尺寸 */
-    collapseDone: () => invoke(IPC.floatCollapseDone),
     /** 拖动位移（单位 DIP） */
     drag: (dx: number, dy: number) => invoke(IPC.floatDrag, { dx, dy }),
     /** 拖动落定：靠近边缘则吸附成细条，否则自由浮动 */

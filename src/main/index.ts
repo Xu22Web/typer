@@ -456,7 +456,6 @@ async function bootstrap(): Promise<void> {
     float: {
       expand: () => floating?.expand(),
       collapse: () => floating?.collapse(),
-      collapseDone: () => floating?.collapseDone(),
       dragBy: (dx, dy) => floating?.dragBy(dx, dy),
       drop: () => floating?.drop(),
       dock: () => floating?.dock(),

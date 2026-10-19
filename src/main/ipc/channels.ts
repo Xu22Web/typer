@@ -36,7 +36,6 @@ export const IPC = {
   floatDock: 'float:dock',
   floatExpand: 'float:expand',
   floatCollapse: 'float:collapse',
-  floatCollapseDone: 'float:collapse-done',
   floatInteractive: 'float:interactive',
   /** 更新检查与安装 */
   updateCheck: 'update:check',

@@ -108,8 +108,6 @@ export interface TyperApi {
   float: {
     expand: () => Promise<void>
     collapse: () => Promise<void>
-    /** 收起动画播完的回执：主进程据此收回窗口尺寸 */
-    collapseDone: () => Promise<void>
     /** 拖动位移（DIP），由渲染进程按指针增量上报 */
     drag: (dx: number, dy: number) => Promise<void>
     /** 拖动落定：靠近边缘则吸附成细条，否则自由浮动 */
