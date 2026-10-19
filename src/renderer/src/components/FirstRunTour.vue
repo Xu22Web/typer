@@ -133,7 +133,7 @@ watch(
       target="#tour-stop"
       placement="top"
       title="随时能停"
-      description="点「停止」立即中止；焦点不在 Typer 上也能用 Ctrl+Alt+X 紧急停止、Ctrl+Alt+P 暂停/继续。热键可以在设置里改。"
+      description="点「停止」中止输入，当前这个字符打完后生效；焦点不在 Typer 上也能用 Ctrl+Alt+X 紧急停止、Ctrl+Alt+P 暂停/继续。热键可以在设置里改。"
       :prev-button-props="prevText"
       :next-button-props="nextText"
     />

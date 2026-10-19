@@ -268,7 +268,7 @@ async function restoreDefaults(): Promise<void> {
             <div class="row">
               <div class="label">
                 <div>倒计时</div>
-                <small>点击开始后等待多久才真正输入，留出切换窗口的时间</small>
+                <small>点击开始或继续后等待多久才真正输入，留出切换窗口的时间</small>
               </div>
               <ElInputNumber v-model="draft.startDelayMs" :min="0" :max="60000" :step="500" />
               <div class="unit">毫秒</div>
@@ -295,7 +295,10 @@ async function restoreDefaults(): Promise<void> {
             <div class="row">
               <div class="label">
                 <div>每批动作数</div>
-                <small>值越大下发开销越小；停止始终按动作取消，只有暂停会在批与批之间生效</small>
+                <small
+                  >值越大下发开销越小；暂停与停止都在「修饰键 + 主键」这个动作组的边界生效，
+                  不会把一组拆开（因此最多多打一个字符）</small
+                >
               </div>
               <ElInputNumber
                 v-model="draft.chunkSize"
@@ -554,7 +557,10 @@ async function restoreDefaults(): Promise<void> {
             <h2 class="group-title">
               <span class="icon i-mdi-file-import-outline" /><span>文本导入</span>
             </h2>
-            <p class="group-desc">「导入文本」把磁盘上的文件装进输入框时使用的编码。</p>
+            <p class="group-desc">
+              「导入文本」把磁盘上的文件装进输入框时使用的编码。它只影响读文件时的解码：
+              中文等没有物理键位的字符依然无法输入，会在开始前被列出来。
+            </p>
 
             <div class="row">
               <div class="label"><div>导入文件编码</div></div>

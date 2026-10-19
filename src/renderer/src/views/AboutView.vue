@@ -105,7 +105,7 @@ async function open(url: string): Promise<void> {
           <div>版本 {{ info?.version ?? '—' }}</div>
           <div v-if="info && !info.supported" class="chip bad">当前平台不支持键盘注入</div>
         </div>
-        <p class="tagline">把文本逐字符模拟输入到任意窗口的 Windows 桌面工具。</p>
+        <p class="tagline">把键盘能打出来的字符逐字符输入到任意窗口的 Windows 桌面工具。</p>
       </div>
     </header>
 

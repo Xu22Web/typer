@@ -2,7 +2,7 @@
   "name": "typer",
   "productName": "Typer",
   "version": "0.1.0",
-  "description": "把文本逐字符模拟键盘输入到任意窗口的 Windows 桌面工具（只发真实按键，适配远程桌面 / 云桌面）",
+  "description": "把键盘能打出来的字符逐字符输入到任意窗口的 Windows 桌面工具（只发真实按键，适配远程桌面 / 云桌面）",
   "main": "./out/main/index.js",
   "author": {
     "name": "Xu22Web"
