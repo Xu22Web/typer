@@ -212,24 +212,35 @@ describe('TypingEngine 中止与暂停', () => {
     expect(driver.cancelCalls).toBe(1)
   })
 
-  it('暂停 → 继续：动作不丢失也不重复', async () => {
+  it('暂停 → 继续：动作不丢失也不重复，且继续时重新倒计时', async () => {
     let batches = 0
     const driver = new MockKeyboardDriver({
       onSend: () => {
         batches += 1
-        if (batches === 1) {
-          h.engine.pause()
-          queueMicrotask(() => h.engine.resume())
-        }
+        if (batches === 1) h.engine.pause()
       }
     })
     const h = createHarness({ driver })
-    const result = await h.engine.start('abcdefgh', engineSettings({ chunkSize: 2 }))
+    const pending = h.engine.start('abcdefgh', engineSettings({ chunkSize: 2 }))
+
+    // 暂停在批次边界生效：等引擎真正切到 paused 再继续
+    for (let i = 0; i < 200 && !h.states.includes('paused'); i++) {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    }
+    expect(h.states).toContain('paused')
+    // 进入暂停前先抬起了修饰键（不能把 Shift 一直按在目标窗口上）
+    expect(h.driver.releaseAllCalls).toBeGreaterThanOrEqual(1)
+
+    h.engine.resume()
+    const result = await pending
 
     expect(result.state).toBe('completed')
     expect(h.driver.items).toHaveLength(8)
-    expect(h.states).toContain('paused')
     expect(result.typed).toBe(8)
+    // 倒计时出现两次：首次开始一次，继续时再一次（用户要求"点继续也要有准备时间"）
+    expect(h.states.filter((state) => state === 'countdown')).toHaveLength(2)
+    // 暂停后一定是先回到倒计时，而不是直接 running
+    expect(h.states[h.states.indexOf('paused') + 1]).toBe('countdown')
   })
 
   it('暂停状态下中止：唤醒等待并结束为 aborted', async () => {
@@ -247,7 +258,8 @@ describe('TypingEngine 中止与暂停', () => {
     h.engine.abort('暂停中停止')
     const result = await pending
     expect(result.state).toBe('aborted')
-    expect(h.driver.releaseAllCalls).toBe(1)
+    // 1 次在进入暂停时抬起，1 次在收尾兜底
+    expect(h.driver.releaseAllCalls).toBe(2)
   })
 })
 

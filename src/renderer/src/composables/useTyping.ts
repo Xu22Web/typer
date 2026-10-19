@@ -140,7 +140,7 @@ async function pause(): Promise<void> {
   }
 }
 
-/** @description 从暂停处继续输入 */
+/** @description 从暂停处继续输入：主进程会先抬起修饰键并重新走一次开始倒计时 */
 async function resume(): Promise<void> {
   try {
     const snapshot = await window.api.typing.resume()

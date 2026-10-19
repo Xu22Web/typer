@@ -232,16 +232,7 @@ export class TypingEngine {
       this.deps.onLog?.('error', `输入失败：${error.message}`)
     } finally {
       // 任何路径都必须释放修饰键，避免"粘键"
-      try {
-        await this.driver.releaseAll()
-      } catch (releaseError) {
-        this.deps.onLog?.(
-          'warn',
-          `释放修饰键失败：${
-            releaseError instanceof Error ? releaseError.message : String(releaseError)
-          }`
-        )
-      }
+      await this.releaseModifiers('结束')
 
       this.running = false
       if (error) this.setState('failed', error.message)
@@ -275,20 +266,8 @@ export class TypingEngine {
     rngFactory: (seed: number) => Rng
   ): Promise<RunResult['state']> {
     // 1) 倒计时
-    this.setState('countdown')
     this.startedAt = this.deps.now()
-    const deadline = this.startedAt + Math.max(0, settings.startDelayMs)
-    while (this.deps.now() < deadline) {
-      if (this.aborted) return 'aborted'
-      const remaining = deadline - this.deps.now()
-      this.countdownRemainingMs = remaining
-      this.emitProgress(true)
-      await this.deps.sleep(
-        Math.min(COUNTDOWN_TICK_MS, Math.max(1, remaining)),
-        () => !this.aborted
-      )
-    }
-    this.countdownRemainingMs = 0
+    if (!(await this.runCountdown(settings))) return 'aborted'
 
     // 2) 记录目标窗口（焦点守护）
     const guard = new FocusGuard(settings.focusGuard, this.driver)
@@ -389,9 +368,14 @@ export class TypingEngine {
       if (this.aborted) return false
 
       if (this.paused) {
+        // 进入暂停前先抬起宿主记录的修饰键：暂停可能持续很久，
+        // 不能把 Shift 一直按在目标窗口上（用户这时多半会去别的窗口操作）
+        await this.releaseModifiers('暂停')
         this.setState('paused')
         await this.waitWhilePaused()
         if (this.aborted) return false
+        // 继续输入也要像首次开始一样先走倒计时，避免"一点继续就立刻打字"
+        if (!(await this.runCountdown(settings))) return false
         this.setState('running')
       }
 
@@ -575,9 +559,12 @@ export class TypingEngine {
 
         // 暂停：在片与片之间等待（不会把半行留在目标窗口里）
         if (this.paused) {
+          await this.releaseModifiers('暂停')
           this.setState('paused')
           await this.waitWhilePaused()
           if (this.aborted) return 'aborted'
+          // 与文本模式一致：继续之后先倒计时再接着发
+          if (!(await this.runCountdown(settings))) return 'aborted'
           this.setState('running')
         }
 
@@ -618,7 +605,7 @@ export class TypingEngine {
       return 'completed'
     } finally {
       // 中止/失败也要保证修饰键被释放
-      await this.driver.releaseAll().catch(() => undefined)
+      await this.releaseModifiers('帧模式结束')
     }
   }
 
@@ -722,11 +709,14 @@ export class TypingEngine {
     }
   }
 
-  /** @description 请求暂停；仅在输入中生效 */
+  /**
+   * @description 请求暂停。真正的暂停点在**批次边界**：当前批次会完整打完（最多一个 chunk），
+   * 届时先抬起修饰键再切到 paused 状态，因此状态广播也推迟到那一刻，避免
+   * "界面说已暂停、实际还在打字"。
+   */
   pause(): void {
     if (this.stateValue !== 'running') return
     this.paused = true
-    this.setState('paused')
   }
 
   /** @description 继续输入并唤醒正在等待的批次 */
@@ -755,6 +745,9 @@ export class TypingEngine {
   /** @description 中止当前任务并释放驱动 */
   async dispose(): Promise<void> {
     this.abort('引擎释放')
+    // abort 只会通知宿主取消；这里趁宿主还活着先把修饰键抬起来。
+    // 宿主的取消点只在动作组边界，所以这条指令排在"当前组打完"之后执行，顺序是对的。
+    await this.releaseModifiers('退出')
     this.disposed = true
     await this.driver.dispose()
   }
@@ -772,6 +765,45 @@ export class TypingEngine {
     return new Promise<void>((resolve) => {
       this.resumeWaiters.push(resolve)
     })
+  }
+
+  /**
+   * @description 走一次开始倒计时（首次开始与"暂停后继续"共用同一套节奏）
+   * @param settings 引擎设置（取 startDelayMs）
+   * @returns 是否走完；false 表示期间被中止
+   */
+  private async runCountdown(settings: EngineSettings): Promise<boolean> {
+    this.setState('countdown')
+    const deadline = this.deps.now() + Math.max(0, settings.startDelayMs)
+    while (this.deps.now() < deadline) {
+      if (this.aborted) return false
+      const remaining = deadline - this.deps.now()
+      this.countdownRemainingMs = remaining
+      this.emitProgress(true)
+      await this.deps.sleep(
+        Math.min(COUNTDOWN_TICK_MS, Math.max(1, remaining)),
+        () => !this.aborted
+      )
+    }
+    this.countdownRemainingMs = 0
+    return !this.aborted
+  }
+
+  /**
+   * @description 抬起宿主记录的修饰键；失败只记日志，不影响主流程
+   * @param reason 触发场景（暂停 / 结束 / 退出），仅用于日志
+   */
+  private async releaseModifiers(reason: string): Promise<void> {
+    try {
+      await this.driver.releaseAll()
+    } catch (error) {
+      // 退出过程中宿主已先关掉是预期情况，不必再吵用户
+      if (this.disposed) return
+      this.deps.onLog?.(
+        'warn',
+        `${reason}时释放修饰键失败：${error instanceof Error ? error.message : String(error)}`
+      )
+    }
   }
 
   /**

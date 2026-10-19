@@ -531,9 +531,18 @@ app.on('window-all-closed', () => {
 })
 
 /** @description 退出前释放全局热键、引擎、传输会话与浮窗 */
-app.on('before-quit', () => {
+let quitting = false
+app.on('before-quit', (event) => {
+  if (quitting) return
+  quitting = true
+  // 退出清理必须先让引擎把修饰键抬起来（宿主还活着才能收指令），
+  // 所以拦住这个事件，等异步清理完再真正退出。
+  event.preventDefault()
   disposeHotkeys({ register: () => false, unregisterAll: () => globalShortcut.unregisterAll() })
-  void engine?.dispose().catch(() => {})
-  void transfer?.dispose().catch(() => {})
   floating?.dispose()
+  void (async () => {
+    await engine?.dispose().catch(() => {})
+    await transfer?.dispose().catch(() => {})
+    app.quit()
+  })()
 })

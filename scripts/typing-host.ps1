@@ -366,7 +366,7 @@ public static class TyperNative
         }
     }
 
-    private static int FlushBatch(List<INPUT> pending, bool dryRun)
+    private static int FlushBatch(List<INPUT> pending, bool dryRun, bool honorCancel = true)
     {
         int count = pending.Count;
         LastFlushTicks = 0;
@@ -389,7 +389,11 @@ public static class TyperNative
         double waitedMs = 0;
         while (offset < count)
         {
-            if (StopRequested) break; // 已被中止：剩余事件丢弃，由调用方按 cancelled 处理
+            // 只有"一个事件都还没发出去"时才允许中断：一旦发过某个 down，就必须把成对的 up
+            // 发完，否则会在目标端留下按住的键（修饰键有 releaseAll 兜底，普通键没人管）。
+            // honorCancel=false 用于两类调用：已经开始的"动作组"（修饰键 + 主键）与
+            // 释放语义的调用，它们无论如何都要发完。
+            if (honorCancel && offset == 0 && StopRequested) break;
             int remaining = count - offset;
             INPUT[] batch = Scratch;
             if (offset > 0)
@@ -471,14 +475,16 @@ public static class TyperNative
         {
             List<INPUT> ups = new List<INPUT>(ModifierBits.Length);
             AppendModifierKeys(ups, removeMask, true, sendScan);
-            injected += FlushBatch(ups, dryRun);
+            // 组已经开始，抬起事件必须发出去，不能因为中途收到取消就跳过
+            injected += FlushBatch(ups, dryRun, false);
             if (tailMs > 0) WaitMs(tailMs);
         }
         if (addMask != 0)
         {
             List<INPUT> downs = new List<INPUT>(ModifierBits.Length);
             AppendModifierKeys(downs, addMask, false, sendScan);
-            injected += FlushBatch(downs, dryRun);
+            // 同理：修饰键一旦按下，就必须配合调用方把这一组的主键打完
+            injected += FlushBatch(downs, dryRun, false);
             if (leadMs > 0) WaitMs(leadMs);
         }
         return injected;
@@ -495,7 +501,8 @@ public static class TyperNative
         {
             pending.Add(KeyEvent(vks[i], true, false));
         }
-        return FlushBatch(pending, false);
+        // 释放键是兜底动作，任何情况下都必须发完
+        return FlushBatch(pending, false, false);
     }
 
     /// 一次请求的全部动作：组装 chord、按 delay 断批、注入。
@@ -523,26 +530,26 @@ public static class TyperNative
         long ticksPerMs = Stopwatch.Frequency / 1000;
         List<INPUT> pending = new List<INPUT>(256);
         ActiveEpoch = cancelEpoch;
+        bool cancelled = false;
 
+        // 取消只允许落在"动作组"之间。一个动作组 = 修饰键过渡 + 主键 down/up：
+        // 修饰键过渡必须是独立的 SendInput（远程桌面会把同批的修饰键合批丢掉），
+        // 所以一旦开始按修饰键，就必须把这一组的字符打完，否则会留下
+        // "Shift 一直按着、字符却没打出来"的中间态。
         for (int i = 0; i < ops.Length; i++)
         {
-            // 中止：丢掉还没提交的事件。每个按键都是完整的 down/up 对（含修饰键），
-            // 整对丢弃不会留下按下的键，因此这里不需要先 Flush 再退出。
             if (StopRequested)
             {
-                pending.Clear();
-                return new int[] {
-                    requested, injected,
-                    (int)Math.Round(blockedMs), (int)Math.Round(maxBlockedMs),
-                    (int)Math.Round(valveMs), blockedCalls, 1
-                };
+                cancelled = true;
+                break;
             }
 
             double delay = delays[i];
             if (delay > 0)
             {
-                // 有停顿才断批：先送出手头的事件，再等待，保证"什么时候打出去"与逐动作发送一致
-                injected += FlushBatch(pending, dryRun);
+                // 有停顿才断批：先送出手头的事件，再等待，保证"什么时候打出去"与逐动作发送一致。
+                // 这里 flush 的是已经按过修饰键的动作组，取消不能打断它们
+                injected += FlushBatch(pending, dryRun, false);
                 double flushMs = (double)LastFlushTicks / ticksPerMs;
                 double extra = ValveWaitAfterFlush(dryRun, ticksPerMs,
                     ref blockedCalls, ref blockedMs, ref maxBlockedMs, ref valveMs);
@@ -551,6 +558,13 @@ public static class TyperNative
                 double remaining = delay - (flushMs < delay ? flushMs : delay);
                 if (remaining > 0) WaitMs(remaining);
                 if (extra > 0) WaitMs(extra);
+            }
+
+            // 等待期间可能收到取消：动手之前再确认一次，避免白按一组修饰键
+            if (StopRequested)
+            {
+                cancelled = true;
+                break;
             }
 
             int op = ops[i];
@@ -584,7 +598,7 @@ public static class TyperNative
 
             if (pending.Count >= (perItem ? 2 : MAX_EVENTS_PER_CALL))
             {
-                injected += FlushBatch(pending, dryRun);
+                injected += FlushBatch(pending, dryRun, false);
                 // 没有计划等待可以"借机"降速时，就在这里补等：否则零延迟大批次会长期占满输入队列
                 double extra = ValveWaitAfterFlush(dryRun, ticksPerMs,
                     ref blockedCalls, ref blockedMs, ref maxBlockedMs, ref valveMs);
@@ -592,7 +606,9 @@ public static class TyperNative
             }
         }
 
-        injected += FlushBatch(pending, dryRun);
+        // 取消只发生在动作组边界，所以这里 flush 的一定是"已经开始、必须收尾"的完整
+        // down/up 对；正常结束时同样把最后一批补发出去。
+        injected += FlushBatch(pending, dryRun, false);
         // 最后一批只记账、不再补等（后面没有动作了，补等只会白等）
         ValveWaitAfterFlush(dryRun, ticksPerMs,
             ref blockedCalls, ref blockedMs, ref maxBlockedMs, ref valveMs);
@@ -603,7 +619,7 @@ public static class TyperNative
             (int)Math.Round(maxBlockedMs),
             (int)Math.Round(valveMs),
             blockedCalls,
-            StopRequested ? 1 : 0
+            cancelled || StopRequested ? 1 : 0
         };
     }
 }
@@ -770,6 +786,12 @@ $psVersion = $PSVersionTable.PSVersion.ToString()
 # 读 stdin 交给后台线程：主线程在注入时也要能立刻收到 cancel
 [TyperHostPipe]::Start()
 
+# 启动时先把所有修饰键抬一遍：上一次会话可能是被强杀的，修饰键会留在按下态，
+# 而新进程的 HeldModMask 是 0，不会替上一次会话收尾。抬起是幂等的，不会产生字符。
+if (-not $DryRun) {
+    try { Invoke-ReleaseAll -IsDryRun $false | Out-Null } catch { }
+}
+
 while ($true) {
     $message = [TyperHostPipe]::Take()
     if ($null -eq $message) { break }
@@ -879,6 +901,8 @@ while ($true) {
             }
 
             'shutdown' {
+                # 退出前必须抬起所有键：否则用户下次在任意应用里敲字都会带上 Shift
+                try { Invoke-ReleaseAll -IsDryRun ([bool]$DryRun) | Out-Null } catch { }
                 Send-Ok -Id $id
                 [Console]::Out.Flush()
                 exit 0

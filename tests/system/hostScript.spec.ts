@@ -86,6 +86,25 @@ describe('PowerShell 脚本静态校验', () => {
     expect(source).toContain('ConvertTo-AsciiJson')
   })
 
+  it('取消只在动作组边界生效：不会留下"修饰键按下、主键未发"的中间态', () => {
+    const source = readSource(HOST_SCRIPT)
+
+    // 动作组 = 修饰键过渡 + 主键 down/up。组内的 flush 一律不理会取消，
+    // 否则一旦 Shift 已经按下、主键却因取消被丢弃，目标窗口就会一直按着 Shift。
+    expect(source).toContain('FlushBatch(pending, dryRun, false)')
+    expect(source).toContain('FlushBatch(ups, dryRun, false)')
+    expect(source).toContain('FlushBatch(downs, dryRun, false)')
+
+    // 只有"一个事件都还没发出去"时，flush 才允许被中断（此时不会留下按下的键）
+    expect(source).toContain('honorCancel && offset == 0 && StopRequested')
+
+    // 取消点前置到动作组之前，组一开始就必须打完
+    expect(source).toContain('cancelled = true')
+
+    // 退出与启动都要清理可能残留的修饰键（上一次会话可能是被强杀的）
+    expect(source).toContain('Invoke-ReleaseAll -IsDryRun $false')
+  })
+
   it('宿主脚本用内核定时器等待而不是空转烧 CPU', () => {
     const source = readSource(HOST_SCRIPT)
     // 等待要交给内核（高分辨率可等待定时器），自旋只留一小段尾段：
