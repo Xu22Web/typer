@@ -9,18 +9,12 @@ export interface HostKeyItem {
   delay: number
 }
 
-export interface HostUnicodeItem {
-  t: 'unicode'
-  cu: number
-  delay: number
-}
-
 export interface HostWaitItem {
   t: 'wait'
   ms: number
 }
 
-export type HostItem = HostKeyItem | HostUnicodeItem | HostWaitItem
+export type HostItem = HostKeyItem | HostWaitItem
 
 /** 修饰键 → 位掩码（与宿主里 C# 的 MOD_* 常量一一对应）。每个键位最多带一个修饰键。 */
 export const MODIFIER_BITS: Readonly<Record<Modifier, number>> = {
@@ -31,7 +25,7 @@ export const MODIFIER_BITS: Readonly<Record<Modifier, number>> = {
 }
 
 /** 动作操作码（与宿主里 C# 的 OP_* 常量一一对应）。 */
-export const HOST_OP = { key: 0, unicode: 1, wait: 2 } as const
+export const HOST_OP = { key: 0, wait: 1 } as const
 
 /**
  * `type` 指令的扁平载荷：ops / vals / mods / delays 四个等长数组。
@@ -42,7 +36,7 @@ export const HOST_OP = { key: 0, unicode: 1, wait: 2 } as const
  */
 export type EncodedHostBatch = {
   ops: number[]
-  /** key: vk；unicode: UTF-16 码元；wait: 0 */
+  /** key: vk；wait: 0 */
   vals: number[]
   /** key: 修饰键位掩码；其它动作恒为 0 */
   mods: number[]
@@ -50,6 +44,15 @@ export type EncodedHostBatch = {
   delays: number[]
   /** 每个动作单独一次 SendInput（数据帧用；省略表示允许宿主攒批） */
   perItem?: boolean
+  /**
+   * 修饰键按下后、主键之前的等待毫秒数。
+   *
+   * 远程桌面会把同一次 SendInput 里的修饰键与主键合批，实测修饰键会被丢弃；
+   * 拆成独立调用并在按下后等这一小段才能生效（实测 10ms 即够，默认 15ms 留余量）。
+   */
+  modLeadMs?: number
+  /** 修饰键抬起之前的等待毫秒数（默认 10ms） */
+  modTailMs?: number
 }
 
 /**
@@ -69,11 +72,6 @@ export function encodeHostItems(items: HostItem[], options: SendOptions = {}): E
       vals.push(item.vk)
       mods.push(item.mods.reduce((bits, mod) => bits | MODIFIER_BITS[mod], 0))
       delays.push(item.delay)
-    } else if (item.t === 'unicode') {
-      ops.push(HOST_OP.unicode)
-      vals.push(item.cu)
-      mods.push(0)
-      delays.push(item.delay)
     } else {
       // 等待动作的时长也放进 delays：宿主用同一条"断批 + 等待"路径处理，无需单独分支
       ops.push(HOST_OP.wait)
@@ -83,9 +81,13 @@ export function encodeHostItems(items: HostItem[], options: SendOptions = {}): E
     }
   }
 
-  return options.perItem === true
-    ? { ops, vals, mods, delays, perItem: true }
-    : { ops, vals, mods, delays }
+  const encoded: EncodedHostBatch =
+    options.perItem === true
+      ? { ops, vals, mods, delays, perItem: true }
+      : { ops, vals, mods, delays }
+  if (options.modLeadMs !== undefined) encoded.modLeadMs = options.modLeadMs
+  if (options.modTailMs !== undefined) encoded.modTailMs = options.modTailMs
+  return encoded
 }
 
 /** 带节奏信息的动作（引擎产出，驱动转成 HostItem）。 */
@@ -201,8 +203,6 @@ export function toHostItems(scheduled: ScheduledAction[]): HostItem[] {
     const delay = Math.max(0, Math.round(delayMs * 4) / 4)
     if (action.kind === 'key') {
       items.push({ t: 'key', vk: action.vk, mods: [...action.modifiers], delay })
-    } else if (action.kind === 'unicode') {
-      items.push({ t: 'unicode', cu: action.codeUnit, delay })
     } else {
       items.push({ t: 'wait', ms: Math.max(0, Math.round(action.ms)) })
     }
@@ -211,46 +211,17 @@ export function toHostItems(scheduled: ScheduledAction[]): HostItem[] {
 }
 
 /**
- * @description 把一段纯 ASCII 文本直接编码成 Unicode 注入项（帧模式快路径）。
- *
- * 帧文本只含可打印 ASCII，逐字符走 planner / 调度器只会产生成千上万个临时对象；
- * 这里直接按 UTF-16 码元生成动作，并把换行映射成 CR（接收端按回车断行）。
- * @param text 帧内容（含行尾换行）
- * @returns 协议层动作列表（延迟全为 0）
- */
-export function toUnicodeHostItems(text: string): HostItem[] {
-  const items: HostItem[] = new Array(text.length)
-  for (let i = 0; i < text.length; i++) {
-    const code = text.charCodeAt(i)
-    items[i] = { t: 'unicode', cu: code === 0x0a ? 0x0d : code, delay: 0 }
-  }
-  return items
-}
-
-/**
- * @description 判断一段文本能否走上面那条快路径（只含可打印 ASCII 与换行）
- * @param text 待判断的文本
- * @returns 是否可以直接按码元注入
- */
-export function isPlainAsciiText(text: string): boolean {
-  for (let i = 0; i < text.length; i++) {
-    const code = text.charCodeAt(i)
-    if (code === 0x0a) continue
-    if (code < 0x20 || code > 0x7e) return false
-  }
-  return true
-}
-
-/**
  * @description 计算一批动作会产生的底层输入事件数（用于校验注入结果）
+ *
+ * 只算主键的 down/up：修饰键事件由宿主按“状态过渡”自行决定（连续同修饰键的字符会保持按住），
+ * 因此这只是一个下限，宿主报告的 `requested` 不会小于它。
  * @param items 协议层动作列表
- * @returns 期望的事件总数
+ * @returns 期望的最少事件总数
  */
 export function expectedEventCount(items: HostItem[]): number {
   let total = 0
   for (const item of items) {
-    if (item.t === 'key') total += 2 + 2 * item.mods.length
-    else if (item.t === 'unicode') total += 2
+    if (item.t === 'key') total += 2
   }
   return total
 }
@@ -356,7 +327,9 @@ export function assertInjectionResult(data: unknown, requestedEvents: number): H
   if (candidate.injected < candidate.requested) {
     throw new ProtocolError(
       'E_INJECT_FAILED',
-      `系统只注入了 ${candidate.injected}/${candidate.requested} 个输入事件`,
+      `系统只注入了 ${candidate.injected}/${candidate.requested} 个输入事件` +
+        `（本批 ${candidate.items ?? '?'} 个动作，期望 ${requestedEvents} 个事件，` +
+        `阻塞 ${candidate.blockedMs ?? 0}ms / 压力阀 ${candidate.valveMs ?? 0}ms）`,
       '常见原因：目标窗口以管理员权限运行（UIPI），或被安全软件拦截'
     )
   }

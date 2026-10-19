@@ -18,10 +18,17 @@ let job: PreparedTransfer
 beforeEach(async () => {
   work = mkdtempSync(join(tmpdir(), 'typer-resume-'))
   const path = join(work, 'src.bin')
-  writeFileSync(path, Buffer.from('0123456789'.repeat(205)))
+  writeFileSync(path, Buffer.from('0123456789'.repeat(500)))
   job = await prepareTransfer({
     path,
-    options: { encoding: 'hex', chunkBytes: 256, maxFrameChars: 4096 }
+    options: {
+      alphabet: 'hex',
+      compression: 'none',
+      quality: 9,
+      mode: 'term',
+      chunkBytes: 256,
+      maxFrameChars: 4096
+    }
   })
 })
 
@@ -44,8 +51,8 @@ function report(overrides: Partial<Record<string, unknown>> = {}): string {
     sha256: job.summary.sha256,
     enc: 'hex',
     chunk: 256,
-    missing: '3,5-7',
-    doneRanges: '0-2,4,8-',
+    missing: '3',
+    doneRanges: '0-2,4',
     ...overrides
   })
 }
@@ -58,12 +65,12 @@ describe('parseResumeState', () => {
     expect(state.total).toBe(job.summary.total)
     expect(state.size).toBe(job.summary.size)
     expect(state.sha256).toBe(job.summary.sha256)
-    expect(state.missing).toEqual([3, 5, 6, 7])
+    expect(state.missing).toEqual([3])
   })
 
   it('只有 doneRanges 时反推缺失片', () => {
-    const state = parseResumeState(report({ missing: '', doneRanges: '0-5' }))
-    expect(state.missing).toEqual([6, 7, 8])
+    const state = parseResumeState(report({ missing: '', doneRanges: '0-2' }))
+    expect(state.missing).toEqual([3, 4])
   })
 
   it('解析续传令牌（令牌里没有大小与哈希）', () => {
@@ -112,8 +119,8 @@ describe('matchResume', () => {
   })
 
   it('任务一致时给出缺失片并保持升序', () => {
-    const match = matchResume(state({ missing: [5, 1, 3, 1] }), job.summary)
-    expect(match.missing).toEqual([1, 3, 5])
+    const match = matchResume(state({ missing: [4, 1, 3, 1] }), job.summary)
+    expect(match.missing).toEqual([1, 3, 4])
     expect(match.warnings).toEqual([])
   })
 

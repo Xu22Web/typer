@@ -11,11 +11,11 @@ export interface LayoutKey {
 export interface KeyboardLayout {
   id: LayoutId
   label: string
-  /** 字符 → 键位；查不到的字符一律回退到 Unicode 注入（结果同样正确），因此非 US 布局只需收录确定无误的键位 */
+  /** 字符 → 键位；查不到的字符一律视为不可输入，因此非 US 布局只需收录确定无误的键位 */
   charMap: Readonly<Record<string, LayoutKey>>
-  /** 该布局下需要 AltGr（Ctrl+Alt）才能输入的字符：当前实现统一走 Unicode 回退。 */
+  /** 该布局下需要 AltGr（Ctrl+Alt）才能输入的字符：当前实现统一视为不可输入。 */
   altGrChars: readonly string[]
-  /** 死键字符（需连按两次）：当前实现统一走 Unicode 回退。 */
+  /** 死键字符（需连按两次）：当前实现统一视为不可输入。 */
   deadKeys: readonly string[]
   notes?: string
 }
@@ -62,7 +62,7 @@ export class LayoutBuilder {
   }
 
   /**
-   * @description 标记"需要 AltGr"的字符（仅用于自检说明，注入时统一走 Unicode 回退）
+   * @description 标记"需要 AltGr"的字符（仅用于自检说明，注入时统一视为不可输入）
    * @param chars 需要 AltGr 的字符
    * @returns 构造器本身，便于链式调用
    */
@@ -72,7 +72,7 @@ export class LayoutBuilder {
   }
 
   /**
-   * @description 标记死键字符（仅用于自检说明，注入时统一走 Unicode 回退）
+   * @description 标记死键字符（仅用于自检说明，注入时统一视为不可输入）
    * @param chars 死键字符
    * @returns 构造器本身，便于链式调用
    */

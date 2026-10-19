@@ -56,10 +56,18 @@ describe('PowerShell 脚本静态校验', () => {
 
     // 注入 API 与常量
     expect(source).toContain('SendInput')
-    expect(source).toContain('KEYEVENTF_UNICODE = 0x0004')
     expect(source).toContain('KEYEVENTF_KEYUP = 0x0002')
     expect(source).toContain('KEYEVENTF_EXTENDEDKEY = 0x0001')
     expect(source).toContain('MapVirtualKey')
+
+    // 远程桌面只转发真实键盘事件：脚本里不应再有 KEYEVENTF_UNICODE
+    expect(source).not.toContain('KEYEVENTF_UNICODE')
+
+    // 修饰键必须单独调用并留间隔（否则 RDP 会把同批修饰键丢掉）
+    expect(source).toContain('ApplyModifierTransition')
+    expect(source).toContain('HeldModMask')
+    expect(source).toContain('modLeadMs')
+    expect(source).toContain('modTailMs')
 
     // 结构体：必须与 Windows SDK 的 union 尺寸一致，否则 SendInput 返回 0
     expect(source).toContain('MOUSEINPUT')
@@ -131,15 +139,12 @@ describe('宿主 dry-run 真实启动', () => {
     expect(session.stderr.join('')).toBe('')
   })
 
-  it('dry-run 下按事件数回执请求的动作（含中文、emoji、Shift 组合符号）', async () => {
+  it('dry-run 下按事件数回执请求的动作（含 Shift 组合符号）', async () => {
     expect(session).not.toBeNull()
     const items: HostItem[] = [
       { t: 'key', vk: 0x48, mods: ['shift'], delay: 1 }, // H（Shift 组合）
-      { t: 'key', vk: 0x31, mods: ['shift'], delay: 1 }, // !（Shift 组合）
-      { t: 'unicode', cu: 0x4e2d, delay: 1 }, // 中
-      { t: 'unicode', cu: 0xd83d, delay: 1 }, // 😀 高代理
-      { t: 'unicode', cu: 0xde00, delay: 1 }, // 😀 低代理
-      { t: 'key', vk: 0x0d, mods: [], delay: 1 } // 回车
+      { t: 'key', vk: 0x31, mods: ['shift'], delay: 1 }, // !（Shift 组合，Shift 保持按住）
+      { t: 'key', vk: 0x0d, mods: [], delay: 1 } // 回车（先松开 Shift）
     ]
 
     const result = await session!.request<{
@@ -153,8 +158,8 @@ describe('宿主 dry-run 真实启动', () => {
       foreground?: { hwnd: number; pid: number; title: string }
     }>('type', encodeHostItems(items))
 
-    // 2 个 Shift 组合按键 × (2 本体 + 2 修饰) = 8；3 个 unicode = 6；回车 2 → 共 16
-    expect(result.requested).toBe(16)
+    // Shift 按下 1 + 三个主键 6 + Shift 抬起 1 = 8 个事件
+    expect(result.requested).toBe(8)
     expect(result.injected).toBe(result.requested)
     expect(result.items).toBe(items.length)
     // dry-run 不真的调用 SendInput，因此不应报告任何"被输入队列拖住"的迹象，

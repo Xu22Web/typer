@@ -4,8 +4,9 @@ import type { Settings } from '@main/settings/types'
 import { PROFILE_LIMITS } from '@main/typing/scheduling/profile'
 import {
   CHUNK_PRESETS,
-  TRANSFER_ENCODING_OPTIONS,
+  TRANSFER_ALPHABET_OPTIONS,
   TRANSFER_LIMITS,
+  TRANSFER_MODE_OPTIONS,
   formatBytes
 } from '@shared/transfer/transfer'
 
@@ -26,6 +27,9 @@ const restoring = ref(false)
 
 /** 片大小与帧长上限的边界值（与主进程共用同一份定义） */
 const limits = TRANSFER_LIMITS
+/** 字符档 / 目标端的可选项（供模板渲染） */
+const alphabetOptions = TRANSFER_ALPHABET_OPTIONS
+const modeOptions = TRANSFER_MODE_OPTIONS
 const typing = useTyping()
 
 /** 主题设置即时生效，不进设置草稿 */
@@ -81,10 +85,10 @@ const presetId = computed(() => {
   return CHUNK_PRESETS.find((preset) => preset.chunkBytes === bytes)?.id ?? ''
 })
 
-/** 当前编码的说明文案 */
-const encodingHint = computed(() => {
-  const value = draft.value?.transfer.encoding ?? 'gzb64'
-  return TRANSFER_ENCODING_OPTIONS.find((option) => option.value === value)?.description ?? ''
+/** 当前符号表的说明文案 */
+const alphabetHint = computed(() => {
+  const value = draft.value?.transfer.alphabet ?? 'ascii32'
+  return TRANSFER_ALPHABET_OPTIONS.find((option) => option.value === value)?.description ?? ''
 })
 
 /**
@@ -531,8 +535,7 @@ async function restoreDefaults(): Promise<void> {
               <span class="icon i-mdi-keyboard-settings-outline" /><span>键盘布局</span>
             </h2>
             <p class="group-desc">
-              真实按键由<strong>目标窗口的布局</strong>解释。不确定目标布局时，直接开"全部用 Unicode
-              注入"最稳。
+              真实按键由<strong>目标窗口的布局</strong>解释；布局里没有收录的字符会在开始前报错。
             </p>
 
             <div class="row">
@@ -544,13 +547,6 @@ async function restoreDefaults(): Promise<void> {
                 <ElOption label="Français" value="fr" />
                 <ElOption label="Español" value="es" />
               </ElSelect>
-            </div>
-            <div class="row">
-              <div class="label">
-                <div>全部用 Unicode 注入</div>
-                <small>与布局、输入法无关（输入法在中文态时会吞掉真实按键）</small>
-              </div>
-              <ElSwitch v-model="draft.keyboard.forceUnicodeForAll" />
             </div>
           </section>
 
@@ -579,18 +575,18 @@ async function restoreDefaults(): Promise<void> {
             </h2>
             <p class="group-desc">
               把文件切成"每片一行"的帧逐片输入。接收端逐片校验、支持断点续传，合并后再校验整文件哈希；
-              编码与片大小决定"能不能顺利穿过目标终端"。"导出脚本"取走接收端脚本（双击 run.bat
-              即可运行）。
+              字符档决定"一个字符能带多少比特"，压缩决定"要带多少字节"。远程桌面只转发真实键盘事件，
+              因此默认用零 Shift 的 5 位档。
             </p>
 
             <div class="row">
               <div class="label">
-                <div>默认编码</div>
-                <small>{{ encodingHint }}</small>
+                <div>字符档</div>
+                <small>{{ alphabetHint }}</small>
               </div>
-              <ElSelect v-model="draft.transfer.encoding" class="control">
+              <ElSelect v-model="draft.transfer.alphabet" class="control">
                 <ElOption
-                  v-for="option in TRANSFER_ENCODING_OPTIONS"
+                  v-for="option in alphabetOptions"
                   :key="option.value"
                   :label="option.label"
                   :value="option.value"
@@ -600,17 +596,66 @@ async function restoreDefaults(): Promise<void> {
 
             <div class="row">
               <div class="label">
+                <div>压缩</div>
+                <small>
+                  自动：先采样试压，几乎压不动（已压缩的图片/视频/ZIP）就直接发原字节，省掉准备时间；
+                  强制压缩适合"确定能压但样本没体现出来"的情况
+                </small>
+              </div>
+              <ElSegmented
+                v-model="draft.transfer.compression"
+                :options="[
+                  { label: '自动', value: 'auto' },
+                  { label: '压缩', value: 'br' },
+                  { label: '不压缩', value: 'none' }
+                ]"
+              />
+            </div>
+
+            <div class="row">
+              <div class="label">
+                <div>压缩等级</div>
+                <small>Brotli 质量：9 是速度与压缩率的平衡点；10~11 更小但准备时间成倍增长</small>
+              </div>
+              <ElInputNumber
+                v-model="draft.transfer.quality"
+                :min="limits.quality[0]"
+                :max="limits.quality[1]"
+              />
+            </div>
+
+            <div class="row">
+              <div class="label">
+                <div>目标端</div>
+                <small
+                  >决定换行方式：终端用 CR
+                  报文（最快、关回显）、编辑器用真回车、单行框不加换行</small
+                >
+              </div>
+              <ElSelect v-model="draft.transfer.mode" class="control">
+                <ElOption
+                  v-for="mode in modeOptions"
+                  :key="mode.value"
+                  :label="mode.label"
+                  :value="mode.value"
+                />
+              </ElSelect>
+            </div>
+
+            <div class="row">
+              <div class="label">
                 <div>传输节奏</div>
                 <small>
-                  稳健：帧内逐字符并留 1ms
-                  间隔（数据不丢字符的下限）；极速：去掉片间断顿，节奏交给压力阀
+                  稳健：逐字符 + 1ms 间隔（最不容易丢）；快速：逐字符无停顿；极速：零间隔，
+                  由压力阀按目标端消化能力自适应。三档都逐动作投递，极速只是不再等那 1ms
                 </small>
               </div>
               <ElSegmented
                 v-model="draft.transfer.paceMode"
                 :options="[
                   { label: '稳健', value: 'safe' },
-                  { label: '极速', value: 'fast' }
+                  { label: '快速', value: 'fast' },
+                  { label: '极速', value: 'turbo' }
                 ]"
               />
             </div>
@@ -618,7 +663,7 @@ async function restoreDefaults(): Promise<void> {
             <div class="row">
               <div class="label">
                 <div>片大小</div>
-                <small>每片原始字节数；压缩编码下实际帧长通常只有原始字节数的四成左右</small>
+                <small>每片线上字节数；片越大帧越长，重传成本也越高</small>
               </div>
               <ElSelect
                 :model-value="presetId"
@@ -641,7 +686,6 @@ async function restoreDefaults(): Promise<void> {
               </div>
               <ElInputNumber
                 v-model="draft.transfer.maxFrameChars"
-                class="control"
                 :min="limits.maxFrameChars[0]"
                 :max="limits.maxFrameChars[1]"
                 :step="1024"
@@ -655,7 +699,6 @@ async function restoreDefaults(): Promise<void> {
               </div>
               <ElInputNumber
                 v-model="draft.transfer.interFrameDelayMs"
-                class="control"
                 :min="limits.interFrameDelayMs[0]"
                 :max="limits.interFrameDelayMs[1]"
                 :step="50"

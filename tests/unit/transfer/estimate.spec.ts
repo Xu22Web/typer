@@ -1,70 +1,102 @@
 import { describe, expect, it } from 'vitest'
-import { estimateTransferMs, FRAME_KEYSTROKE_INTERVAL_MS } from '@shared/transfer/estimate'
+import {
+  DEFAULT_CHARS_PER_SECOND,
+  PACE_CHARS_PER_SECOND,
+  estimateTransferMs,
+  meetsBudget
+} from '@shared/transfer/estimate'
 import type { TransferJobSummary } from '@shared/transfer/transfer'
 
-/** @description 造一个只关心 total / frameChars 的任务摘要 */
-function summary(total: number, frameChars: number): TransferJobSummary {
+/**
+ * @description 造一个只关心 total / frameChars / mode 的任务摘要
+ * @param total 片数
+ * @param frameChars 帧字符总数（不含行尾）
+ * @param mode 目标端模式
+ * @returns 摘要
+ */
+function summary(
+  total: number,
+  frameChars: number,
+  mode: TransferJobSummary['mode'] = 'term'
+): TransferJobSummary {
   return {
     path: 'C:\\demo.bin',
     name: 'demo.bin',
     size: frameChars,
-    job: 'job00001',
-    encoding: 'hex',
-    chunkBytes: 1024,
-    maxFrameChars: 4096,
+    job: 'a1b2c3d4',
+    alphabet: 'ascii32',
+    compression: 'none',
+    quality: 0,
+    mode,
+    chunkBytes: 16384,
+    maxFrameChars: 65536,
     total,
     sha256: '0'.repeat(64),
     wireBytes: frameChars,
     tailBytes: 16,
-    peakFrameChars: 2100,
+    peakFrameChars: 8700,
     frameChars,
     typedActions: frameChars,
     preview: [],
-    looksUtf8: false
+    looksUtf8: false,
+    compressionNote: '',
+    kind: 'binary',
+    prepareMs: 0
   }
 }
 
 describe('estimateTransferMs', () => {
-  it('帧数 = 数据片 + 开始帧 + 结束帧，字符数含每帧的行尾换行', () => {
-    const result = estimateTransferMs(summary(3, 300), { interFrameDelayMs: 0 })
-    // 3 片 + 开始 + 结束 = 5 帧；300 字符 + 5 个换行 = 305
+  it('字符数 = 帧字符 + 每帧一个行尾（数据片 + 开始 + 结束）', () => {
+    const result = estimateTransferMs(summary(3, 300), {
+      interFrameDelayMs: 0,
+      charsPerSecond: 1000
+    })
     expect(result.keystrokeChars).toBe(305)
-    expect(result.ms).toBe(305 * FRAME_KEYSTROKE_INTERVAL_MS)
+    expect(result.ms).toBe(305)
+  })
+
+  it('单行模式没有行尾：只算帧字符', () => {
+    const result = estimateTransferMs(summary(3, 300, 'line'), {
+      interFrameDelayMs: 0,
+      charsPerSecond: 1000
+    })
+    expect(result.keystrokeChars).toBe(300)
   })
 
   it('片间断顿只发生在片与片之间（total-1 次）', () => {
-    const noPause = estimateTransferMs(summary(4, 400), { interFrameDelayMs: 0 })
-    const withPause = estimateTransferMs(summary(4, 400), { interFrameDelayMs: 100 })
+    const base = { charsPerSecond: 1000 }
+    const noPause = estimateTransferMs(summary(4, 400), { interFrameDelayMs: 0, ...base })
+    const withPause = estimateTransferMs(summary(4, 400), { interFrameDelayMs: 100, ...base })
     expect(withPause.ms - noPause.ms).toBe(3 * 100)
   })
 
   it('空任务返回 0', () => {
     expect(estimateTransferMs(summary(0, 0), { interFrameDelayMs: 400 })).toEqual({
       ms: 0,
-      keystrokeChars: 0
+      keystrokeChars: 0,
+      charsPerSecond: DEFAULT_CHARS_PER_SECOND
     })
   })
 
-  it('可以按调用方给的每字符耗时估算（用于对比不同注入方式）', () => {
-    const fast = estimateTransferMs(summary(2, 200), {
+  it('耗时与每秒字符数成反比（用于对比不同目标端）', () => {
+    const slow = estimateTransferMs(summary(2, 2000), { interFrameDelayMs: 0, charsPerSecond: 400 })
+    const fast = estimateTransferMs(summary(2, 2000), {
       interFrameDelayMs: 0,
-      keystrokeIntervalMs: 1
+      charsPerSecond: 2000
     })
-    const slow = estimateTransferMs(summary(2, 200), {
-      interFrameDelayMs: 0,
-      keystrokeIntervalMs: 5
-    })
-    expect(slow.ms).toBe(fast.ms * 5)
+    expect(slow.ms / fast.ms).toBeCloseTo(5, 5)
   })
 
-  it('每字符耗时取实测区间（1.9~5.3ms/字符）内的保守值，避免低估耗时', () => {
-    // 曾用 1ms（=1000 字符/秒），比实测乐观 4~10 倍；这里锁住"不能退回乐观值"
-    expect(FRAME_KEYSTROKE_INTERVAL_MS).toBeGreaterThanOrEqual(2)
-    expect(FRAME_KEYSTROKE_INTERVAL_MS).toBeLessThanOrEqual(6)
+  it('默认速度取稳健档的实测值，而不是乐观的 1000 字符/秒', () => {
+    expect(DEFAULT_CHARS_PER_SECOND).toBe(PACE_CHARS_PER_SECOND.safe)
+    expect(DEFAULT_CHARS_PER_SECOND).toBeLessThanOrEqual(500)
+  })
+})
 
-    // 1MiB 的 hex 文件 ≈ 2M 帧字符：预计耗时应是分钟级（而不是乐观的几十秒）
-    const big = estimateTransferMs(summary(2048, 2_100_000), { interFrameDelayMs: 400 })
-    const minutes = big.ms / 60_000
-    expect(minutes).toBeGreaterThan(60)
+describe('meetsBudget', () => {
+  it('把"能不能进 1 小时 / 2 小时"算成布尔与倍数', () => {
+    expect(meetsBudget(30 * 60 * 1000, 60)).toEqual({ ok: true, ratio: 0.5 })
+    expect(meetsBudget(150 * 60 * 1000, 60).ok).toBe(false)
+    expect(meetsBudget(150 * 60 * 1000, 60).ratio).toBeCloseTo(2.5, 5)
   })
 })

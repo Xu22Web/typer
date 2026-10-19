@@ -66,6 +66,7 @@ describe('normalizeSettings', () => {
     expect(normalizeSettings({ injection: { profile: 'warp' } }).injection.profile).toBe('normal')
     expect(normalizeSettings({ transfer: { paceMode: 'warp' } }).transfer.paceMode).toBe('safe')
     expect(normalizeSettings({ transfer: { paceMode: 'fast' } }).transfer.paceMode).toBe('fast')
+    expect(normalizeSettings({ transfer: { paceMode: 'turbo' } }).transfer.paceMode).toBe('turbo')
   })
 
   it('极速档放开字符/秒与每批动作数的上限', () => {
@@ -137,19 +138,11 @@ describe('normalizeSettings', () => {
     )
   })
 
-  it('快捷键里的跨平台写法统一成 Ctrl（本程序只有 Windows 版本）', () => {
+  it('快捷键：默认值原样保留用户写法（不做跨平台改写）', () => {
     expect(normalizeSettings({}).hotkeys.stop).toBe('Ctrl+Alt+X')
-    expect(normalizeSettings({ hotkeys: { stop: 'CommandOrControl+Alt+X' } }).hotkeys.stop).toBe(
-      'Ctrl+Alt+X'
-    )
-    expect(normalizeSettings({ hotkeys: { stop: 'Command+Alt+X' } }).hotkeys.stop).toBe(
-      'Ctrl+Alt+X'
-    )
-    expect(normalizeSettings({ hotkeys: { stop: 'Cmd+Shift+S' } }).hotkeys.stop).toBe(
+    expect(normalizeSettings({ hotkeys: { stop: 'Ctrl+Shift+S' } }).hotkeys.stop).toBe(
       'Ctrl+Shift+S'
     )
-    // 已经是 Ctrl 的写法原样保留
-    expect(normalizeSettings({ hotkeys: { stop: 'Ctrl+Alt+Q' } }).hotkeys.stop).toBe('Ctrl+Alt+Q')
   })
 })
 
@@ -193,7 +186,7 @@ describe('toEngineSettings', () => {
       chunkSize: 5,
       seed: 99,
       focusGuard: 'strict',
-      keyboard: { layout: 'de', forceUnicodeForAll: true },
+      keyboard: { layout: 'de' },
       typo: { rate: 0.1, style: 'transpose', correction: 'none' },
       timing: { cps: 15 }
     })
@@ -202,7 +195,6 @@ describe('toEngineSettings', () => {
       startDelayMs: 1234,
       chunkSize: 5,
       layout: 'de',
-      forceUnicodeForAll: true,
       focusGuard: 'strict',
       seed: 99,
       verifyStuckKeys: settings.verifyStuckKeys,
@@ -216,39 +208,19 @@ describe('toEngineSettings', () => {
 
   it('文件传输设置：默认值、夹取与非法枚举回退', () => {
     expect(DEFAULT_SETTINGS.transfer).toEqual({
-      encoding: 'gzb64',
+      alphabet: 'ascii32',
+      compression: 'auto',
+      quality: 9,
+      mode: 'term',
       paceMode: 'safe',
-      chunkBytes: 8192,
-      maxFrameChars: 24576,
-      interFrameDelayMs: 120
+      chunkBytes: 16384,
+      maxFrameChars: 65536,
+      interFrameDelayMs: 0
     })
 
-    // 从未改过传输设置的用户（存盘值等于旧默认值）升级后直接采用新默认值
-    expect(
-      normalizeSettings({
-        transfer: {
-          encoding: 'hex',
-          paceMode: 'safe',
-          chunkBytes: 1024,
-          maxFrameChars: 4096,
-          interFrameDelayMs: 400
-        }
-      }).transfer
-    ).toEqual(DEFAULT_SETTINGS.transfer)
-
-    // 只要改过某一项，就完整保留用户的选择
-    const customized = normalizeSettings({
-      transfer: {
-        encoding: 'hex',
-        paceMode: 'fast',
-        chunkBytes: 1024,
-        maxFrameChars: 4096,
-        interFrameDelayMs: 400
-      }
-    })
-    expect(customized.transfer.encoding).toBe('hex')
-    expect(customized.transfer.chunkBytes).toBe(1024)
-    expect(customized.transfer.paceMode).toBe('fast')
+    // 远程桌面只认真实键盘事件：旧配置里的 bmp15 会回退到零 Shift 的 ascii32
+    expect(normalizeSettings({ transfer: { alphabet: 'bmp15' } }).transfer.alphabet).toBe('ascii32')
+    expect(normalizeSettings({ transfer: { alphabet: 'hex' } }).transfer.alphabet).toBe('hex')
 
     const clamped = normalizeSettings({
       transfer: { chunkBytes: 99999999, maxFrameChars: 1, interFrameDelayMs: 99999 }
@@ -257,8 +229,9 @@ describe('toEngineSettings', () => {
     expect(clamped.transfer.maxFrameChars).toBe(NUMERIC_BOUNDS.maxFrameChars[0])
     expect(clamped.transfer.interFrameDelayMs).toBe(TRANSFER_LIMITS.interFrameDelayMs[1])
 
-    const fallback = normalizeSettings({ transfer: { encoding: 'rot13' } })
-    expect(fallback.transfer.encoding).toBe(DEFAULT_SETTINGS.transfer.encoding)
+    const fallback = normalizeSettings({ transfer: { alphabet: 'rot13', compression: 'gzip' } })
+    expect(fallback.transfer.alphabet).toBe(DEFAULT_SETTINGS.transfer.alphabet)
+    expect(fallback.transfer.compression).toBe(DEFAULT_SETTINGS.transfer.compression)
   })
 
   it('浮窗摆放设置：默认值、非法枚举回退与坐标夹取', () => {

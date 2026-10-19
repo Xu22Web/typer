@@ -1,56 +1,91 @@
 /**
  * 文件传输的**纯**类型与常量（主进程、preload、渲染进程共用）。
- * 刻意不引用任何 `node:` 模块，因为渲染进程要据此渲染选项；线格式（编解码 / 校验）的唯一实现在 `src/main/util/frame.ts`。
+ * 刻意不引用任何 `node:` 模块，因为渲染进程要据此渲染选项；
+ * 线格式（编解码 / 校验）的唯一实现在 `src/main/util/frame.ts`，符号表在 `src/main/util/codec.ts`。
  */
 
-/** 载荷编码（与线格式的 `enc` 字段一致）。 */
-export type TransferEncoding = 'hex' | 'b64' | 'txt' | 'gzb64'
+/** 载荷符号表：每字符承载多少比特，直接决定要打多少个字符。 */
+export type TransferAlphabet = 'ascii32' | 'ascii64' | 'hex'
 
-export interface TransferEncodingOption {
-  value: TransferEncoding
+/** 压缩方式选项（`auto` 表示按样本试压结果决定）。 */
+export type TransferCompression = 'auto' | 'br' | 'none'
+
+/** 实际写进帧里的压缩方式。 */
+export type TransferWireCompression = 'none' | 'br'
+
+/** 目标端换行方式。 */
+export type TransferTargetMode = 'term' | 'editor' | 'line'
+
+export interface TransferAlphabetOption {
+  value: TransferAlphabet
   label: string
+  bits: number
   description: string
-  /** 相对原始字节的体积倍数（用于界面提示与耗时预估） */
-  overhead: number
-  /** 是否只适用于 UTF-8 文本文件 */
-  textOnly?: boolean
-  /** 接收端需要同版本脚本才能解开（新增编码用） */
-  requiresNewReceiver?: boolean
+  /** 每字节需要的字符数（8 / bits） */
+  charsPerByte: number
 }
 
-export const TRANSFER_ENCODING_OPTIONS: readonly TransferEncodingOption[] = [
+export const TRANSFER_BITS: Readonly<Record<TransferAlphabet, number>> = {
+  ascii32: 5,
+  ascii64: 6,
+  hex: 4
+}
+
+export const TRANSFER_ALPHABET_OPTIONS: readonly TransferAlphabetOption[] = [
   {
-    value: 'gzb64',
-    label: '压缩（推荐）',
+    value: 'ascii32',
+    label: 'ASCII 5 位（云桌面推荐）',
+    bits: 5,
+    charsPerByte: 8 / 5,
     description:
-      '先逐片压缩再 Base64：文本、代码、JSON 通常只有十六进制约三分之一的字符；已压缩的包也略优于 Base64。接收端需与 Typer 同版本',
-    overhead: 1 / 3,
-    requiresNewReceiver: true
+      '只用数字与小写字母：完全不发 Shift，远程桌面下不会被输入法中英文切换干扰；字符数比 6 位档多 20%，但实际更快'
   },
   {
-    value: 'b64',
-    label: 'Base64',
-    description: '体积约为十六进制的一半，含大小写与 + / =；任何文件都能逐字节还原',
-    overhead: 4 / 3
+    value: 'ascii64',
+    label: 'ASCII 6 位（最快）',
+    bits: 6,
+    charsPerByte: 8 / 6,
+    description:
+      '数字 / 大小写字母 / `-` / `_`：字符数最少，但大写字母需要 Shift；远程桌面下每个修饰键切换要多花约 25ms'
   },
   {
     value: 'hex',
-    label: '十六进制',
-    description: '只有 0-9 A-F，最抗终端与输入法干扰，任何版本的接收端都能解；字符数最多',
-    overhead: 2
-  },
-  {
-    value: 'txt',
-    label: '文本（UTF-8）',
-    description: '可读性最好；仅适用于合法 UTF-8 文本，空格与换行会转义成 \\s / \\n',
-    overhead: 1,
-    textOnly: true
+    label: '十六进制 4 位（最稳）',
+    bits: 4,
+    charsPerByte: 2,
+    description: '只有 0-9 与 A-F，最抗终端与远控干扰；字符数最多，仅在排查链路问题时使用'
   }
 ]
 
-export const TRANSFER_ENCODINGS: readonly TransferEncoding[] = TRANSFER_ENCODING_OPTIONS.map(
+export const TRANSFER_ALPHABETS: readonly TransferAlphabet[] = TRANSFER_ALPHABET_OPTIONS.map(
   (option) => option.value
 )
+
+export const TRANSFER_COMPRESSIONS: readonly TransferCompression[] = ['auto', 'br', 'none']
+export const TRANSFER_WIRE_COMPRESSIONS: readonly TransferWireCompression[] = ['none', 'br']
+export const TRANSFER_TARGET_MODES: readonly TransferTargetMode[] = ['term', 'editor', 'line']
+
+export const TRANSFER_MODE_OPTIONS: ReadonlyArray<{
+  value: TransferTargetMode
+  label: string
+  description: string
+}> = [
+  {
+    value: 'term',
+    label: '终端 / 命令行',
+    description: '接收端跑在终端：每帧用真回车提交，关回显，最快'
+  },
+  {
+    value: 'editor',
+    label: '记事本 / VS Code',
+    description: '接收端离线解码：用真回车换行；请配合 ASCII 6 位档，避免自动闭合与缩进'
+  },
+  {
+    value: 'line',
+    label: '单行输入框',
+    description: '没有换行的输入框：帧之间用标记分隔，只能配 ASCII/十六进制档'
+  }
+]
 
 export interface ChunkPreset {
   id: string
@@ -61,57 +96,42 @@ export interface ChunkPreset {
 }
 
 /**
- * 片大小预设。
+ * 片大小预设（线上字节数）。
  *
- * 帧长 ≈ 45 + 数字位数 + 载荷字符数：`hex` 时约为 `2 × 片字节数`（最长的情形），
- * `gzb64` 时通常不到一半。因此「帧长上限」按 hex 的最坏情况给，实际帧长由编码自己决定。
- * 帧是逐字符打出去的，片越大帧越长、重传成本也越高，所以仍保留小片预设。
+ * 帧是逐字符打出去的：片越大，单帧越长、重传成本越高；片太小则帧头与序号开销变多。
+ * 16 KiB 在 15 位档下约 8.7 K 字符/帧，帧头占比 <0.4%。
  */
 export const CHUNK_PRESETS: readonly ChunkPreset[] = [
   {
-    id: 'narrow',
-    label: '窄终端',
-    chunkBytes: 256,
-    maxFrameChars: 1024,
-    description: '串口、老式控制台与限宽终端（帧长只有几百字符）'
-  },
-  {
-    id: 'conservative',
-    label: '保守',
-    chunkBytes: 1024,
-    maxFrameChars: 4096,
-    description: '目标端不稳或需要频繁续传时（十六进制帧长约 2.1 K 字符）'
+    id: 'tiny',
+    label: '小片',
+    chunkBytes: 2048,
+    maxFrameChars: 8192,
+    description: '链路不稳、需要频繁重传时用（单帧约 1.1 K 字符）'
   },
   {
     id: 'default',
     label: '默认',
-    chunkBytes: 8192,
-    maxFrameChars: 24576,
-    description: '压缩编码下的通用选择：帧头占比最小、分片数最少'
+    chunkBytes: 16384,
+    maxFrameChars: 65536,
+    description: '帧头占比 <0.4%，重传成本也还可以接受（单帧约 8.7 K 字符）'
   },
   {
     id: 'large',
-    label: '大文件',
-    chunkBytes: 32768,
-    maxFrameChars: 66560,
-    description: '目标端可靠、链路稳定时用于大文件（重传成本更高）'
+    label: '大片',
+    chunkBytes: 65536,
+    maxFrameChars: 262144,
+    description: '链路可靠时用于大文件（单帧约 35 K 字符，失败要重打这么多）'
   }
 ]
 
 /** 取值范围（设置层与 IPC 校验共用，避免两处各写一份）。 */
 export const TRANSFER_LIMITS = {
-  chunkBytes: [64, 1024 * 1024],
-  maxFrameChars: [256, 1024 * 1024],
-  interFrameDelayMs: [0, 10_000]
+  chunkBytes: [1024, 262144],
+  maxFrameChars: [4096, 4 * 1024 * 1024],
+  interFrameDelayMs: [0, 10_000],
+  quality: [1, 11]
 } as const satisfies Record<string, readonly [number, number]>
-
-/**
- * `txt` 编码的文件大小上限。
- *
- * 该模式下必须把整个文本读进内存（要按字符边界切片），64 MiB 之后再大就没有意义了——
- * 二进制/超大文件应该用 hex 或 b64（它们是流式读取，内存恒定）。
- */
-export const TXT_MAX_BYTES = 64 * 1024 * 1024
 
 /** 十六进制预览的行数（每行 16 字节）。 */
 export const HEX_PREVIEW_ROWS = 16
@@ -123,16 +143,20 @@ export interface HexPreviewRow {
 }
 
 export interface TransferPrepareOptions {
-  encoding: TransferEncoding
-  /** 每片原始字节数 */
+  alphabet: TransferAlphabet
+  compression: TransferCompression
+  /** Brotli 质量（1~11） */
+  quality: number
+  /** 每片线上字节数 */
   chunkBytes: number
   /** 单帧字符上限 */
   maxFrameChars: number
+  mode: TransferTargetMode
   /** 接收端使用的文件名（默认取源文件名） */
   name?: string
 }
 
-/** 准备（读文件 + 哈希 + 分片）的进度。 */
+/** 准备（读文件 + 哈希 + 压缩 + 分片）的进度。 */
 export interface TransferPrepareProgress {
   phase: 'hash' | 'compress' | 'plan'
   done: number
@@ -145,25 +169,34 @@ export interface TransferJobSummary {
   name: string
   size: number
   job: string
-  encoding: TransferEncoding
+  alphabet: TransferAlphabet
+  compression: TransferWireCompression
+  quality: number
+  mode: TransferTargetMode
   chunkBytes: number
   maxFrameChars: number
   total: number
-  /** 整文件 SHA-256（始终计算：接收端要靠它做最终校验） */
+  /** 原文件 SHA-256（接收端靠它做最终校验） */
   sha256: string
-  /** 实际要打出去的字节总量（压缩编码下是压缩后的字节数） */
+  /** 实际要打出去的字节总量（压缩后） */
   wireBytes: number
-  /** 末片字节数（空文件为 0） */
+  /** 末片线上字节数（空文件为 0） */
   tailBytes: number
   /** 最长帧的字符数 */
   peakFrameChars: number
   /** 所有帧（含行尾）的字符总量 */
   frameChars: number
-  /** 预计产生的键盘动作数（CJK/emoji 会拆成多个 Unicode 报文） */
+  /** 预计产生的键盘动作数 */
   typedActions: number
   preview: HexPreviewRow[]
-  /** 文件字节是否完全等于 UTF-8 文本（决定能否用 txt 编码） */
+  /** 文件字节是否完全等于 UTF-8 文本（仅用于提示） */
   looksUtf8: boolean
+  /** 压缩决策的说明（为什么压 / 为什么不压） */
+  compressionNote: string
+  /** 文件类型（魔数识别结果） */
+  kind: string
+  /** 准备阶段耗时（毫秒） */
+  prepareMs: number
 }
 
 /** 接收端 `resume.json` / 续传令牌归一化后的结果。 */
@@ -213,4 +246,14 @@ export function durationTone(ms: number): 'ok' | 'warn' | 'danger' {
   if (ms > 60 * 60 * 1000) return 'danger'
   if (ms > 10 * 60 * 1000) return 'warn'
   return 'ok'
+}
+
+/**
+ * @description 给定线上字节数与符号表，算出载荷字符数（与线格式实现口径一致）
+ * @param bytes 线上字节数
+ * @param alphabet 符号表
+ * @returns 字符数
+ */
+export function symbolsForBytes(bytes: number, alphabet: TransferAlphabet): number {
+  return bytes <= 0 ? 0 : Math.ceil((bytes * 8) / TRANSFER_BITS[alphabet])
 }

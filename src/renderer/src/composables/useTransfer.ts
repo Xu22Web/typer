@@ -83,7 +83,9 @@ async function prepare(
     await refreshPlan()
     useTyping().log(
       'info',
-      `已准备文件：${loaded.name}（${loaded.size} 字节 → ${loaded.total} 片，${loaded.encoding}）`
+      `已准备文件：${loaded.name}（${loaded.size} 字节 → ${loaded.total} 片，${loaded.alphabet}/${
+        loaded.compression
+      }）`
     )
   } catch (err) {
     summary.value = null

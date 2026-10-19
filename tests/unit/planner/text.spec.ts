@@ -4,8 +4,7 @@ import {
   isCjk,
   isPrintableAscii,
   normalizeText,
-  toCodePoints,
-  toUtf16Units
+  toCodePoints
 } from '@main/typing/planner/text'
 
 describe('normalizeText', () => {
@@ -79,11 +78,5 @@ describe('字符分类与拆分', () => {
   it('按码点拆分（emoji 不拆散）', () => {
     expect(toCodePoints('a中😀')).toEqual(['a', '中', '😀'])
     expect(toCodePoints('😀').length).toBe(1)
-  })
-
-  it('emoji 拆成两个 UTF-16 码元', () => {
-    expect(toUtf16Units('😀')).toEqual([0xd83d, 0xde00])
-    expect(toUtf16Units('中')).toEqual([0x4e2d])
-    expect(toUtf16Units('a')).toEqual([0x61])
   })
 })

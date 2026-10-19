@@ -5,10 +5,13 @@
 .DESCRIPTION
     由 Electron 主进程通过 stdin/stdout（JSON Lines，纯 ASCII）驱动，支持两类注入：
 
-      1. 真实按键（t = "key"）      —— SendInput + 虚拟键码，需要 Shift 时同时按下修饰键；
-                                      目标窗口按自己的键盘布局解释该按键。
-      2. Unicode 报文（t = "unicode"）—— KEYEVENTF_UNICODE，直接投递一个 UTF-16 码元，
-                                      绕过布局与输入法，用于中文/emoji 等没有物理键位的字符。
+      1. 真实按键（t = "key"）—— SendInput + 虚拟键码，需要修饰键时先单独按下、留一个间隔，
+                                 打完再抬起；目标窗口按自己的键盘布局解释该按键。
+
+    为什么修饰键必须与主键分开：远程桌面（RDP / Citrix）会把同一次 SendInput 里的
+    修饰键与主键合批，实测修饰键会被直接丢掉（Shift+1 到远端只剩 1）。拆成独立调用
+    并在按下后等一小段（默认 15ms）才能让修饰键生效；抬起前同理留 10ms。
+    连续需要同一修饰键的字符会保持按住，只在状态切换时付这个间隔。
 
     之所以把注入放在独立的 PowerShell 进程里（而不是 Node 原生插件）：
     免去 node-gyp / MSVC 工具链，Windows 全版本自带 Windows PowerShell 5.1，
@@ -52,7 +55,6 @@ public static class TyperNative
     public const uint INPUT_KEYBOARD = 1;
     public const uint KEYEVENTF_EXTENDEDKEY = 0x0001;
     public const uint KEYEVENTF_KEYUP = 0x0002;
-    public const uint KEYEVENTF_UNICODE = 0x0004;
     public const uint KEYEVENTF_SCANCODE = 0x0008;
 
     [StructLayout(LayoutKind.Sequential)]
@@ -195,8 +197,7 @@ public static class TyperNative
     // 字符串插值 / 表达式体成员等新语法。
     // -----------------------------------------------------------------------
     public const int OP_KEY = 0;
-    public const int OP_UNICODE = 1;
-    public const int OP_WAIT = 2;
+    public const int OP_WAIT = 1;
 
     public const int MOD_CTRL = 1;
     public const int MOD_SHIFT = 2;
@@ -221,6 +222,9 @@ public static class TyperNative
     /// 本次会话按下的修饰键（供 releaseAll 优先释放）
     private static readonly List<int> HeldModifiers = new List<int>();
     private static readonly object HeldLock = new object();
+
+    /// 当前保持按住的修饰键位掩码（跳批次保持：连续同修饰键的字符只付一次按下/抬起）
+    private static int HeldModMask = 0;
 
     /// 紧急中止标志：由后台读线程在收到 cancel 指令时递增。
     ///
@@ -255,6 +259,7 @@ public static class TyperNative
     public static void ClearHeldModifiers()
     {
         lock (HeldLock) { HeldModifiers.Clear(); }
+        HeldModMask = 0;
     }
 
     private static bool IsExtended(int vk)
@@ -280,19 +285,6 @@ public static class TyperNative
         return input;
     }
 
-    private static INPUT UnicodeEvent(int codeUnit, bool up)
-    {
-        INPUT input = new INPUT();
-        input.type = INPUT_KEYBOARD;
-        // KEYEVENTF_UNICODE 要求 wVk = 0，字符放在 wScan（UTF-16 码元）
-        input.U.ki.wVk = 0;
-        input.U.ki.wScan = (ushort)codeUnit;
-        input.U.ki.dwFlags = KEYEVENTF_UNICODE | (up ? KEYEVENTF_KEYUP : 0);
-        input.U.ki.time = 0;
-        input.U.ki.dwExtraInfo = IntPtr.Zero;
-        return input;
-    }
-
     /// 自旋精修的尾段（毫秒）：这段用自旋保证节奏，其余时间交给内核定时器阻塞。
     /// 实测 2000 次 1ms 等待：尾段 0.3ms → 平均 1.10ms、CPU 0.16ms/次；
     /// 全程自旋 → 平均 1.00ms 但要 1.05ms CPU/次（吃满一个核，整台机器跟着卡）。
@@ -309,6 +301,10 @@ public static class TyperNative
     /// 压力阀单次补充上限（一次卡顿不该让后面的节奏冻住）
     private const double VALVE_MAX_EXTRA_MS = 4.0;
 
+    /// 输入队列满时的重投预算：每个事件 64 条给 1 份，最少这么多毫秒。
+    /// 超过就判定为"真的被拦截"（UIPI / 安全软件），让上层给出可读错误。
+    private const double FLUSH_RETRY_BUDGET_MS = 3000.0;
+
     private const uint TIMER_ALL_ACCESS = 0x1F0003;
     private const uint CREATE_WAITABLE_TIMER_HIGH_RESOLUTION = 0x00000002;
 
@@ -317,6 +313,9 @@ public static class TyperNative
 
     /// 复用的事件缓冲区（单线程使用；SendInput 只读它）
     private static INPUT[] Scratch = new INPUT[MAX_EVENTS_PER_CALL];
+
+    /// 重投"剩余事件"用的缓冲区（队列满时把后半段搬到头部再发）
+    private static INPUT[] Retry = new INPUT[MAX_EVENTS_PER_CALL];
 
     /// 上一次 FlushBatch 里 SendInput 自身的耗时：压力阀靠它判断队列是否已经满了
     private static long LastFlushTicks = 0;
@@ -378,15 +377,46 @@ public static class TyperNative
         if (Scratch.Length < count) Scratch = new INPUT[count];
         pending.CopyTo(Scratch, 0);
         pending.Clear();
+
+        // SendInput 对"目标输入队列已满"的表现是**少注入或不注入**，而不是报错：
+        // 控制台窗口的输入队列只有百来条记录，一次投 256 个事件必定装不下。
+        // 这些事件必须重投，绝不能当成"注入完成"（那等于静默丢字符），也不能直接失败
+        // （那会让 15 位档的大批次永远打不完）。所以这里按"已注入数"重投剩余部分，
+        // 每次重投前让队列排空一小会儿；超过期限才判定为真的被拦截。
         long started = Stopwatch.GetTimestamp();
-        uint sent = SendInput((uint)count, Scratch, Marshal.SizeOf(typeof(INPUT)));
-        LastFlushTicks = Stopwatch.GetTimestamp() - started;
-        if (sent != (uint)count)
+        double deadlineMs = FLUSH_RETRY_BUDGET_MS * Math.Max(1, count / 64.0);
+        int offset = 0;
+        double waitedMs = 0;
+        while (offset < count)
         {
-            throw new InvalidOperationException(
-                "SendInput 只注入了 " + sent + "/" + count + " 个事件（可能被 UIPI 或安全软件拦截）");
+            if (StopRequested) break; // 已被中止：剩余事件丢弃，由调用方按 cancelled 处理
+            int remaining = count - offset;
+            INPUT[] batch = Scratch;
+            if (offset > 0)
+            {
+                // 重投时把剩余事件搬到缓冲区头部（SendInput 只能从数组起点发）
+                if (Retry.Length < remaining) Retry = new INPUT[remaining];
+                Array.Copy(Scratch, offset, Retry, 0, remaining);
+                batch = Retry;
+            }
+            uint sent = SendInput((uint)remaining, batch, Marshal.SizeOf(typeof(INPUT)));
+            offset += (int)sent;
+            if (offset >= count) break;
+
+            // 队列满了：等一下再重投。等待量从 1ms 起，随重试次数缓慢增长。
+            double pauseMs = Math.Min(8.0, 1.0 + waitedMs * 0.5);
+            WaitMs(pauseMs);
+            waitedMs += pauseMs;
+            if (waitedMs > deadlineMs)
+            {
+                LastFlushTicks = Stopwatch.GetTimestamp() - started;
+                throw new InvalidOperationException(
+                    "SendInput 只注入了 " + offset + "/" + count + " 个事件（等待 " +
+                    (int)waitedMs + "ms 后输入队列仍未排空：可能被 UIPI 或安全软件拦截）");
+            }
         }
-        return count;
+        LastFlushTicks = Stopwatch.GetTimestamp() - started;
+        return offset;
     }
 
     /// <summary>
@@ -409,28 +439,49 @@ public static class TyperNative
         return extra;
     }
 
-    private static void AppendKeyChord(List<INPUT> pending, int vk, int modifiers, bool sendScan)
+    /// 把修饰键位掩码对应的键事件追加进列表（按下或抬起）
+    private static void AppendModifierKeys(List<INPUT> list, int mask, bool up, bool sendScan)
     {
-        int pressed = 0;
         for (int i = 0; i < ModifierBits.Length; i++)
         {
-            if ((modifiers & ModifierBits[i]) == 0) continue;
+            if ((mask & ModifierBits[i]) == 0) continue;
             int modVk = ModifierVks[i];
-            pending.Add(KeyEvent(modVk, false, sendScan));
-            pressed |= ModifierBits[i];
-            lock (HeldLock) { if (!HeldModifiers.Contains(modVk)) HeldModifiers.Add(modVk); }
+            list.Add(KeyEvent(modVk, up, sendScan));
+            lock (HeldLock)
+            {
+                if (up) HeldModifiers.Remove(modVk);
+                else if (!HeldModifiers.Contains(modVk)) HeldModifiers.Add(modVk);
+            }
         }
+    }
 
-        pending.Add(KeyEvent(vk, false, sendScan));
-        pending.Add(KeyEvent(vk, true, sendScan));
+    /// 修饰键状态从 from 过渡到 to：先松开不再需要的（等 tail），再按下新需要的（等 lead）。
+    ///
+    /// 为什么必须拆成独立调用并留间隔：远程桌面客户端会把同一次 SendInput 里的修饰键与主键
+    /// 合批处理，实测 Shift 在这种批次里会被直接丢弃（Shift+1 到远端只剩 1）；拆开后 10ms 即够。
+    /// @returns 本次过渡实际注入的事件数
+    private static int ApplyModifierTransition(int from, int to, bool dryRun, int leadMs, int tailMs, bool sendScan)
+    {
+        int removeMask = from & ~to;
+        int addMask = to & ~from;
+        if (removeMask == 0 && addMask == 0) return 0;
 
-        for (int i = ModifierBits.Length - 1; i >= 0; i--)
+        int injected = 0;
+        if (removeMask != 0)
         {
-            if ((pressed & ModifierBits[i]) == 0) continue;
-            int modVk = ModifierVks[i];
-            pending.Add(KeyEvent(modVk, true, sendScan));
-            lock (HeldLock) { HeldModifiers.Remove(modVk); }
+            List<INPUT> ups = new List<INPUT>(ModifierBits.Length);
+            AppendModifierKeys(ups, removeMask, true, sendScan);
+            injected += FlushBatch(ups, dryRun);
+            if (tailMs > 0) WaitMs(tailMs);
         }
+        if (addMask != 0)
+        {
+            List<INPUT> downs = new List<INPUT>(ModifierBits.Length);
+            AppendModifierKeys(downs, addMask, false, sendScan);
+            injected += FlushBatch(downs, dryRun);
+            if (leadMs > 0) WaitMs(leadMs);
+        }
+        return injected;
     }
 
     /// 释放一批虚拟键（只发抬起事件）。用于 releaseAll：一次调用发完整批，避免逐个 VK 一次 SendInput。
@@ -461,7 +512,7 @@ public static class TyperNative
     ///
     /// `perItem`：每个动作单独一次 SendInput。数据帧（文件传输）必须开启——实测真实终端下
     /// 一次投递多个字符时，目标端输入缓冲紧张会静默丢掉其中一部分；逐动作投递则零丢失。
-    public static int[] SendBatch(int[] ops, int[] vals, int[] mods, double[] delays, bool sendScan, bool perItem, bool dryRun, int cancelEpoch)
+    public static int[] SendBatch(int[] ops, int[] vals, int[] mods, double[] delays, bool sendScan, bool perItem, int modLeadMs, int modTailMs, bool dryRun, int cancelEpoch)
     {
         int requested = 0;
         int injected = 0;
@@ -510,24 +561,21 @@ public static class TyperNative
                 {
                     throw new ArgumentOutOfRangeException("mods", "未知的修饰键位：" + modifiers);
                 }
-                int modCount = 0;
+                // 修饰键状态切换：事件数按“新增 + 移除”计，再算主键的 down/up 两个
+                int removeMask = HeldModMask & ~modifiers;
+                int addMask = modifiers & ~HeldModMask;
                 for (int b = 0; b < ModifierBits.Length; b++)
                 {
-                    if ((modifiers & ModifierBits[b]) != 0) modCount++;
-                }
-                requested += 2 + 2 * modCount;
-                AppendKeyChord(pending, vals[i], modifiers, sendScan);
-            }
-            else if (op == OP_UNICODE)
-            {
-                int codeUnit = vals[i];
-                if (codeUnit < 0 || codeUnit > 0xFFFF)
-                {
-                    throw new ArgumentOutOfRangeException("vals", "非法的 UTF-16 码元：" + codeUnit);
+                    if ((removeMask & ModifierBits[b]) != 0) requested++;
+                    if ((addMask & ModifierBits[b]) != 0) requested++;
                 }
                 requested += 2;
-                pending.Add(UnicodeEvent(codeUnit, false));
-                pending.Add(UnicodeEvent(codeUnit, true));
+
+                injected += ApplyModifierTransition(HeldModMask, modifiers, dryRun, modLeadMs, modTailMs, sendScan);
+                HeldModMask = modifiers;
+
+                pending.Add(KeyEvent(vals[i], false, sendScan));
+                pending.Add(KeyEvent(vals[i], true, sendScan));
             }
             else if (op != OP_WAIT)
             {
@@ -555,7 +603,7 @@ public static class TyperNative
             (int)Math.Round(maxBlockedMs),
             (int)Math.Round(valveMs),
             blockedCalls,
-            0
+            StopRequested ? 1 : 0
         };
     }
 }
@@ -762,6 +810,13 @@ while ($true) {
                 if ($null -ne $request.sendScanCodes) { $sendScan = [bool]$request.sendScanCodes }
                 # 数据帧：每个动作单独一次 SendInput（一次投递多个字符时，目标端输入缓冲紧张会静默丢字符）
                 $perItem = $request.perItem -eq $true
+                # 修饰键与主键必须分成独立调用并留间隔：远程桌面会把同批的修饰键合批丢弃
+                $modLeadMs = 15
+                if ($null -ne $request.modLeadMs) { $modLeadMs = [int]$request.modLeadMs }
+                if ($modLeadMs -lt 0) { $modLeadMs = 0 }
+                $modTailMs = 10
+                if ($null -ne $request.modTailMs) { $modTailMs = [int]$request.modTailMs }
+                if ($modTailMs -lt 0) { $modTailMs = 0 }
 
                 if ($ops.Count -ne $vals.Count -or $ops.Count -ne $mods.Count -or $ops.Count -ne $delays.Count) {
                     throw "协议错误：ops/vals/mods/delays 长度不一致"
@@ -779,7 +834,7 @@ while ($true) {
                     $delayArray[$i] = [double]$delays[$i]
                 }
 
-                $result = [TyperNative]::SendBatch($opArray, $valArray, $modArray, $delayArray, $sendScan, $perItem, [bool]$DryRun, [int]$epoch)
+                $result = [TyperNative]::SendBatch($opArray, $valArray, $modArray, $delayArray, $sendScan, $perItem, $modLeadMs, $modTailMs, [bool]$DryRun, [int]$epoch)
 
                 # 顺带把"本批结束时谁在前台"带回去：焦点守护每批都要查一次，
                 # 单独发一条 foreground 指令会多一次进程往返（实测约 1ms/批）

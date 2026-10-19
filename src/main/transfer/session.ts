@@ -173,6 +173,7 @@ export class TransferSession {
         kind: 'frames',
         jobId: job.summary.job,
         total: job.summary.total,
+        alphabet: job.summary.alphabet,
         indexes: plan.indexes,
         render: (index) => job.renderFrame(index),
         charsOf: (index) => job.frameChars(index),

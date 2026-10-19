@@ -3,7 +3,7 @@ import { addStandardLetters } from './common'
 
 /**
  * @description 法语布局（fr-FR，AZERTY）：只收录确定无误的键位——字母 a/q、z/w、m 的物理位置
- * 与 QWERTY 不同，且数字本身需要按 Shift；其余符号（& é " ' ( - è _ ç à ) = 等）走 Unicode 注入
+ * 与 QWERTY 不同，且数字本身需要按 Shift；其余符号（& é " ' ( - è _ ç à ) = 等）不可输入
  * @returns 法语布局
  */
 export function createFrLayout(): KeyboardLayout {
@@ -35,7 +35,7 @@ export function createFrLayout(): KeyboardLayout {
   return builder.build(
     'fr',
     'Français',
-    '仅收录字母与数字；符号（& é " \' ( - è _ ç à 等）走 Unicode 注入'
+    '仅收录字母与数字；符号（& é " \' ( - è _ ç à 等）不可输入'
   )
 }
 

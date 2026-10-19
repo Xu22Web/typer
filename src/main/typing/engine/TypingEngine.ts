@@ -22,6 +22,16 @@ import type { TypoCorrection, TypoOptions, TypoStyle } from '../scheduling/typo'
 import { FocusGuard, type FocusGuardMode, type FocusSnapshot } from '../focus/focusGuard'
 import { computeProgress, type ProgressFrames, type ProgressSnapshot } from './progress'
 import { isBusy, type EngineSnapshot, type EngineState } from './states'
+import type { TransferAlphabet } from '@shared/transfer/transfer'
+
+/**
+ * 开始帧/结束帧各发几遍。
+ *
+ * 这两帧决定接收端能不能开工、什么时候合并校验，丢一个字符就得整趟重来；
+ * 而实测链路上确实出现过"整行只丢一个字符"，接收端的帧头 CRC 能当场发现但没东西可补。
+ * 接收端对同一 job 的重复开始帧是幂等的，结束帧重复到达也无副作用，重复成本只有几百个字符。
+ */
+const FRAME_HEAD_REDUNDANCY = 3
 
 /**
  * 一次输入任务的来源。
@@ -39,6 +49,8 @@ export type TypingRequest =
       total: number
       /** 本次要发送的片号（升序；可以是全量、缺失片或指定片） */
       indexes: number[]
+      /** 载荷符号表：真实按键模式无法输入 CJK 符号，用于启动前的快速校验 */
+      alphabet?: TransferAlphabet
       /** 渲染某一帧（返回不含换行的单行文本） */
       render: (index: number) => Promise<string> | string
       /** 某一帧的字符数（用于进度总量与耗时预估，不触发磁盘读取） */
@@ -56,7 +68,6 @@ export interface EngineSettings {
   startDelayMs: number
   chunkSize: number
   layout: string
-  forceUnicodeForAll: boolean
   focusGuard: FocusGuardMode
   seed: number
   /** 完成后自检是否有按键粘住 */
@@ -309,8 +320,7 @@ export class TypingEngine {
     expectedFocus: FocusSnapshot | null
   ): Promise<RunResult['state']> {
     const planBase: PlanOptions = {
-      layout: settings.layout,
-      forceUnicodeForAll: settings.forceUnicodeForAll
+      layout: settings.layout
     }
 
     // 统计动作总数：与产出使用"同种子、同起点"的独立随机源，保证总数准确
@@ -325,6 +335,21 @@ export class TypingEngine {
     const preview = buildPlan(text, planBase)
     if (Object.keys(preview.stats.skipped).length > 0) {
       this.deps.onLog?.('warn', `已跳过不可输入字符：${describeSkipped(preview.stats.skipped)}`)
+    }
+
+    // 没有物理键位的字符（中文、emoji 等）在远程桌面里无法输入：当场报错，不静默丢内容
+    const unsupported = Object.entries(preview.stats.unsupported)
+    if (unsupported.length > 0) {
+      const total = unsupported.reduce((sum, [, count]) => sum + count, 0)
+      const samples = unsupported
+        .slice(0, 8)
+        .map(([char, count]) => `${char}×${count}`)
+        .join(' ')
+      throw new Error(
+        `有 ${total} 个字符没有对应的物理键位，无法通过键盘输入：${samples}` +
+          (unsupported.length > 8 ? ' …' : '') +
+          '（远程桌面只转发真实键盘事件，不支持 Unicode 报文）'
+      )
     }
 
     if (this.aborted) return 'aborted'
@@ -446,21 +471,16 @@ export class TypingEngine {
     expectedFocus: FocusSnapshot | null
   ): Promise<RunResult['state']> {
     const planBase: PlanOptions = {
-      layout: settings.layout,
-      // 帧是数据：必须与目标窗口的布局、输入法状态无关。目标端若开着中文输入法（中文态），
-      // 真实按键会被候选窗吞掉（连回车都可能被当成"提交候选"），数据直接丢失且不报错。
-      // 因此正文走 Unicode 报文、换行也走 Unicode CR 报文（见 resolveChar）。
-      forceUnicodeForAll: true,
-      lineEnding: 'cr'
+      layout: settings.layout
     }
     const beginText = task.begin?.()
     const endText = task.end?.()
 
-    // 总量：开始帧 + 每片（帧字符 + 行尾）+ 结束帧，全部由 charsOf 提供，无需读文件
+    // 总量：开始帧×重复数 + 每片（帧字符 + 行尾）+ 结束帧×重复数，全部由 charsOf 提供，无需读文件
     let total = 0
-    if (beginText) total += beginText.length + 1
+    if (beginText) total += (beginText.length + 1) * FRAME_HEAD_REDUNDANCY
     for (const index of task.indexes) total += Math.max(0, task.charsOf(index)) + 1
-    if (endText) total += endText.length + 1
+    if (endText) total += (endText.length + 1) * FRAME_HEAD_REDUNDANCY
     this.totalCount = total
 
     if (this.aborted) return 'aborted'
@@ -478,9 +498,10 @@ export class TypingEngine {
     /**
      * @description 按节奏下发一段文本（不带行尾换行）。
      *
-     * 帧是**数据**：丢一个字符整片就废了，因此这里每个字符单独一次 `SendInput`（`perItem`），
-     * 由宿主在两个字符之间等待。实测（真实终端接收端，27,657 字符）：逐字符投递 + 1ms 间隔零丢失；
-     * 一次投递多个字符或零延迟快投则会静默丢字符。
+     * 帧是**数据**：丢一个字符整片就废了。稳健/快速档每个字符单独一次 `SendInput`（`perItem`），
+     * 由宿主在两个字符之间等待——实测真实终端下逐字符投递 + 1ms 间隔零丢失。
+     * 极速档（`turbo`）改为攒批直投：少一次投递就少一次固定开销，目标端消化不过来时
+     * 压力阀会自动补等；万一仍丢字符，该片 CRC32 会失败并被单独重传。
      * @param text 要输入的文本
      * @returns 是否全部下发完成；false 表示已中止
      */
@@ -501,7 +522,7 @@ export class TypingEngine {
         // 中止只在下发之间生效：子批大小决定了"紧急停止"的延迟上限
         if (this.aborted) return false
         const batch = items.slice(offset, offset + pace.batchActions)
-        const result = await this.driver.send(batch, { perItem: true })
+        const result = await this.driver.send(batch, { perItem: pace.perItem })
         this.lastForeground = result.foreground ?? null
         this.noteHostPressure(result)
         if (result.cancelled) return false
@@ -541,7 +562,11 @@ export class TypingEngine {
     try {
       if (beginText) {
         if (!(await verifyFocus())) return 'aborted'
-        if (!(await sendFrame(beginText))) return 'aborted'
+        // 开始帧丢了就没法开工（数据帧丢了还能靠续传补），所以连发几遍：
+        // 接收端收到同一 job 的重复开始帧是幂等的，只当一次
+        for (let copy = 0; copy < FRAME_HEAD_REDUNDANCY; copy++) {
+          if (!(await sendFrame(beginText))) return 'aborted'
+        }
       }
 
       let sent = 0
@@ -581,7 +606,10 @@ export class TypingEngine {
 
       if (endText) {
         if (!(await verifyFocus())) return 'aborted'
-        if (!(await sendFrame(endText))) return 'aborted'
+        // 同理：结束帧决定接收端什么时候合并校验，丢一个字符就得让用户手动补发
+        for (let copy = 0; copy < FRAME_HEAD_REDUNDANCY; copy++) {
+          if (!(await sendFrame(endText))) return 'aborted'
+        }
       }
 
       if (settings.verifyStuckKeys) await this.probeStuckKeys()

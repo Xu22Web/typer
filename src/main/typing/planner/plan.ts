@@ -12,107 +12,55 @@ import {
   type KeyboardLayout,
   type LayoutId
 } from './keymap'
-import { isCjk, isPrintableAscii, normalizeText, toCodePoints, toUtf16Units } from './text'
-import type { KeyAction, KeystrokeAction, PlanStats, TypingPlan, UnicodeAction } from './types'
+import { isCjk, normalizeText, toCodePoints } from './text'
+import type { KeyAction, KeystrokeAction, PlanStats, TypingPlan } from './types'
 
 export interface PlanOptions {
   /** 目标窗口使用的键盘布局（决定"真实按键"如何映射） */
   layout?: LayoutId | string
-  /** 全部走 Unicode 注入：与布局无关、最稳，但不是真实按键事件 */
-  forceUnicodeForAll?: boolean
-  /**
-   * 换行怎么下发：`enter` 用真回车键，`cr` 用 Unicode CR（0x0D）报文。
-   *
-   * 目标窗口若开着中文输入法，候选窗可能把真回车当成"提交候选"吃掉，换行就不会到达目标程序；
-   * Unicode 报文绕过输入法，因此数据类传输（文件帧）用 `cr`。
-   */
-  lineEnding?: LineEnding
   /** 造错设置；`null` / 省略表示不打错 */
   typo?: TypoOptions | null
 }
 
-/** 换行下发方式：真回车键 / Unicode CR 报文 */
-export type LineEnding = 'enter' | 'cr'
-
 export type CharResolution =
-  | { kind: 'key'; action: KeyAction; source: 'real' }
-  | {
-      kind: 'unicode'
-      actions: UnicodeAction[]
-      source: 'nonAscii' | 'layoutFallback' | 'lineBreak'
-    }
-  | { kind: 'skip' }
+  { kind: 'key'; action: KeyAction } | { kind: 'unsupported'; char: string }
+
+export const NEWLINE_ACTION: KeyAction = {
+  kind: 'key',
+  vk: VK.ENTER,
+  modifiers: [],
+  char: '\n'
+}
+
+export const TAB_ACTION: KeyAction = { kind: 'key', vk: VK.TAB, modifiers: [], char: '\t' }
 
 /**
- * @description 单字符 → 注入方式；Tab 始终使用真实按键（与布局无关），换行按 `lineEnding` 决定
+ * @description 单字符 → 真实按键；没有物理键位的字符（中文、emoji 等）返回 unsupported
  * @param char 单个码点
  * @param layout 目标窗口使用的键盘布局
- * @param forceUnicodeForAll 是否强制全部走 Unicode 注入
- * @param lineEnding 换行用真回车键还是 Unicode CR 报文
- * @returns 真实按键 / Unicode 报文 / 跳过
+ * @returns 真实按键动作，或"无法输入"
  */
-export function resolveChar(
-  char: string,
-  layout: KeyboardLayout,
-  forceUnicodeForAll = false,
-  lineEnding: LineEnding = 'enter'
-): CharResolution {
-  if (char === '\n') {
-    if (lineEnding === 'cr') {
-      // 真实回车在有输入法的窗口里可能被候选窗当成"提交候选"吃掉（换行根本没到目标程序），
-      // 数据类传输必须与输入法状态无关，因此改用 Unicode CR 报文。
-      return {
-        kind: 'unicode',
-        actions: [{ kind: 'unicode', codeUnit: 0x0d, char }],
-        source: 'lineBreak'
-      }
-    }
-    return {
-      kind: 'key',
-      action: { kind: 'key', vk: VK.ENTER, modifiers: [], char },
-      source: 'real'
-    }
-  }
-  if (char === '\t') {
-    return { kind: 'key', action: { kind: 'key', vk: VK.TAB, modifiers: [], char }, source: 'real' }
-  }
+export function resolveChar(char: string, layout: KeyboardLayout): CharResolution {
+  if (char === '\n') return { kind: 'key', action: NEWLINE_ACTION }
+  if (char === '\t') return { kind: 'key', action: TAB_ACTION }
 
-  if (!forceUnicodeForAll) {
-    const key = lookupLayoutKey(layout, char)
-    if (key) {
-      return {
-        kind: 'key',
-        action: { kind: 'key', vk: key.vk, modifiers: [...key.modifiers], char },
-        source: 'real'
-      }
-    }
-  }
-
-  const units = toUtf16Units(char)
-  const actions: UnicodeAction[] = units.map((codeUnit, index) => {
-    const action: UnicodeAction = { kind: 'unicode', codeUnit, char }
-    if (index > 0) action.continues = true
-    return action
-  })
+  const key = lookupLayoutKey(layout, char)
+  if (!key) return { kind: 'unsupported', char }
 
   return {
-    kind: 'unicode',
-    actions,
-    source: isPrintableAscii(char) ? 'layoutFallback' : 'nonAscii'
+    kind: 'key',
+    action: { kind: 'key', vk: key.vk, modifiers: [...key.modifiers], char }
   }
 }
 
 interface PlanCollector {
   typed: number
-  layoutFallbacks: number
-  unicodeChars: number
+  unsupported: Record<string, number>
   typos: number
 }
 
 interface IterateContext {
   layout: KeyboardLayout
-  forceUnicodeForAll: boolean
-  lineEnding: LineEnding
   typo: TypoOptions | null
   collector?: PlanCollector
 }
@@ -129,31 +77,18 @@ function* emitChar(
   context: IterateContext,
   options: { countStats: boolean }
 ): Generator<KeystrokeAction> {
-  const resolution = resolveChar(
-    char,
-    context.layout,
-    context.forceUnicodeForAll,
-    context.lineEnding
-  )
-
-  if (resolution.kind === 'skip') return
-
+  const resolution = resolveChar(char, context.layout)
   const collector = context.collector
-  if (collector && options.countStats) {
-    if (resolution.source === 'layoutFallback') collector.layoutFallbacks += 1
-    else if (resolution.source === 'nonAscii') collector.unicodeChars += 1
-  }
 
-  if (resolution.kind === 'key') {
-    if (collector) collector.typed += 1
-    yield resolution.action
+  if (resolution.kind === 'unsupported') {
+    if (collector && options.countStats) {
+      collector.unsupported[char] = (collector.unsupported[char] ?? 0) + 1
+    }
     return
   }
 
-  for (const action of resolution.actions) {
-    if (collector) collector.typed += 1
-    yield action
-  }
+  if (collector) collector.typed += 1
+  yield resolution.action
 }
 
 /**
@@ -243,7 +178,7 @@ function* iterateCodes(codes: string[], context: IterateContext): Generator<Keys
  * @description 流式产出动作：不保存整个动作数组，长文本也只占常数内存；启用造错时，
  * 调用方必须为"计数"与"产出"两次遍历提供同种子、同起点的独立 Rng，否则总数与实际动作数会不一致
  * @param input 原始文本
- * @param options 布局、Unicode 强制与造错设置
+ * @param options 布局与造错设置
  * @returns 动作生成器
  */
 export function* iterateActions(
@@ -253,8 +188,6 @@ export function* iterateActions(
   const { text } = normalizeText(input)
   yield* iterateCodes(toCodePoints(text), {
     layout: getLayout(options.layout),
-    forceUnicodeForAll: options.forceUnicodeForAll ?? false,
-    lineEnding: options.lineEnding ?? 'enter',
     typo: options.typo ?? null
   })
 }
@@ -262,7 +195,7 @@ export function* iterateActions(
 /**
  * @description 一次性构建完整计划（保留动作）并汇总统计，供预览与自检使用
  * @param input 原始文本
- * @param options 布局、Unicode 强制与造错设置
+ * @param options 布局与造错设置
  * @returns 动作列表与统计
  */
 export function buildPlan(input: string, options: PlanOptions = {}): TypingPlan {
@@ -270,16 +203,13 @@ export function buildPlan(input: string, options: PlanOptions = {}): TypingPlan 
   const codes = toCodePoints(text)
   const collector: PlanCollector = {
     typed: 0,
-    layoutFallbacks: 0,
-    unicodeChars: 0,
+    unsupported: {},
     typos: 0
   }
 
   const actions = [
     ...iterateCodes(codes, {
       layout: getLayout(options.layout),
-      forceUnicodeForAll: options.forceUnicodeForAll ?? false,
-      lineEnding: options.lineEnding ?? 'enter',
       typo: options.typo ?? null,
       collector
     })
@@ -289,8 +219,7 @@ export function buildPlan(input: string, options: PlanOptions = {}): TypingPlan 
     chars: codes.length,
     typed: collector.typed,
     cjk: codes.filter((code) => isCjk(code)).length,
-    layoutFallbacks: collector.layoutFallbacks,
-    unicodeChars: collector.unicodeChars,
+    unsupported: collector.unsupported,
     typos: collector.typos,
     skipped
   }
@@ -301,21 +230,18 @@ export function buildPlan(input: string, options: PlanOptions = {}): TypingPlan 
 /**
  * @description 只统计动作数（不保留动作），用于进度估算
  * @param input 原始文本
- * @param options 布局、Unicode 强制与造错设置
+ * @param options 布局与造错设置
  * @returns 动作总数
  */
 export function countTypedActions(input: string, options: PlanOptions = {}): number {
   const { text } = normalizeText(input)
   const collector: PlanCollector = {
     typed: 0,
-    layoutFallbacks: 0,
-    unicodeChars: 0,
+    unsupported: {},
     typos: 0
   }
   const iterator = iterateCodes(toCodePoints(text), {
     layout: getLayout(options.layout),
-    forceUnicodeForAll: options.forceUnicodeForAll ?? false,
-    lineEnding: options.lineEnding ?? 'enter',
     typo: options.typo ?? null,
     collector
   })

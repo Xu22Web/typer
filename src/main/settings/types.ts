@@ -8,7 +8,11 @@ import type { TransferPace } from '../typing/scheduling/profile'
 import type { TimingSettings } from '../typing/scheduling/timing'
 import type { TypoCorrection, TypoStyle } from '../typing/scheduling/typo'
 import type { DockEdge } from '../window/floatDock'
-import type { TransferEncoding } from '@shared/transfer/transfer'
+import type {
+  TransferAlphabet,
+  TransferCompression,
+  TransferTargetMode
+} from '@shared/transfer/transfer'
 
 export type LogLevel = 'silent' | 'error' | 'warn' | 'info' | 'debug'
 export type ImportCharset = 'auto' | 'utf8' | 'utf16le' | 'gbk'
@@ -32,8 +36,6 @@ export interface Settings {
   }
   keyboard: {
     layout: LayoutId
-    /** 全部走 Unicode 注入（与布局无关，最稳） */
-    forceUnicodeForAll: boolean
   }
   focusGuard: FocusGuardMode
   hotkeys: {
@@ -51,15 +53,21 @@ export interface Settings {
   }
   /** 文件传输（把文件逐片"打"到目标窗口） */
   transfer: {
-    /** 载荷编码：hex / b64 / txt（默认 hex：最抗终端与输入法干扰） */
-    encoding: TransferEncoding
-    /** 节奏档：safe 保留每字符 1ms 下限；fast 零延迟，靠压力阀按目标端自适应 */
+    /** 载荷符号表：ascii32（5 比特、零 Shift，云桌面推荐）/ ascii64（6 比特）/ hex（4 比特，诊断） */
+    alphabet: TransferAlphabet
+    /** 压缩方式：auto（按样本决定）/ br（Brotli）/ none */
+    compression: TransferCompression
+    /** Brotli 质量（1~11）：9 是速度与压缩率的平衡点 */
+    quality: number
+    /** 目标端：终端 / 编辑器 / 单行输入框（决定换行方式） */
+    mode: TransferTargetMode
+    /** 节奏档：safe 逐字 1ms；fast 逐字无停顿；turbo 攒批 + 零延迟 + 压力阀自适应 */
     paceMode: TransferPace
-    /** 每片原始字节数 */
+    /** 每片线上字节数 */
     chunkBytes: number
-    /** 单帧字符上限（终端/剪贴板对单行长度都有限制） */
+    /** 单帧字符上限 */
     maxFrameChars: number
-    /** 片与片之间的额外停顿：给接收端落盘/回显留时间 */
+    /** 片与片之间的额外停顿 */
     interFrameDelayMs: number
   }
   update: {

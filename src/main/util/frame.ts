@@ -1,41 +1,59 @@
-// Typer 文件传输「线格式」v1 的唯一实现。
+// Typer 文件传输「线格式」v2 的唯一实现。
 // 主进程（生成帧、算续传计划）与接收端脚本（tools/typer-recv.ts）共用同一份实现，收发两端不可能出现实现漂移。
 // 只用 node: 内置模块、零第三方依赖，Node >= 16 可运行。
-// 帧一定是单行、纯 ASCII、无空白：目标是终端或串口，回车即提交，任何控制字符都会把数据搅乱，所以二进制必须先编码。
+// 帧一定是单行：ASCII 帧头 + 不含空白的符号载荷。目标是终端或输入框，回车即提交，
+// 任何控制字符都会把数据搅乱，所以二进制必须先编码（见 util/codec.ts）。
 
 import { createHash } from 'node:crypto'
-import { deflateRawSync, inflateRawSync } from 'node:zlib'
 
-/**
- * 载荷编码：hex（最抗终端干扰）/ base64（紧凑）/ 转义文本（按字符切分）/
- * gzb64（逐片 deflate 后再 base64，文本类文件只有十六进制约三分之一的字符数）。
- */
-export type FrameEncoding = 'hex' | 'b64' | 'txt' | 'gzb64'
+import {
+  CodecError,
+  decodeSymbols,
+  encodeSymbols,
+  getAlphabet,
+  isAlphabetId,
+  symbolCount,
+  type AlphabetId
+} from './codec'
+
+export {
+  CodecError,
+  decodeSymbols,
+  encodeSymbols,
+  getAlphabet,
+  isAlphabetId,
+  symbolCount,
+  type AlphabetId
+}
 
 /** 可当字节序列使用的输入。 */
 export type BytesLike = Uint8Array | string | ArrayBuffer | ArrayBufferView
 
 /** 线格式版本。字段含义变化时必须递增，接收端据此拒绝不认识的帧。 */
-export const FRAME_VERSION = 1
+export const FRAME_VERSION = 2
 
-/** 帧标记（`@TYPER1/` 后缀区分帧类型，见 tools/README.md）。 */
+/** 帧标记（`@T2` 后缀区分帧类型）。 */
 export const MARKERS = {
-  begin: '@TYPER1/B',
-  data: '@TYPER1/D',
-  end: '@TYPER1/E',
-  resume: '@TYPER1/R'
+  begin: '@T2H',
+  data: '@T2D',
+  end: '@T2E',
+  resume: '@T2R'
 } as const
 
-/** 全部受支持的载荷编码。 */
-export const ENCODINGS: readonly FrameEncoding[] = ['hex', 'b64', 'txt', 'gzb64']
-export const DEFAULT_CHUNK_BYTES = 8192
-export const DEFAULT_MAX_FRAME_CHARS = 24576
-/** `gzb64` 的 deflate 等级：默认 6 级，压缩率与耗时的平衡点。 */
-export const COMPRESSION_LEVEL = 6
-/** 硬上限：单片字节数（更大的片在终端/剪贴板上几乎必然失败）。 */
+/** 载荷压缩方式：`none` 原样，`br` 整文件 Brotli（分片是压缩流的切片）。 */
+export type CompressionId = 'none' | 'br'
+export const COMPRESSIONS: readonly CompressionId[] = ['none', 'br']
+
+/** 目标端换行方式：终端用 CR 报文，编辑器用真回车，单行输入框不加换行。 */
+export type TargetMode = 'term' | 'editor' | 'line'
+export const TARGET_MODES: readonly TargetMode[] = ['term', 'editor', 'line']
+
+export const DEFAULT_CHUNK_BYTES = 16384
+export const DEFAULT_MAX_FRAME_CHARS = 65536
+/** 硬上限：单片线上字节数。 */
 export const MAX_CHUNK_BYTES = 1024 * 1024
 /** 硬上限：单帧字符数（接收端要先把整行读进内存）。 */
-export const MAX_FRAME_CHARS = 1024 * 1024
+export const MAX_FRAME_CHARS = 4 * 1024 * 1024
 
 /** 协议层错误码。 */
 export type FrameErrorCode =
@@ -49,7 +67,7 @@ export class FrameError extends Error {
 
   /**
    * @description 构造协议层错误
-   * @param code 机器可读错误码（marker / field / crc / len / enc / overlong / job / range / empty）
+   * @param code 机器可读错误码
    * @param message 面向用户的中文说明
    * @param detail 附加细节（不包含数据原文，避免把内容写进日志）
    */
@@ -67,8 +85,8 @@ export const ERROR_HINTS: Readonly<Record<string, string>> = {
   field: '帧字段数量或格式不对，通常是传输过程中被截断或插入字符；请重传该片',
   crc: '片校验失败（数据与校验和不一致），该片需重传',
   len: '片长度与声明不一致，通常是被截断；请减小片大小或降低输入速率后重传该片',
-  enc: '载荷编码不合法（含非法字符或长度不对），该片需重传',
-  overlong: '该帧超出长度上限（终端/剪贴板截断），请用更小的片或「窄终端」预设',
+  enc: '载荷含符号表之外的字符或长度不对，该片需重传',
+  overlong: '该帧超出长度上限（终端/剪贴板截断），请用更小的片',
   job: '帧属于另一次任务（job 不一致），请确认没有混入上一次的数据',
   range: '序号或区间不合法',
   empty: '内容为空'
@@ -90,7 +108,7 @@ export function toBytes(input: BytesLike): Uint8Array {
 }
 
 // ---------------------------------------------------------------------------
-// 校验与编码：CRC32 / SHA-256
+// 校验：CRC32 / SHA-256
 // ---------------------------------------------------------------------------
 
 let crcTable: Uint32Array | null = null
@@ -148,15 +166,6 @@ export function sha256Hex(input: BytesLike): string {
 }
 
 /**
- * @description 片级强校验值：SHA-256 的前 8 字节；与 CRC32 组合，兼顾"查错"与"防碰巧"
- * @param input 字节序列
- * @returns 16 位小写 hex
- */
-export function sha16Hex(input: BytesLike): string {
-  return createHash('sha256').update(toBytes(input)).digest('hex').slice(0, 16)
-}
-
-/**
  * @description 生成随机 job id（8 位小写 hex）
  * @param random 随机源（可注入以便测试得到确定值）
  * @returns 8 位小写 hex
@@ -167,251 +176,32 @@ export function randomJobId(random: () => number = Math.random): string {
   return out
 }
 
-// ---------------------------------------------------------------------------
-// 载荷编码
-// ---------------------------------------------------------------------------
-
 /**
- * @description 判断取值是否为受支持的载荷编码
+ * @description 判断取值是否为受支持的压缩方式
  * @param value 待判断的值
- * @returns 是否为 FrameEncoding
+ * @returns 是否为 CompressionId
  */
-export function isEncoding(value: unknown): value is FrameEncoding {
-  return typeof value === 'string' && (ENCODINGS as readonly string[]).includes(value)
+export function isCompression(value: unknown): value is CompressionId {
+  return value === 'none' || value === 'br'
 }
 
 /**
- * @description 字节 → 可安全输入的单行载荷字符串（hex 大写；b64 标准 base64）
- * @param bytes 原始字节
- * @param enc 目标编码（txt 请改用 escapeText）
- * @returns 编码后的载荷
+ * @description 判断取值是否为受支持的目标端模式
+ * @param value 待判断的值
+ * @returns 是否为 TargetMode
  */
-export function encodeBytes(bytes: BytesLike, enc: FrameEncoding): string {
-  const input = toBytes(bytes)
-  if (enc === 'hex') {
-    let out = ''
-    for (let index = 0; index < input.length; index++) {
-      out += input[index].toString(16).padStart(2, '0').toUpperCase()
-    }
-    return out
-  }
-  if (enc === 'b64') return Buffer.from(input).toString('base64')
-  if (enc === 'txt') throw new FrameError('enc', 'txt 编码请使用 escapeText（需要按字符切分）')
-  if (enc === 'gzb64') throw new FrameError('enc', 'gzb64 请使用 encodePayload（需要先压缩再编码）')
-  throw new FrameError('enc', `不支持的编码 ${String(enc)}`)
+export function isTargetMode(value: unknown): value is TargetMode {
+  return value === 'term' || value === 'editor' || value === 'line'
 }
 
 /**
- * @description 载荷字符串 → 字节，并做严格校验；必须严格是因为 `Buffer.from` 对非法输入是
- * "尽力而为"，不校验会把"看起来像但其实是噪声"的内容解出错误结果
- * @param payload 单行载荷
- * @param enc 载荷编码
- * @returns 解码后的字节
+ * @description 给定线上字节数需要的载荷字符数（用于发送前的精确耗时预估）
+ * @param bytes 线上字节数
+ * @param alphabet 符号表
+ * @returns 载荷字符数
  */
-export function decodeBytes(payload: string, enc: FrameEncoding): Uint8Array {
-  if (enc === 'hex') {
-    if (payload.length % 2 !== 0) {
-      throw new FrameError('enc', 'hex 载荷长度为奇数', `长度 ${payload.length}`)
-    }
-    if (!/^[0-9a-fA-F]*$/.test(payload)) {
-      throw new FrameError('enc', 'hex 载荷含非十六进制字符')
-    }
-    const out = new Uint8Array(payload.length / 2)
-    for (let index = 0; index < out.length; index++) {
-      out[index] = parseInt(payload.slice(index * 2, index * 2 + 2), 16)
-    }
-    return out
-  }
-  if (enc === 'b64') {
-    if (!/^[A-Za-z0-9+/]*={0,2}$/.test(payload) || payload.length % 4 !== 0) {
-      throw new FrameError('enc', 'base64 载荷格式不合法')
-    }
-    const buffer = Buffer.from(payload, 'base64')
-    // 往返比对：`Buffer.from` 对非法输入是"尽力而为"，不比对会把坏数据当成功
-    if (buffer.toString('base64') !== payload) {
-      throw new FrameError('enc', 'base64 载荷无法原样还原')
-    }
-    return new Uint8Array(buffer)
-  }
-  if (enc === 'txt') {
-    throw new FrameError('enc', 'txt 载荷请使用 unescapeText（需要按字符切分）')
-  }
-  if (enc === 'gzb64') {
-    throw new FrameError('enc', 'gzb64 请使用 decodePayload（载荷是压缩字节的 Base64）')
-  }
-  throw new FrameError('enc', `不支持的编码 ${String(enc)}`)
-}
-
-/**
- * @description 载荷字符串实际使用的底层编码（`gzb64` 的载荷是"压缩后字节"的 Base64）
- * @param enc 帧声明的编码
- * @returns 底层编码
- */
-export function payloadEncoding(enc: FrameEncoding): 'hex' | 'b64' | 'txt' {
-  return enc === 'gzb64' ? 'b64' : enc
-}
-
-/**
- * @description 原始字节 → 线上字节：`gzb64` 先做 deflate 压缩，其余编码原样返回
- *
- * 数据帧声明的 `bytes` / `crc32` / `sha16` 一律按**线上字节**计算，
- * 这样"收到的片有没有坏"在解压之前就能判出来。
- * @param raw 原始字节
- * @param enc 帧声明的编码
- * @returns 线上字节
- */
-export function toWireBytes(raw: BytesLike, enc: FrameEncoding): Uint8Array {
-  const bytes = toBytes(raw)
-  if (enc !== 'gzb64') return bytes
-  return new Uint8Array(deflateRawSync(bytes, { level: COMPRESSION_LEVEL }))
-}
-
-/**
- * @description 线上字节 → 原始字节：`gzb64` 用 inflate 还原，其余编码原样返回
- * @param wire 线上字节
- * @param enc 帧声明的编码
- * @returns 原始字节
- */
-export function fromWireBytes(wire: BytesLike, enc: FrameEncoding): Uint8Array {
-  const bytes = toBytes(wire)
-  if (enc !== 'gzb64') return bytes
-  try {
-    return new Uint8Array(inflateRawSync(bytes))
-  } catch {
-    throw new FrameError('enc', 'gzb64 分片无法解压（数据损坏或片被截断）')
-  }
-}
-
-/**
- * @description 原始字节 → 数据帧载荷：先转成线上字节，再按底层编码写成单行字符串
- * @param raw 原始字节
- * @param enc 帧声明的编码
- * @returns 线上字节与其对应的载荷字符串
- */
-export function encodePayload(
-  raw: BytesLike,
-  enc: FrameEncoding
-): { wire: Uint8Array; payload: string } {
-  if (enc === 'txt') throw new FrameError('enc', 'txt 编码请使用 escapeText（需要按字符切分）')
-  const wire = toWireBytes(raw, enc)
-  return { wire, payload: encodeBytes(wire, payloadEncoding(enc)) }
-}
-
-/**
- * @description 数据帧载荷 → 线上字节（还没解压）
- * @param payload 载荷字符串
- * @param enc 帧声明的编码
- * @returns 线上字节
- */
-export function decodePayload(payload: string, enc: FrameEncoding): Uint8Array {
-  return decodeBytes(payload, payloadEncoding(enc))
-}
-
-const TEXT_ESCAPES: Record<string, string> = {
-  '\\': '\\\\',
-  '\r': '\\r',
-  '\n': '\\n',
-  '\t': '\\t',
-  // 空格必须转义：帧是空格分隔的。用两字符的 `\s` 而不是四字符的 `\x20`，
-  // 缩进密集的源码因此少打近三成字符（解不开的旧接收端会因 CRC 不符而明确报错，不会静默写坏数据）。
-  ' ': '\\s'
-}
-
-/**
- * @description 文本 → 单行转义载荷（`txt` 编码），按字符边界切分，CJK / emoji 原样保留；
- * 必须转义的是反斜杠与 CR / LF / TAB（会破坏"单行"约束）、空格（会把帧字段切错）
- * 以及会被解析端 `trim()` 吃掉的其它空白字符
- * @param text 原文
- * @returns 单行转义载荷
- */
-export function escapeText(text: string): string {
-  let out = ''
-  for (const char of String(text)) {
-    const simple = TEXT_ESCAPES[char]
-    if (simple) {
-      out += simple
-      continue
-    }
-    // 逐个码点迭代，codePointAt 必然有值
-    const code = char.codePointAt(0) as number
-    if (code <= 0x20 || code === 0x7f) {
-      out += `\\x${code.toString(16).padStart(2, '0')}`
-      continue
-    }
-    // 非 ASCII 的空白（如 U+00A0、U+3000、U+FEFF）用 \uXXXX，避免被 trim/分词吞掉
-    if (/[\s\uFEFF]/.test(char)) {
-      out += `\\u${code.toString(16).padStart(4, '0')}`
-      continue
-    }
-    out += char
-  }
-  return out
-}
-
-/**
- * @description 转义载荷还原成原文；未知转义序列原样保留（宽容处理），非法 `\xNN` / `\uXXXX` 会报错
- * @param payload 单行转义载荷
- * @returns 还原后的文本
- */
-export function unescapeText(payload: string): string {
-  let out = ''
-  for (let index = 0; index < payload.length; index++) {
-    const char = payload[index]
-    if (char !== '\\') {
-      out += char
-      continue
-    }
-    const next = payload[index + 1]
-    if (next === undefined) {
-      throw new FrameError('enc', '转义载荷以孤立的反斜杠结尾')
-    }
-    if (next === '\\') {
-      out += '\\'
-      index += 1
-      continue
-    }
-    if (next === 'r') {
-      out += '\r'
-      index += 1
-      continue
-    }
-    if (next === 'n') {
-      out += '\n'
-      index += 1
-      continue
-    }
-    if (next === 't') {
-      out += '\t'
-      index += 1
-      continue
-    }
-    if (next === 's') {
-      out += ' '
-      index += 1
-      continue
-    }
-    if (next === 'x') {
-      const hex = payload.slice(index + 2, index + 4)
-      if (!/^[0-9a-fA-F]{2}$/.test(hex)) {
-        throw new FrameError('enc', '转义载荷含非法 \\x 序列')
-      }
-      out += String.fromCharCode(parseInt(hex, 16))
-      index += 3
-      continue
-    }
-    if (next === 'u') {
-      const hex = payload.slice(index + 2, index + 6)
-      if (!/^[0-9a-fA-F]{4}$/.test(hex)) {
-        throw new FrameError('enc', '转义载荷含非法 \\u 序列')
-      }
-      out += String.fromCharCode(parseInt(hex, 16))
-      index += 5
-      continue
-    }
-    // 未知转义：保留原文（例如目标文本里确实写了 \d）
-    out += char
-  }
-  return out
+export function payloadCharsFor(bytes: number, alphabet: AlphabetId): number {
+  return symbolCount(bytes, alphabet)
 }
 
 // ---------------------------------------------------------------------------
@@ -443,18 +233,25 @@ function assertUint(value: number, name: string, max: number): void {
 /** 开始帧字段。 */
 export interface BeginFrameMeta {
   job: string
+  /** 数据片总数（不含开始/结束帧） */
   total: number
+  /** 原始文件字节数 */
   size: number
-  enc: FrameEncoding
+  /** 线上字节数（压缩后的字节数；`none` 时等于 size） */
+  wire: number
+  /** 每片线上字节数 */
   chunk: number
-  /** 原名（可省略；接收端也可用 `-o` 覆盖） */
+  /** 文件名（UTF-8 base64url；`-` 表示不指定） */
   name?: string | null
-  /** 整文件 SHA-256（64 位小写 hex） */
+  alphabet: AlphabetId
+  compression: CompressionId
+  mode: TargetMode
+  /** 原始文件的整文件 SHA-256 */
   sha256: string
 }
 
 /**
- * @description 构造开始帧：接收端据此知道任务规模与期望哈希，从而能边收边判并提前建工作目录
+ * @description 构造开始帧：接收端据此知道任务规模、编码与期望哈希，从而能边收边判并提前建工作目录
  * @param meta 开始帧字段
  * @returns 单行帧文本
  */
@@ -462,63 +259,68 @@ export function buildBeginFrame(meta: BeginFrameMeta): string {
   assertJobPart(meta.job)
   assertUint(meta.total, 'total', 0xffffffff)
   assertUint(meta.size, 'size', Number.MAX_SAFE_INTEGER)
+  assertUint(meta.wire, 'wire', Number.MAX_SAFE_INTEGER)
   assertUint(meta.chunk, 'chunk', MAX_CHUNK_BYTES)
-  if (!isEncoding(meta.enc)) throw new FrameError('enc', `不支持的编码 ${String(meta.enc)}`)
+  if (!isAlphabetId(meta.alphabet)) {
+    throw new FrameError('enc', `不支持的符号表 ${String(meta.alphabet)}`)
+  }
+  if (!isCompression(meta.compression)) {
+    throw new FrameError('enc', `不支持的压缩方式 ${String(meta.compression)}`)
+  }
+  if (!isTargetMode(meta.mode)) {
+    throw new FrameError('field', `不支持的目标端模式 ${String(meta.mode)}`)
+  }
   if (typeof meta.sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(meta.sha256)) {
     throw new FrameError('field', '整文件 sha256 不合法（应为 64 位小写 hex）')
   }
   const name = meta.name ? Buffer.from(String(meta.name), 'utf8').toString('base64url') : '-'
-  return [
+  const head = [
     MARKERS.begin,
     meta.job,
     String(meta.total),
     String(meta.size),
-    meta.enc,
+    String(meta.wire),
     String(meta.chunk),
     name,
-    meta.sha256
+    meta.alphabet,
+    meta.compression,
+    meta.mode
   ].join(' ')
+  // 帧头自带 CRC：链路偶尔会丢一个字符（尤其攒批直投时），
+  // 而"size 少一位"这种改动会让接收端按错误规模合并，必须当场判出来。
+  return `${head} ${crc32Hex(head)} ${meta.sha256}`
 }
 
 /** 数据帧字段。 */
 export interface DataFrameMeta {
   job: string
   seq: number
-  total: number
-  /** 本片原始字节数（txt 编码为目标编码下的字节数） */
+  /** 本片线上字节数（压缩流切片长度） */
   bytes: number
+  /** 本片线上字节的 CRC32（8 位小写 hex） */
   crc32: string
-  sha16: string
-  enc: FrameEncoding
-  /** 已编码的单行载荷 */
+  /** 已编码的符号载荷 */
   payload: string
 }
 
 /**
  * @description 构造数据帧
- * @param meta 数据帧字段（payload 必须是已经编码好的单行字符串）
+ * @param meta 数据帧字段（payload 必须是已经编码好的符号串）
  * @returns 单行帧文本
  */
 export function buildDataFrame(meta: DataFrameMeta): string {
   assertJobPart(meta.job)
   assertUint(meta.seq, 'seq', 0xffffffff)
-  assertUint(meta.total, 'total', 0xffffffff)
   assertUint(meta.bytes, 'bytes', MAX_CHUNK_BYTES)
-  if (!isEncoding(meta.enc)) throw new FrameError('enc', `不支持的编码 ${String(meta.enc)}`)
+  if (!/^[0-9a-f]{8}$/.test(meta.crc32)) {
+    throw new FrameError('field', '数据帧的 crc32 不合法（应为 8 位小写 hex）')
+  }
   if (typeof meta.payload !== 'string' || meta.payload.length === 0 || /\s/.test(meta.payload)) {
     throw new FrameError('field', '载荷不能为空或包含空白字符')
   }
-  return [
-    MARKERS.data,
-    meta.job,
-    String(meta.seq),
-    String(meta.total),
-    String(meta.bytes),
-    meta.crc32,
-    meta.sha16,
-    meta.enc,
-    meta.payload
-  ].join(' ')
+  const head = [MARKERS.data, meta.job, String(meta.seq), String(meta.bytes), meta.crc32].join(' ')
+  // 同开始帧：帧头也带 CRC，避免"字节数/序号少一位"被当成合法帧
+  return `${head} ${crc32Hex(head)} ${meta.payload}`
 }
 
 /** 结束帧字段。 */
@@ -526,11 +328,12 @@ export interface EndFrameMeta {
   job: string
   total: number
   size: number
+  wire: number
   sha256: string
 }
 
 /**
- * @description 构造结束帧：携带整文件哈希与大小，接收端只有在全部片都通过后才会用它做最终校验
+ * @description 构造结束帧：携带整文件哈希与规模，接收端只有在全部片都通过后才会用它做最终校验
  * @param meta 结束帧字段
  * @returns 单行帧文本
  */
@@ -538,10 +341,18 @@ export function buildEndFrame(meta: EndFrameMeta): string {
   assertJobPart(meta.job)
   assertUint(meta.total, 'total', 0xffffffff)
   assertUint(meta.size, 'size', Number.MAX_SAFE_INTEGER)
+  assertUint(meta.wire, 'wire', Number.MAX_SAFE_INTEGER)
   if (typeof meta.sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(meta.sha256)) {
     throw new FrameError('field', '整文件 sha256 不合法（应为 64 位小写 hex）')
   }
-  return [MARKERS.end, meta.job, String(meta.total), String(meta.size), meta.sha256].join(' ')
+  const head = [
+    MARKERS.end,
+    meta.job,
+    String(meta.total),
+    String(meta.size),
+    String(meta.wire)
+  ].join(' ')
+  return `${head} ${crc32Hex(head)} ${meta.sha256}`
 }
 
 /** 续传令牌字段。 */
@@ -583,9 +394,12 @@ export interface ParsedBeginFrame {
   job: string
   total: number
   size: number
-  enc: FrameEncoding
+  wire: number
   chunk: number
   name: string | null
+  alphabet: AlphabetId
+  compression: CompressionId
+  mode: TargetMode
   sha256: string
 }
 
@@ -595,11 +409,8 @@ export interface ParsedDataFrame {
   version: number
   job: string
   seq: number
-  total: number
   bytes: number
   crc32: string
-  sha16: string
-  enc: FrameEncoding
   payload: string
 }
 
@@ -610,6 +421,7 @@ export interface ParsedEndFrame {
   job: string
   total: number
   size: number
+  wire: number
   sha256: string
 }
 
@@ -642,14 +454,25 @@ export function parseFrame(line: string): ParsedFrame {
   const marker = parts[0]
 
   if (marker === MARKERS.begin) {
-    if (parts.length !== 8) {
-      throw new FrameError('field', `开始帧应有 7 个字段，实际 ${parts.length - 1}`)
+    if (parts.length !== 12) {
+      throw new FrameError('field', `开始帧应有 11 个字段，实际 ${parts.length - 1}`)
     }
     const job = parts[1]
     assertJobPart(job)
-    const enc = parts[4]
-    if (!isEncoding(enc)) throw new FrameError('enc', `不支持的编码 ${String(enc)}`)
-    const sha256 = parts[7]
+    const alphabet = parts[7]
+    if (!isAlphabetId(alphabet)) {
+      throw new FrameError('enc', `不支持的符号表 ${String(alphabet)}`)
+    }
+    const compression = parts[8]
+    if (!isCompression(compression)) {
+      throw new FrameError('enc', `不支持的压缩方式 ${String(compression)}`)
+    }
+    const mode = parts[9]
+    if (!isTargetMode(mode)) {
+      throw new FrameError('field', `不支持的目标端模式 ${String(mode)}`)
+    }
+    verifyHeaderCrc(parts, 10)
+    const sha256 = parts[11]
     if (!/^[0-9a-f]{64}$/.test(sha256)) throw new FrameError('field', '开始帧的 sha256 不合法')
     return {
       kind: 'begin',
@@ -657,46 +480,44 @@ export function parseFrame(line: string): ParsedFrame {
       job,
       total: readUint(parts[2], 'total'),
       size: readUint(parts[3], 'size'),
-      enc,
+      wire: readUint(parts[4], 'wire'),
       chunk: readUint(parts[5], 'chunk'),
       name: parts[6] === '-' ? null : decodeName(parts[6]),
+      alphabet,
+      compression,
+      mode,
       sha256
     }
   }
 
   if (marker === MARKERS.data) {
-    if (parts.length !== 9) {
-      throw new FrameError('field', `数据帧应有 8 个字段，实际 ${parts.length - 1}`)
+    if (parts.length !== 7) {
+      throw new FrameError('field', `数据帧应有 6 个字段，实际 ${parts.length - 1}`)
     }
     const job = parts[1]
     assertJobPart(job)
-    const enc = parts[7]
-    if (!isEncoding(enc)) throw new FrameError('enc', `不支持的编码 ${String(enc)}`)
-    const crc = parts[5]
+    const crc = parts[4]
     if (!/^[0-9a-f]{8}$/.test(crc)) throw new FrameError('field', '数据帧的 crc32 不合法')
-    const sha16 = parts[6]
-    if (!/^[0-9a-f]{16}$/.test(sha16)) throw new FrameError('field', '数据帧的 sha16 不合法')
+    verifyHeaderCrc(parts, 5)
     return {
       kind: 'data',
       version: FRAME_VERSION,
       job,
       seq: readUint(parts[2], 'seq'),
-      total: readUint(parts[3], 'total'),
-      bytes: readUint(parts[4], 'bytes'),
+      bytes: readUint(parts[3], 'bytes'),
       crc32: crc,
-      sha16,
-      enc,
-      payload: parts[8]
+      payload: parts[6]
     }
   }
 
   if (marker === MARKERS.end) {
-    if (parts.length !== 5) {
-      throw new FrameError('field', `结束帧应有 4 个字段，实际 ${parts.length - 1}`)
+    if (parts.length !== 7) {
+      throw new FrameError('field', `结束帧应有 6 个字段，实际 ${parts.length - 1}`)
     }
     const job = parts[1]
     assertJobPart(job)
-    const sha256 = parts[4]
+    verifyHeaderCrc(parts, 5)
+    const sha256 = parts[6]
     if (!/^[0-9a-f]{64}$/.test(sha256)) throw new FrameError('field', '结束帧的 sha256 不合法')
     return {
       kind: 'end',
@@ -704,76 +525,101 @@ export function parseFrame(line: string): ParsedFrame {
       job,
       total: readUint(parts[2], 'total'),
       size: readUint(parts[3], 'size'),
+      wire: readUint(parts[4], 'wire'),
       sha256
     }
   }
 
   if (marker === MARKERS.resume) {
     if (parts.length !== 4) {
-      throw new FrameError('field', `续传令应有 3 个字段，实际 ${parts.length - 1}`)
+      throw new FrameError('field', `续传帧应有 3 个字段，实际 ${parts.length - 1}`)
     }
     const job = parts[1]
     assertJobPart(job)
     const total = readUint(parts[2], 'total')
+    const missingText = parts[3]
     return {
       kind: 'resume',
       version: FRAME_VERSION,
       job,
       total,
-      missing: parts[3] === '-' ? [] : parseIndexList(parts[3], total)
+      missing: missingText === '-' ? [] : parseIndexList(missingText, total)
     }
   }
 
-  throw new FrameError('marker', '无法识别的帧标记', marker.slice(0, 16))
+  throw new FrameError('marker', `无法识别的帧标记：${marker}`)
 }
 
 /**
- * @description 把十进制字段解析为安全整数
- * @param text 字段原文
+ * @description 校验帧头 CRC：`parts[crcIndex]` 必须是 `parts[0..crcIndex-1]` 用空格连接后的 CRC32。
+ *
+ * 为什么帧头也要 CRC：链路上偶发丢一个字符时，"size 少一位"这类改动不会破坏字段数量，
+ * 接收端会按错误规模合并——那是最难排查的一类故障。帧头 CRC 让它在解析阶段就失败。
+ * @param parts 已按空格切分的帧字段
+ * @param crcIndex 帧头 CRC 所在的下标
+ */
+function verifyHeaderCrc(parts: string[], crcIndex: number): void {
+  const expected = parts[crcIndex]
+  if (typeof expected !== 'string' || !/^[0-9a-f]{8}$/.test(expected)) {
+    throw new FrameError('field', '帧头 CRC 字段不合法')
+  }
+  const actual = crc32Hex(parts.slice(0, crcIndex).join(' '))
+  if (actual !== expected) {
+    throw new FrameError(
+      'crc',
+      '帧头校验失败：这一行有字符丢失或被改写',
+      `期望 ${expected}，实际 ${actual}`
+    )
+  }
+}
+
+/**
+ * @description 解析帧里的无符号整数字段
+ * @param text 字段文本
  * @param name 字段名（用于报错）
- * @returns 解析出的整数
+ * @returns 数值
  */
 function readUint(text: string, name: string): number {
-  if (!/^\d{1,16}$/.test(text)) throw new FrameError('field', `${name} 字段不是十进制整数`)
+  if (!/^\d{1,16}$/.test(text)) throw new FrameError('field', `${name} 字段不是合法数字`)
   const value = Number(text)
-  if (!Number.isSafeInteger(value)) throw new FrameError('range', `${name} 超出安全范围`)
+  if (!Number.isSafeInteger(value)) throw new FrameError('field', `${name} 超出安全整数范围`)
   return value
 }
 
 /**
- * @description 还原开始帧里 base64url 编码的文件名
- * @param encoded 编码后的文件名
- * @returns 还原后的文件名（无名字时为 null）
+ * @description 还原 base64url 编码的文件名（非法内容按"未指定"处理，不阻断传输）
+ * @param encoded base64url 文本
+ * @returns 文件名或 null
  */
 function decodeName(encoded: string): string | null {
   try {
-    const name = Buffer.from(encoded, 'base64url').toString('utf8')
-    return name.length > 0 ? name : null
+    const text = Buffer.from(encoded, 'base64url').toString('utf8')
+    return text.length > 0 ? text : null
   } catch {
-    throw new FrameError('field', '文件名（base64url）无法解码')
+    return null
   }
 }
 
 /**
- * @description 校验数据帧的载荷与其声明的长度 / crc32 / sha16 是否一致
- * @param frame 已解析的数据帧
- * @param bytes 载荷解码后的字节
- * @returns 通过校验的字节
+ * @description 用帧里的 CRC32 校验一片的线上字节
+ * @param frame 解析后的数据帧
+ * @param wire 该片的线上字节（解码后的压缩流切片）
+ * @returns 校验通过的线上字节
  */
-export function verifyDataFrame(frame: ParsedDataFrame, bytes: BytesLike): Uint8Array {
-  const data = toBytes(bytes)
-  if (data.length !== frame.bytes) {
-    throw new FrameError('len', `片长度不符：声明 ${frame.bytes}，实际 ${data.length}`)
+export function verifyDataFrame(frame: ParsedDataFrame, wire: BytesLike): Uint8Array {
+  const bytes = toBytes(wire)
+  if (bytes.length !== frame.bytes) {
+    throw new FrameError(
+      'len',
+      `片长度与声明不一致：声明 ${frame.bytes}，实际 ${bytes.length}`,
+      `seq=${frame.seq}`
+    )
   }
-  const actualCrc = crc32Hex(data)
-  if (actualCrc !== frame.crc32) {
-    throw new FrameError('crc', `片校验失败：声明 ${frame.crc32}，实际 ${actualCrc}`)
+  const actual = crc32Hex(bytes)
+  if (actual !== frame.crc32) {
+    throw new FrameError('crc', `片 ${frame.seq} 校验失败`, `期望 ${frame.crc32}，实际 ${actual}`)
   }
-  const actualSha = sha16Hex(data)
-  if (actualSha !== frame.sha16) {
-    throw new FrameError('crc', `片强校验失败：声明 ${frame.sha16}，实际 ${actualSha}`)
-  }
-  return data
+  return bytes
 }
 
 /**
@@ -805,7 +651,7 @@ export function verifyIntegrity(
 
 /**
  * @description 计算总片数（空文件算 0 片）
- * @param size 文件字节数
+ * @param size 字节数
  * @param chunkBytes 每片字节数
  * @returns 总片数
  */
@@ -818,8 +664,8 @@ export function chunkCount(size: number, chunkBytes: number): number {
 }
 
 /**
- * @description 计算第 seq 片在文件中的偏移与长度（不读取数据，便于大文件惰性发送）
- * @param size 文件字节数
+ * @description 计算第 seq 片在字节流中的偏移与长度（不读取数据，便于大文件惰性发送）
+ * @param size 字节数
  * @param chunkBytes 每片字节数
  * @param seq 片号
  * @returns 该片的偏移与字节数
@@ -838,51 +684,15 @@ export function chunkSlice(
 }
 
 /**
- * @description 文本按字符边界切分（`txt` 编码用，避免把一个多字节字符劈成两片）
- * @param text 原文
- * @param maxBytes 每片允许的最大字节数
- * @param byteLength 计算某段文本在目标编码下的字节数
- * @returns 分片列表（含每片文本、字节数与字符数）
- */
-export function planTextChunks(
-  text: string,
-  maxBytes: number,
-  byteLength: (chunk: string) => number = (chunk) => Buffer.byteLength(chunk, 'utf8')
-): Array<{ text: string; bytes: number; chars: number }> {
-  const chunks: Array<{ text: string; bytes: number; chars: number }> = []
-  let current = ''
-
-  for (const char of String(text)) {
-    const candidate = current + char
-    if (current.length > 0 && byteLength(candidate) > maxBytes) {
-      chunks.push({ text: current, bytes: byteLength(current), chars: current.length })
-      current = char
-      continue
-    }
-    if (current.length === 0 && byteLength(char) > maxBytes) {
-      throw new FrameError('overlong', '单个字符就超过片大小上限，请增大片大小')
-    }
-    current = candidate
-  }
-
-  if (current.length > 0) {
-    chunks.push({ text: current, bytes: byteLength(current), chars: current.length })
-  }
-  return chunks
-}
-
-/**
- * @description 估算一帧的字符数（用于校验 `maxFrameChars`）
- * @param meta 帧字段（`bytes` 是**线上字节数**；txt 编码转义后的长度无法只靠字节数推出，可显式给出 payloadChars）
+ * @description 估算一帧的字符数（帧头 + 载荷）
+ * @param meta 帧字段（`payloadChars` 可由 `payloadCharsFor(bytes, alphabet)` 得到）
  * @returns 估算的字符数
  */
 export function estimateDataFrameChars(meta: {
   job?: string
   seq: number
-  total: number
   bytes: number
-  enc: FrameEncoding
-  payloadChars?: number
+  payloadChars: number
 }): number {
   const header =
     MARKERS.data.length +
@@ -891,25 +701,13 @@ export function estimateDataFrameChars(meta: {
     1 +
     String(meta.seq).length +
     1 +
-    String(meta.total).length +
-    1 +
     String(meta.bytes).length +
     1 +
     8 +
     1 +
-    16 +
-    1 +
-    String(meta.enc).length +
+    8 +
     1
-  const payload =
-    meta.payloadChars !== undefined
-      ? meta.payloadChars
-      : payloadEncoding(meta.enc) === 'hex'
-        ? meta.bytes * 2
-        : payloadEncoding(meta.enc) === 'b64'
-          ? Math.ceil(meta.bytes / 3) * 4
-          : meta.bytes
-  return header + payload
+  return header + meta.payloadChars
 }
 
 // ---------------------------------------------------------------------------
@@ -1018,94 +816,75 @@ export function resolveIndexes(
 }
 
 // ---------------------------------------------------------------------------
-// 行切分：把 stdin 的字节流切成"帧行"
+// 输入流处理：接收端逐行解析用
 // ---------------------------------------------------------------------------
 
-/** 行长上限（字符）。超过即认为行宽异常，不做无限缓冲。 */
+/** 单行硬上限（含行尾）：超过即认为链路把两行粘在一起或被截断。 */
 export const MAX_LINE_CHARS = MAX_FRAME_CHARS + 4096
 
 /**
  * @description 清理一行：去掉 bracketed-paste 标记（`ESC[200~` / `ESC[201~`）与首尾空白；
- * 必须清理是因为把帧粘到启用了 bracketed paste 的 shell 提示符下，行首会多出 `ESC[200~`
+ * 某些终端/远控会把这些标记混进粘贴流，不清理会让整行无法解析
  * @param line 原始行
  * @returns 清理后的行
  */
 export function sanitizeLine(line: string): string {
-  return (
-    String(line)
-      // eslint-disable-next-line no-control-regex -- 这里就是要匹配控制字符：清理 bracketed-paste 标记
-      .replace(/\u001b\[20[01]~/g, '')
-      // eslint-disable-next-line no-control-regex -- 这里就是要匹配控制字符：清掉 C0/DEL 噪声（含回显里的退格、响铃）
-      .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '')
-      .trim()
-  )
+  let text = String(line)
+  if (text.includes('\u001b')) {
+    // eslint-disable-next-line no-control-regex -- 这里要处理的正是 ESC 控制字符
+    text = text.replace(/\u001b\[20[01]~/g, '')
+  }
+  return text.replace(/^[\s\uFEFF]+|[\s\uFEFF]+$/g, '')
 }
 
 /**
  * @description 行切分器：`\n`、`\r\n`、裸 `\r` 都当行尾（raw 模式下回车只产生 `\r`）
- * @returns 带 push / flush 的切分器
+ * @returns 可增量喂入的切分器
  */
 export function createLineSplitter(): {
-  push: (chunk: string | Uint8Array) => string[]
-  flush: () => string[]
+  push(chunk: string): string[]
+  flush(): string[]
 } {
-  let buffer = ''
-  let overflow = false
-  const decoder = new TextDecoder('utf-8')
+  let tail = ''
 
   /**
    * @description 把一段文本按行尾切开，返回完整行与残留尾巴
-   * @param text 待切分的文本
-   * @returns 完整行与未闭合的尾巴
+   * @param chunk 新到的文本
+   * @returns 完整行
    */
-  const drain = (text: string): { lines: string[]; rest: string } => {
+  function push(chunk: string): string[] {
+    tail += chunk
     const lines: string[] = []
     let start = 0
-    for (let index = 0; index < text.length; index++) {
-      const char = text[index]
+    for (let index = 0; index < tail.length; index++) {
+      const char = tail[index]
       if (char !== '\n' && char !== '\r') continue
-      // `\r\n` 只算一个行尾
-      const end = index
-      if (char === '\r' && text[index + 1] === '\n') index += 1
-      lines.push(text.slice(start, end))
+      lines.push(tail.slice(start, index))
+      // \r\n 只算一个行尾
+      if (char === '\r' && tail[index + 1] === '\n') index += 1
       start = index + 1
     }
-    return { lines, rest: text.slice(start) }
+    tail = tail.slice(start)
+    if (tail.length > MAX_LINE_CHARS) {
+      throw new FrameError('overlong', `单行超过 ${MAX_LINE_CHARS} 字符上限`)
+    }
+    // 空行不是帧：直接丢掉，避免调用方反复做无意义的解析
+    return lines.filter((line) => line.length > 0)
   }
 
-  return {
-    /**
-     * @description 把一段输入喂进切分器，返回这次切出的完整行
-     * @param chunk 文本或字节
-     * @returns 完整行
-     */
-    push(chunk: string | Uint8Array): string[] {
-      const text =
-        typeof chunk === 'string' ? chunk : decoder.decode(toBytes(chunk), { stream: true })
-      const { lines, rest } = drain(buffer + text)
-      buffer = rest
-      if (buffer.length > MAX_LINE_CHARS) {
-        // 行宽异常：只保留尾巴（真正需要的帧头在下一处行尾之后），并标记过载
-        buffer = buffer.slice(-MAX_LINE_CHARS)
-        overflow = true
-      }
-      return lines
-    },
-    /**
-     * @description 收尾：吐出未闭合的尾巴，行宽异常时明确报错
-     * @returns 剩余行
-     */
-    flush(): string[] {
-      const lines: string[] = []
-      if (buffer.length > 0) {
-        lines.push(buffer)
-        buffer = ''
-      }
-      if (overflow) {
-        overflow = false
-        throw new FrameError('overlong', `输入中存在超长行（> ${MAX_LINE_CHARS} 字符）`)
-      }
-      return lines
+  /**
+   * @description 收尾：吐出未闭合的尾巴，行宽异常时明确报错
+   * @returns 最后一行（若有）
+   */
+  function flush(): string[] {
+    const rest = tail
+    tail = ''
+    if (rest.length === 0) return []
+    if (rest.length > MAX_LINE_CHARS) {
+      throw new FrameError('overlong', `单行超过 ${MAX_LINE_CHARS} 字符上限`)
     }
+    return [rest]
   }
+
+  return { push, flush }
 }

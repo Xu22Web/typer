@@ -9,7 +9,7 @@ import {
 import { getLayout, VK } from '@main/typing/planner/keymap'
 import { createRng } from '@main/typing/scheduling/rng'
 import { BACKSPACE_ACTION } from '@main/typing/scheduling/typo'
-import type { KeystrokeAction, KeyAction, UnicodeAction } from '@main/typing/planner/types'
+import type { KeystrokeAction, KeyAction } from '@main/typing/planner/types'
 
 /**
  * @description 过滤出动作流中的真实按键动作
@@ -18,14 +18,6 @@ import type { KeystrokeAction, KeyAction, UnicodeAction } from '@main/typing/pla
  */
 const keysOf = (actions: KeystrokeAction[]): KeyAction[] =>
   actions.filter((action): action is KeyAction => action.kind === 'key')
-
-/**
- * @description 过滤出动作流中的 Unicode 报文动作
- * @param actions 待过滤的动作流
- * @returns Unicode 动作数组
- */
-const unicodeOf = (actions: KeystrokeAction[]): UnicodeAction[] =>
-  actions.filter((action): action is UnicodeAction => action.kind === 'unicode')
 
 /**
  * @description 取出动作流对应的字符（跳过显式停顿）
@@ -41,13 +33,11 @@ describe('resolveChar', () => {
   it('换行与 Tab 始终走真实按键（与布局无关）', () => {
     expect(resolveChar('\n', us)).toEqual({
       kind: 'key',
-      action: { kind: 'key', vk: VK.ENTER, modifiers: [], char: '\n' },
-      source: 'real'
+      action: { kind: 'key', vk: VK.ENTER, modifiers: [], char: '\n' }
     })
     expect(resolveChar('\t', us)).toEqual({
       kind: 'key',
-      action: { kind: 'key', vk: VK.TAB, modifiers: [], char: '\t' },
-      source: 'real'
+      action: { kind: 'key', vk: VK.TAB, modifiers: [], char: '\t' }
     })
   })
 
@@ -60,51 +50,24 @@ describe('resolveChar', () => {
     }
   })
 
-  it('中文走 Unicode 报文', () => {
-    const resolution = resolveChar('中', us)
-    expect(resolution.kind).toBe('unicode')
-    if (resolution.kind === 'unicode') {
-      expect(resolution.source).toBe('nonAscii')
-      expect(resolution.actions).toEqual([{ kind: 'unicode', codeUnit: 0x4e2d, char: '中' }])
-    }
+  it('中文与 emoji 没有物理键位，标为 unsupported', () => {
+    expect(resolveChar('中', us)).toEqual({ kind: 'unsupported', char: '中' })
+    expect(resolveChar('😀', us)).toEqual({ kind: 'unsupported', char: '😀' })
   })
 
-  it('emoji 拆成高低代理两个报文，第二个标记 continues', () => {
-    const resolution = resolveChar('😀', us)
-    expect(resolution.kind).toBe('unicode')
-    if (resolution.kind === 'unicode') {
-      expect(resolution.actions).toEqual([
-        { kind: 'unicode', codeUnit: 0xd83d, char: '😀' },
-        { kind: 'unicode', codeUnit: 0xde00, char: '😀', continues: true }
-      ])
-    }
-  })
-
-  it('forceUnicodeForAll 时连 ASCII 也走 Unicode（布局无关模式）', () => {
-    const resolution = resolveChar('a', us, true)
-    expect(resolution.kind).toBe('unicode')
-  })
-
-  it('非 US 布局未收录的 ASCII 记为 layoutFallback', () => {
-    const resolution = resolveChar('ö', getLayout('de'))
-    expect(resolution.kind).toBe('unicode')
-    if (resolution.kind === 'unicode') expect(resolution.source).toBe('nonAscii')
-
-    const asciiResolution = resolveChar('(', getLayout('fr'))
-    if (asciiResolution.kind === 'unicode') expect(asciiResolution.source).toBe('layoutFallback')
+  it('布局未收录的字符同样标为 unsupported（不再回退到 Unicode）', () => {
+    expect(resolveChar('ö', getLayout('de')).kind).toBe('unsupported')
+    expect(resolveChar('(', getLayout('fr')).kind).toBe('unsupported')
   })
 })
 
 describe('buildPlan', () => {
-  it('中英混排：ASCII 用真实按键，中文用 Unicode，顺序与原文一致', () => {
-    const plan = buildPlan('Hi 中!')
-    const chars = charsOf(plan.actions)
-    expect(chars).toEqual(['H', 'i', ' ', '中', '!'])
-
+  it('ASCII 全部用真实按键，顺序与原文一致', () => {
+    const plan = buildPlan('Hi !')
+    expect(charsOf(plan.actions)).toEqual(['H', 'i', ' ', '!'])
     expect(keysOf(plan.actions).map((action) => action.char)).toEqual(['H', 'i', ' ', '!'])
-    expect(unicodeOf(plan.actions).map((action) => action.char)).toEqual(['中'])
-    expect(plan.stats.cjk).toBe(1)
-    expect(plan.stats.chars).toBe(5)
+    expect(plan.stats.chars).toBe(4)
+    expect(plan.stats.unsupported).toEqual({})
   })
 
   it('CRLF 只产生一个回车', () => {
@@ -116,20 +79,22 @@ describe('buildPlan', () => {
     ])
   })
 
-  it('统计信息覆盖 CJK、布局回退、跳过字符与动作数', () => {
+  it('统计信息覆盖 CJK、不可输入字符、跳过字符与动作数', () => {
     const plan = buildPlan('中文abc\u0000', { layout: 'fr' })
     expect(plan.stats.cjk).toBe(2)
     expect(plan.stats.chars).toBe(5)
     expect(plan.stats.skipped['\u0000']).toBe(1)
+    expect(plan.stats.unsupported['中']).toBe(1)
+    expect(plan.stats.unsupported['文']).toBe(1)
     // 'a' 'b' 'c' 在法语布局里都有收录，应全部是真实按键
-    expect(plan.stats.layoutFallbacks).toBe(0)
-    expect(plan.stats.typed).toBe(5)
+    expect(plan.stats.typed).toBe(3)
   })
 
-  it('emoji 统计为 2 个动作（代理对）', () => {
+  it('emoji 计为不可输入，不产生动作', () => {
     const plan = buildPlan('😀')
-    expect(plan.stats.typed).toBe(2)
-    expect(plan.actions).toHaveLength(2)
+    expect(plan.stats.typed).toBe(0)
+    expect(plan.actions).toHaveLength(0)
+    expect(plan.stats.unsupported['😀']).toBe(1)
   })
 
   it('空文本产生空计划', () => {

@@ -46,7 +46,7 @@ export function getLayout(id: LayoutId | string | undefined): KeyboardLayout {
  * @description 查询字符在该布局下的键位
  * @param layout 键盘布局
  * @param char 单个码点
- * @returns 键位；undefined 表示需要回退到 Unicode 注入
+ * @returns 键位；undefined 表示该字符没有物理键位
  */
 export function lookupLayoutKey(layout: KeyboardLayout, char: string): LayoutKey | undefined {
   return Object.prototype.hasOwnProperty.call(layout.charMap, char)

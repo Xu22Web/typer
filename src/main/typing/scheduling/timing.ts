@@ -247,14 +247,10 @@ export class TimingScheduler {
       return 0
     }
 
-    if (action.kind === 'unicode' && action.continues) {
-      return this.floorMs
-    }
-
-    let delay = baseIntervalMsFor(this.settings) + this.sampleJitter()
-
     const char = action.char
     const isNewline = action.kind === 'key' && char === '\n'
+
+    let delay = baseIntervalMsFor(this.settings) + this.sampleJitter()
 
     if (isNewline) {
       delay += this.settings.newlinePauseMs

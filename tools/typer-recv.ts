@@ -1,11 +1,19 @@
-#!/usr/bin/env node
-// Typer 接收端：在**目标机**上运行（零依赖、Node >= 16，只用 node: 内置模块）：逐行读帧 → 逐片校验 → 原子落盘 → 断点续传 → 合并并校验整文件。
-// 输入是键盘 / 剪贴板"打"进来的，可能丢字符或被行缓冲截断，因此每片必须自校验、TTY 下默认切 raw 模式；大文件逐片落盘、合并时流式哈希。
-// 线格式实现引用主进程的 src/main/util/frame.ts，收发两端共用同一份代码；本文件由 esbuild 打成单文件 tools/typer-recv.mjs 后分发。
-// 用法见 tools/README.md（`--help` 查看全部选项，`--selftest` 先自检环境）。
-
+/**
+ * Typer 文件接收端（线格式 v2）。
+ *
+ * 设计目标只有一个：在"只能逐字符输入"的链路上尽量少打字符、尽量快，并且**一定不能写坏数据**。
+ *
+ *   · 载荷是 15 / 6 / 4 比特一个字符的符号流（见 src/main/util/codec.ts），15 位档把字符数压到十六进制的 1/3.75；
+ *   · 整文件先压缩再切片（`br`）或直接切片（`none`），每片自带 CRC32，整文件带 SHA-256；
+ *   · 传输期间**不打印任何东西**（终端回显经云桌面回传极慢），只有出错那一行才打印，结束时打印一行结果；
+ *   · 走 raw 模式并关回显，接收端自己把控制台代码页切到 UTF-8；
+ *   · 默认边收边落盘，中断后重跑即可续传；失败只补缺失片。
+ *
+ * 零第三方依赖，只用 node: 内置模块，Node >= 16 可运行。
+ * 本文件由 `pnpm build:tools` 打成单文件 tools/typer-recv.mjs 后分发。
+ */
+import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { once } from 'node:events'
 import {
   createReadStream,
   createWriteStream,
@@ -13,676 +21,837 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
-  renameSync,
   rmSync,
   statSync,
+  unlinkSync,
   writeFileSync
 } from 'node:fs'
-import { basename, isAbsolute, join, relative, resolve } from 'node:path'
+import { basename, join, resolve, sep } from 'node:path'
+import { Readable, Transform } from 'node:stream'
+import { pipeline } from 'node:stream/promises'
+import { createBrotliDecompress } from 'node:zlib'
 
 import {
   ERROR_HINTS,
-  FRAME_VERSION,
   FrameError,
+  MARKERS,
+  MAX_LINE_CHARS,
+  buildBeginFrame,
+  buildDataFrame,
   buildResumeToken,
-  chunkSlice,
-  createLineSplitter,
   crc32Hex,
-  decodePayload,
-  encodePayload,
-  escapeText,
+  decodeSymbols,
+  encodeSymbols,
   formatIndexList,
-  fromWireBytes,
   missingIndexes,
   parseFrame,
-  parseIndexList,
   sanitizeLine,
-  sha256Hex,
-  unescapeText,
-  verifyDataFrame
-} from '../src/main/util/frame'
-import type {
-  FrameEncoding,
-  ParsedBeginFrame,
-  ParsedDataFrame,
-  ParsedEndFrame,
-  ParsedResumeFrame
+  verifyDataFrame,
+  type ParsedBeginFrame,
+  type ParsedDataFrame,
+  type ParsedEndFrame
 } from '../src/main/util/frame'
 
-const EXIT = { OK: 0, INCOMPLETE: 2, BAD: 3, USAGE: 4, INTERRUPTED: 130 }
-const REPORT_VERSION = 1
+const EXIT = { OK: 0, INCOMPLETE: 2, BAD: 3, USAGE: 4 }
+const REPORT_VERSION = 2
 
-const HELP = `Typer 文件接收端（逐片校验 + 断点续传 + 合并校验）
+const HELP = `Typer 文件接收端 v2（逐片校验 + 断点续传 + 整文件校验）
 
 用法：node typer-recv.mjs [选项]
 
-  -o, --out <path>        输出文件（默认 <分片目录>/<开始帧里的文件名>，无名字则 job-<id>.bin）
+  -o, --out <path>        输出文件（默认 <分片目录>/<开始帧里的文件名>）
   -d, --dir <path>        分片工作目录（默认 ./.typer-<job>）
       --in <file>         从文件读取帧（默认读标准输入）
-      --cooked            强制行缓冲读入（TTY 下默认是 raw：不回显、无行宽限制）
-      --no-resume         忽略已有分片，全部重收（默认：校验通过即跳过）
-      --no-overwrite      输出文件已存在时拒绝覆盖（默认直接覆盖）
-      --report <path>     续传报告 JSON 路径（默认 <dir>/resume.json；写 "-" 关闭）
-      --token             结束时（数据不全）额外打印可回填 Typer 的续传令牌
-      --ack <target>      回执输出到 stdout | stderr | none（默认 stdout）
-      --progress-every <n> 每 n 片打印一次 #OK（默认 1；0 表示只打印失败）
-      --keep-parts        合并成功后保留分片（默认只留结果文件）
-      --charset <cs>      txt 编码的写盘编码（默认 utf-8）
-  -q, --quiet             只在失败 / 续传摘要 / 最终结果时输出
-  -v, --verbose           输出额外诊断信息
-      --selftest          只跑内置自检（校验 CRC、编码、片号解析）后退出
+      --cooked            强制行缓冲读入（TTY 下默认 raw：不回显、无行宽限制）
+      --no-resume         忽略已有分片全部重收（默认：校验通过即跳过）
+      --no-overwrite      输出文件已存在时拒绝覆盖
+      --report <path>     续传报告 JSON（默认 <dir>/resume.json；写 "-" 关闭）
+      --keep-parts        合并成功后保留分片
+      --token             缺失时始终打印续传令牌（默认同样打印）
+      --probe             只统计收到了什么，不落盘（确认链路能过非 ASCII 字符）
+      --stats             结束时打印字符数/字节数与耗时
+  -q, --quiet             不打印提示（仅保留 #FAIL / #MISS / #DONE / #BAD）
+  -v, --verbose           打印逐片处理信息（很吵，仅排障用）
+      --selftest          自检编解码、CRC、帧解析
   -h, --help              显示本帮助
 
-退出码：0 成功并校验通过 / 2 数据不全 / 3 完整性校验失败 / 4 参数或 IO 错误
+退出码：0 成功；2 数据不全；3 校验失败；4 参数/IO 错误
 `
 
+interface Options {
+  out: string | null
+  dir: string | null
+  input: string | null
+  cooked: boolean
+  resume: boolean
+  overwrite: boolean
+  report: string | null
+  keepParts: boolean
+  probe: boolean
+  stats: boolean
+  quiet: boolean
+  verbose: boolean
+}
+
 /**
- * @description 解析 `--key value`、`--key=value`、`-k value` 与布尔开关
- * @param argv 参数数组
- * @returns 选项表
+ * @description 解析命令行参数（只支持 `--flag value` 形式）
+ * @param argv 参数列表
+ * @returns 选项
  */
-function parseArgs(argv: string[]): Record<string, string | boolean> {
-  const options: Record<string, string | boolean> = {}
-  const aliases: Record<string, string> = {
-    o: 'out',
-    d: 'dir',
-    q: 'quiet',
-    v: 'verbose',
-    h: 'help'
+function parseArgs(argv: string[]): Options {
+  const options: Options = {
+    out: null,
+    dir: null,
+    input: null,
+    cooked: false,
+    resume: true,
+    overwrite: true,
+    report: null,
+    keepParts: false,
+    probe: false,
+    stats: false,
+    quiet: false,
+    verbose: false
   }
-  const flags = new Set([
-    'cooked',
-    'no-resume',
-    'no-overwrite',
-    'token',
-    'keep-parts',
-    'quiet',
-    'verbose',
-    'selftest',
-    'help'
-  ])
 
   for (let index = 0; index < argv.length; index++) {
-    const raw = argv[index]
-    if (!raw.startsWith('-')) continue
-    const stripped = raw.replace(/^--?/, '')
-    const equals = stripped.indexOf('=')
-    const name = equals >= 0 ? stripped.slice(0, equals) : stripped
-    const key = aliases[name] ?? name
-    if (!flags.has(key) && equals < 0) {
-      options[key] = argv[index + 1]
+    const arg = argv[index]
+    const next = (): string => {
+      const value = argv[index + 1]
+      if (value === undefined) throw new Error(`参数 ${arg} 缺少取值`)
       index += 1
-    } else if (equals >= 0) {
-      options[key] = stripped.slice(equals + 1)
+      return value
+    }
+    if (arg === '-o' || arg === '--out') options.out = next()
+    else if (arg === '-d' || arg === '--dir') options.dir = next()
+    else if (arg === '--in') options.input = next()
+    else if (arg === '--report') options.report = next()
+    else if (arg === '--cooked') options.cooked = true
+    else if (arg === '--no-resume') options.resume = false
+    else if (arg === '--no-overwrite') options.overwrite = false
+    else if (arg === '--keep-parts') options.keepParts = true
+    else if (arg === '--probe') options.probe = true
+    else if (arg === '--stats') options.stats = true
+    else if (arg === '-q' || arg === '--quiet') options.quiet = true
+    else if (arg === '-v' || arg === '--verbose') options.verbose = true
+    else if (arg === '-h' || arg === '--help') {
+      process.stdout.write(HELP)
+      process.exit(EXIT.OK)
+    } else if (arg === '--selftest') {
+      process.exit(runSelfTest())
+    } else if (arg === '--token') {
+      // 历史参数：现在缺失时一定打印令牌，保留是为了不打断既有习惯
+      continue
     } else {
-      options[key] = true
+      throw new Error(`未知参数：${arg}`)
     }
   }
   return options
 }
 
-const options = parseArgs(process.argv.slice(2))
-
-if (options.help) {
-  process.stdout.write(HELP)
-  process.exit(EXIT.OK)
+let options: Options
+try {
+  options = parseArgs(process.argv.slice(2))
+} catch (error) {
+  process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n${HELP}`)
+  process.exit(EXIT.USAGE)
 }
 
-if (options.selftest) {
-  process.exit(runSelfTest())
+const quiet = options.quiet
+const verbose = options.verbose
+const startedAt = Date.now()
+
+/** 打印普通信息（quiet 时静默）。 */
+function info(line: string): void {
+  if (quiet) return
+  process.stdout.write(`${line}\n`)
 }
+
+/** 打印回执行（`#` 前缀，Typer 与操作者约定的输出格式）。 */
+function ack(line: string): void {
+  process.stdout.write(`${line}\n`)
+}
+
+// ---------------------------------------------------------------------------
+// 自检
+// ---------------------------------------------------------------------------
 
 /**
- * @description 内置自检：确认这台机器上的 Node 至少能正确完成"编码 → 校验 → 解码 → 片号解析"；
- * 目标机环境不可控（老版本 Node、异常 locale），先跑一遍能省掉大量无谓排查
- * @returns 退出码（0 全部通过，3 有失败项）
+ * @description 自检：编解码往返、CRC、帧解析、片号区间
+ * @returns 退出码
  */
 function runSelfTest(): number {
-  const checks: Array<{ name: string; ok: boolean }> = []
-  /**
-   * @description 记录一项自检结果
-   * @param name 检查项名称
-   * @param condition 是否通过
-   */
-  const check = (name: string, condition: unknown): void => {
-    checks.push({ name, ok: Boolean(condition) })
+  const failures: string[] = []
+  const check = (name: string, condition: boolean): void => {
+    if (!condition) failures.push(name)
   }
 
   try {
-    check('CRC32 标准向量', crc32Hex('123456789') === 'cbf43926')
-    check(
-      'SHA-256 标准向量',
-      sha256Hex('abc') === 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad'
+    for (const alphabet of ['ascii32', 'ascii64', 'hex'] as const) {
+      for (const size of [0, 1, 2, 3, 7, 8, 16, 255, 1024, 4096]) {
+        const bytes = Buffer.allocUnsafe(size)
+        for (let index = 0; index < size; index++) bytes[index] = (index * 37 + 11) & 0xff
+        const text = encodeSymbols(bytes, alphabet)
+        const back = decodeSymbols(text, alphabet, size)
+        check(`${alphabet} 往返 ${size}B`, Buffer.compare(Buffer.from(back), bytes) === 0)
+      }
+    }
+
+    const beginFrame = buildBeginFrame({
+      job: 'a1b2c3d4',
+      total: 10,
+      size: 1000,
+      wire: 400,
+      chunk: 128,
+      name: 'x.bin',
+      alphabet: 'ascii32',
+      compression: 'br',
+      mode: 'term',
+      sha256: 'a'.repeat(64)
+    })
+    const begin = parseFrame(beginFrame)
+    check('开始帧解析', begin.kind === 'begin' && begin.total === 10)
+
+    const bytes = Buffer.from('hi')
+    const payload = encodeSymbols(bytes, 'hex')
+    const data = parseFrame(
+      buildDataFrame({
+        job: 'a1b2c3d4',
+        seq: 3,
+        bytes: bytes.length,
+        crc32: crc32Hex(bytes),
+        payload
+      })
     )
-    const bytes = Uint8Array.from([0, 1, 127, 128, 255])
-    check(
-      'hex 往返',
-      [...decodePayload(crc32SafeEncode(bytes), 'hex')].join() === [...bytes].join()
-    )
-    check('base64 往返', [...decodePayload(encodeB64(bytes), 'b64')].join() === [...bytes].join())
-    const sample = new TextEncoder().encode('Typer 压缩自检 '.repeat(16))
-    const packed = encodePayload(sample, 'gzb64')
-    check(
-      'gzb64 往返',
-      [...fromWireBytes(decodePayload(packed.payload, 'gzb64'), 'gzb64')].join() ===
-        [...sample].join()
-    )
-    check('gzb64 确有压缩收益', packed.payload.length < sample.length)
-    check('文本转义往返', unescapeText(escapeText('a\r\n\t\\b\u0000中')) === 'a\r\n\t\\b\u0000中')
-    check('片号解析', parseIndexList('1,3-5', 10).join() === '1,3,4,5')
-    check(
-      '帧解析',
-      (parseFrame('@TYPER1/R a1b2c3d4 10 3-5') as ParsedResumeFrame).missing.join() === '3,4,5'
-    )
-    check('帧版本', FRAME_VERSION === 1)
+    check('数据帧解析', data.kind === 'data' && data.seq === 3)
+    if (data.kind === 'data') {
+      verifyDataFrame(data, decodeSymbols(data.payload, 'hex', data.bytes))
+      check('片校验', true)
+
+      // 帧头被改写（模拟链路丢了一个字符）必须当场拒绝，而不是按错误规模接收
+      const tampered = beginFrame.replace(' 1000 ', ' 100 ')
+      let rejected = false
+      try {
+        parseFrame(tampered)
+      } catch (error) {
+        rejected = error instanceof FrameError && error.code === 'crc'
+      }
+      check('帧头 CRC 能抓到丢字符', rejected)
+    }
+
+    const resume = parseFrame('@T2R a1b2c3d4 10 3-5')
+    check('续传帧解析', resume.kind === 'resume' && resume.missing.join(',') === '3,4,5')
+    check('区间格式化', formatIndexList([0, 1, 2, 5, 7, 8], 10) === '0-2,5,7-8')
+    check('缺失片计算', missingIndexes(5, [0, 2, 4]).join(',') === '1,3')
+
+    const sanitized = sanitizeLine('\u001b[200~@T2H x\u001b[201~')
+    check('bracketed paste 清理', sanitized === '@T2H x')
   } catch (error) {
-    check(`自检异常：${error instanceof Error ? error.message : String(error)}`, false)
+    failures.push(`异常：${error instanceof Error ? error.message : String(error)}`)
   }
 
-  const failed = checks.filter((item) => !item.ok)
-  for (const item of checks) {
-    process.stdout.write(`${item.ok ? '  ok  ' : ' FAIL '}${item.name}\n`)
+  if (failures.length > 0) {
+    process.stderr.write(`自检失败：\n${failures.map((item) => `  - ${item}`).join('\n')}\n`)
+    return EXIT.BAD
   }
-  process.stdout.write(
-    failed.length === 0
-      ? `自检通过（Node ${process.version}，${process.platform}）\n`
-      : `自检失败：${failed.length} 项\n`
-  )
-  return failed.length === 0 ? EXIT.OK : EXIT.BAD
-}
-
-/**
- * @description 把字节编码成十六进制文本（自检用，不依赖被测实现本身）
- * @param bytes 字节序列
- * @returns 大写十六进制文本
- */
-function crc32SafeEncode(bytes: Uint8Array): string {
-  let out = ''
-  for (const byte of bytes) out += byte.toString(16).padStart(2, '0').toUpperCase()
-  return out
-}
-
-/**
- * @description 把字节编码成 base64 文本（自检用）
- * @param bytes 字节序列
- * @returns base64 文本
- */
-function encodeB64(bytes: Uint8Array): string {
-  return Buffer.from(bytes).toString('base64')
-}
-
-// ---------------------------------------------------------------------------
-// 输出
-// ---------------------------------------------------------------------------
-
-const ackTarget =
-  options.ack === 'none' ? null : options.ack === 'stderr' ? process.stderr : process.stdout
-
-/**
- * @description 按 --ack 设置输出一行回执
- * @param line 回执内容
- */
-function ack(line: string): void {
-  if (ackTarget) ackTarget.write(`${line}\n`)
-}
-
-/**
- * @description 输出一行诊断信息到标准错误
- * @param line 信息内容
- */
-function info(line: string): void {
-  process.stderr.write(`${line}\n`)
+  process.stdout.write('自检通过：编解码往返、CRC、帧解析、片号区间均正常\n')
+  return EXIT.OK
 }
 
 // ---------------------------------------------------------------------------
 // 任务状态
 // ---------------------------------------------------------------------------
 
-const quiet = options.quiet === true
-const verbose = options.verbose === true
-const resume = options['no-resume'] !== true
-const progressEvery = Number(options['progress-every'] ?? 1)
-const charset = String(options.charset ?? 'utf-8')
-
-/** 当前任务的元信息（来自开始帧，或断点续传时从工作目录的 meta.json 恢复）。 */
 interface TaskMeta {
   job: string
   total: number
   size: number
-  sha256: string
-  enc: FrameEncoding
+  wire: number
   chunk: number
+  alphabet: ParsedBeginFrame['alphabet']
+  compression: ParsedBeginFrame['compression']
+  mode: ParsedBeginFrame['mode']
+  sha256: string
   name: string | null
-  charset?: string
 }
 
 let meta: TaskMeta | null = null
-let dir: string | null = options.dir ? resolve(String(options.dir)) : null
-let outPath: string | null = options.out ? resolve(String(options.out)) : null
-const reportDisabled = options.report === '-'
-let reportPath = options.report && !reportDisabled ? resolve(String(options.report)) : null
-let seqWidth = 6
-
+let dir = ''
+let reportPath: string | null =
+  options.report && options.report !== '-' ? resolve(options.report) : null
 const done = new Set<number>()
 const missing = new Set<number>()
 const failures = new Map<number, string>()
+let pendingEnd: ParsedEndFrame | null = null
 let noiseLines = 0
-let receivedFrames = 0
-let lastReportAt = 0
+let receivedChunks = 0
+let receivedWire = 0
 
 /**
- * @description 生成分片文件名（带 crc，存在即可校验，无需额外 sidecar）
+ * @description 某片的分片文件路径（文件名带 CRC，续传时可确认是不是同一份数据）
  * @param seq 片号
- * @param crc 该片 crc32 文本
- * @returns 分片文件名
- */
-function partName(seq: number, crc: string): string {
-  return `part-${String(seq).padStart(seqWidth, '0')}-${crc}.bin`
-}
-
-/**
- * @description 生成分片文件的完整路径
- * @param seq 片号
- * @param crc 该片 crc32 文本
- * @returns 分片文件路径
+ * @param crc 该片线上字节的 CRC32
+ * @returns 路径
  */
 function partPath(seq: number, crc: string): string {
-  return join(dir as string, partName(seq, crc))
+  return join(dir, `p${seq}-${crc}.bin`)
 }
 
 /**
- * @description 计算第 seq 片应有的线上字节数
+ * @description 该片期望的线上字节数（末片可能更小）
  * @param seq 片号
- * @returns 字节数；txt / gzb64 模式片长由内容决定、无法反推，返回 null
+ * @returns 字节数
  */
-function expectedBytes(seq: number): number | null {
-  // txt 按字符边界切片、gzb64 压缩后长度随内容变化，都无法用"原始大小 + 片大小"反推（只能校验上界）
-  if (meta!.enc === 'txt' || meta!.enc === 'gzb64') return null
-  return chunkSlice(meta!.size, meta!.chunk, seq).bytes
+function expectedBytes(seq: number): number {
+  const task = meta as TaskMeta
+  const head = task.total - 1
+  if (seq < head) return task.chunk
+  return task.wire - head * task.chunk
+}
+
+/** 保存任务元信息（重启后没有开始帧也能续传）。 */
+function saveMeta(): void {
+  if (!meta || options.probe) return
+  writeFileSync(join(dir, 'meta.json'), JSON.stringify(meta, null, 2))
 }
 
 /**
- * @description 单片线上字节数的上界（压缩编码下可能比原始片略大）
- * @returns 上界字节数
+ * @description 读取磁盘上的任务元信息
+ * @param path 分片目录
+ * @returns 元信息或 null
  */
-function wireUpperBound(): number {
-  return meta!.enc === 'gzb64' ? meta!.chunk + 1024 : meta!.chunk
-}
-
-/**
- * @description 校验数据帧声明的片长度是否符合预期
- * @param frame 已解析的数据帧
- */
-function assertChunkLength(frame: ParsedDataFrame): void {
-  const expected = expectedBytes(frame.seq)
-  const upper = wireUpperBound()
-  if (expected === null) {
-    if (frame.bytes < 1 || frame.bytes > upper) {
-      throw new FrameError('len', `片 ${frame.seq} 长度 ${frame.bytes} 超出 1 ~ ${upper}`)
-    }
-    return
-  }
-  if (frame.bytes !== expected) {
-    throw new FrameError('len', `片 ${frame.seq} 长度应为 ${expected}，帧里声明 ${frame.bytes}`)
-  }
-}
-
-/**
- * @description 读取工作目录里的 meta.json
- * @returns 元信息对象；不存在或损坏时返回 null
- */
-function loadMeta(): TaskMeta | null {
-  const metaPath = join(dir as string, 'meta.json')
-  if (!existsSync(metaPath)) return null
+function loadMeta(path: string): TaskMeta | null {
+  const file = join(path, 'meta.json')
+  if (!existsSync(file)) return null
   try {
-    const parsed = JSON.parse(readFileSync(metaPath, 'utf8'))
-    if (parsed && typeof parsed.job === 'string' && Number.isInteger(parsed.total)) return parsed
+    const parsed = JSON.parse(readFileSync(file, 'utf8')) as TaskMeta
+    if (
+      typeof parsed.job === 'string' &&
+      Number.isInteger(parsed.total) &&
+      Number.isInteger(parsed.size) &&
+      Number.isInteger(parsed.wire)
+    ) {
+      return parsed
+    }
   } catch {
-    // 坏掉的 meta 视为不存在（会有明确报错）
+    // 坏掉的 meta.json 当作不存在：宁可重收也不要按错误的规模合并
   }
   return null
 }
 
-/** @description 把当前任务元信息写入工作目录的 meta.json */
-function saveMeta(): void {
-  mkdirSync(dir as string, { recursive: true })
-  writeFileSync(
-    join(dir as string, 'meta.json'),
-    JSON.stringify(
-      {
-        reportVersion: REPORT_VERSION,
-        version: FRAME_VERSION,
-        job: meta!.job,
-        total: meta!.total,
-        size: meta!.size,
-        sha256: meta!.sha256,
-        enc: meta!.enc,
-        chunk: meta!.chunk,
-        name: meta!.name,
-        charset,
-        updatedAt: new Date().toISOString()
-      },
-      null,
-      2
-    )
-  )
-}
-
 /**
- * @description 写续传报告（默认节流，避免每片都落盘）
- * @param force 是否忽略节流立即写入
+ * @description 写续传报告（`resume.json`），操作者可以整份粘回 Typer
+ * @param force 即使 quiet 也尝试写
  */
 function writeReport(force = false): void {
-  if (!reportPath || !meta) return
-  const now = Date.now()
-  if (!force && now - lastReportAt < 150) return
-  lastReportAt = now
+  if (!meta || options.probe || !reportPath) return
   const missingList = missingIndexes(meta.total, [...done])
-  const payload = {
-    reportVersion: REPORT_VERSION,
-    version: FRAME_VERSION,
+  const report = {
+    version: REPORT_VERSION,
     job: meta.job,
     total: meta.total,
     size: meta.size,
+    wire: meta.wire,
     sha256: meta.sha256,
-    enc: meta.enc,
-    chunk: meta.chunk,
-    name: meta.name,
-    out: outPath,
     done: done.size,
     doneRanges: formatIndexList([...done], meta.total),
-    missing: formatIndexList(missingList, meta.total)
+    missing: formatIndexList(missingList, meta.total),
+    failures: [...failures.entries()].map(([seq, code]) => ({ seq, code })),
+    updatedAt: new Date().toISOString()
   }
   try {
-    mkdirSync(dir as string, { recursive: true })
-    const tmp = `${reportPath}.tmp`
-    writeFileSync(tmp, JSON.stringify(payload, null, 2))
-    renameSync(tmp, reportPath)
+    writeFileSync(reportPath, JSON.stringify(report, null, 2))
   } catch (error) {
-    info(`警告：写入续传报告失败：${error instanceof Error ? error.message : String(error)}`)
+    if (force && verbose) {
+      info(`写续传报告失败：${error instanceof Error ? error.message : String(error)}`)
+    }
   }
 }
 
 /**
- * @description 应用任务元信息；已有任务时校验 job 是否一致
- * @param next 新的元信息
- * @param fromDisk 是否来自磁盘恢复（false 时回写 meta.json）
- * @returns 是否首次建立任务
+ * @description 应用任务元信息：建目录、初始化缺失片集合
+ * @param next 任务元信息
  */
-function applyMeta(next: TaskMeta, { fromDisk }: { fromDisk: boolean }): boolean {
-  if (meta) {
-    if (meta.job !== next.job) {
-      throw new FrameError('job', `任务 id 不一致：当前 ${meta.job}，收到 ${next.job}`)
-    }
-    return false
+function applyMeta(next: TaskMeta): void {
+  if (meta && meta.job !== next.job) {
+    throw new FrameError('job', `输入流里混入了另一次任务（${next.job}），当前任务是 ${meta.job}`)
   }
   meta = next
-  dir = dir ?? resolve(`.typer-${meta.job}`)
-  // 默认把结果放回分片目录：接收目录因此只留一个"原始文件名"的结果文件，不污染运行目录
-  outPath = outPath ?? join(dir, meta.name ? basename(meta.name) : `job-${meta.job}.bin`)
-  if (!reportDisabled) reportPath = reportPath ?? join(dir, 'resume.json')
-  seqWidth = Math.max(6, String(Math.max(0, meta.total - 1)).length)
-  // 工作目录在这里建一次就够：逐片写入时再 mkdir 只是白付系统调用
-  mkdirSync(dir, { recursive: true })
-  if (!fromDisk) saveMeta()
-  return true
+  dir = options.dir ? resolve(options.dir) : resolve(`.typer-${next.job}`)
+  if (!options.probe) mkdirSync(dir, { recursive: true })
+  if (!options.probe && !reportPath) reportPath = join(dir, 'resume.json')
+  saveMeta()
+  for (let index = 0; index < next.total; index++) if (!done.has(index)) missing.add(index)
 }
 
 /**
- * @description 扫描已有分片并纳入续传状态；文件名里带 CRC，因此"存在即可校验"、无需 sidecar，
- * 校验不通过的旧分片会被删除，避免把坏数据当成已完成
- * @returns 保留的已完成片数
+ * @description 扫描已有分片，按文件名里的 CRC 与大小确认它们属于当前任务
+ * @returns 命中的片数
  */
 function scanExistingParts(): number {
-  if (!resume || !existsSync(dir as string)) return 0
-  let kept = 0
-  for (const entry of readdirSync(dir as string)) {
-    const match = /^part-(\d+)-([0-9a-f]{8})\.bin$/.exec(entry)
+  if (options.probe || !meta || !existsSync(dir)) return 0
+  if (!options.resume) {
+    for (const entry of readdirSync(dir)) {
+      if (/^p\d+-[0-9a-f]{8}\.bin$/.test(entry)) {
+        try {
+          unlinkSync(join(dir, entry))
+        } catch {
+          // 忽略
+        }
+      }
+    }
+    return 0
+  }
+  let found = 0
+  for (const entry of readdirSync(dir)) {
+    const match = /^p(\d+)-([0-9a-f]{8})\.bin$/.exec(entry)
     if (!match) continue
     const seq = Number(match[1])
-    const crc = match[2]
-    const full = join(dir as string, entry)
-    if (seq >= meta!.total) {
-      rmSync(full, { force: true })
-      continue
-    }
-    const size = statSync(full).size
-    const expected = expectedBytes(seq)
-    const usable = expected === null ? size >= 1 && size <= wireUpperBound() : size === expected
-    if (!usable || crc32Hex(readFileSync(full)) !== crc) {
-      if (verbose) info(`丢弃不可用的分片：${entry}`)
-      rmSync(full, { force: true })
-      continue
-    }
+    if (seq >= meta.total) continue
+    if (statSync(join(dir, entry)).size !== expectedBytes(seq)) continue
     done.add(seq)
-    kept += 1
+    missing.delete(seq)
+    found += 1
   }
-  return kept
+  return found
 }
 
-// ---------------------------------------------------------------------------
-// 单帧处理
-// ---------------------------------------------------------------------------
-
 /**
- * @description 处理开始帧：建立任务并列出缺失片
- * @param frame 已解析的开始帧
+ * @description 处理开始帧
+ * @param frame 开始帧
  */
 function handleBegin(frame: ParsedBeginFrame): void {
-  const fresh = applyMeta(
-    {
-      job: frame.job,
-      total: frame.total,
-      size: frame.size,
-      sha256: frame.sha256,
-      enc: frame.enc,
-      chunk: frame.chunk,
-      name: frame.name
-    },
-    { fromDisk: false }
-  )
-
-  if (fresh) {
-    const kept = scanExistingParts()
-    ack(
-      `#BEGIN ${meta!.job} ${meta!.total} ${meta!.size} enc=${meta!.enc} chunk=${meta!.chunk} name=${
-        meta!.name ?? '-'
-      }`
+  if (frame.wire > 0 && frame.total !== Math.ceil(frame.wire / frame.chunk)) {
+    throw new FrameError(
+      'field',
+      `开始帧规模自相矛盾：wire=${frame.wire} chunk=${frame.chunk} total=${frame.total}`
     )
-    if (kept > 0) ack(`#RESUME ${meta!.job} 已完成 ${kept}/${meta!.total}`)
-    for (let seq = 0; seq < meta!.total; seq++) {
-      if (!done.has(seq)) missing.add(seq)
-    }
   }
-  writeReport(true)
+  applyMeta({
+    job: frame.job,
+    total: frame.total,
+    size: frame.size,
+    wire: frame.wire,
+    chunk: frame.chunk,
+    alphabet: frame.alphabet,
+    compression: frame.compression,
+    mode: frame.mode,
+    sha256: frame.sha256,
+    name: frame.name
+  })
+  const found = scanExistingParts()
+  if (verbose) {
+    info(
+      `任务 ${frame.job}：${frame.total} 片，${frame.size} 字节，` +
+        `${frame.alphabet}/${frame.compression}/${frame.mode}` +
+        (found > 0 ? `，续传已有 ${found} 片` : '')
+    )
+  }
 }
 
 /**
- * @description 处理数据帧：校验后原子落盘
- * @param frame 已解析的数据帧
+ * @description 处理数据帧：解码 → 校验 → 落盘
+ * @param frame 数据帧
  */
 function handleData(frame: ParsedDataFrame): void {
-  receivedFrames += 1
-
-  if (!meta) {
-    // 续传场景：只发数据帧，没有开始帧 → 从工作目录里的 meta.json 恢复
-    if (!dir) dir = resolve(`.typer-${frame.job}`)
-    const disk = loadMeta()
-    if (!disk) {
-      throw new FrameError('job', `缺少开始帧，且 ${dir} 下没有 meta.json，无法判断任务规模`)
-    }
-    applyMeta(disk, { fromDisk: true })
-    scanExistingParts()
-    for (let seq = 0; seq < meta!.total; seq++) {
-      if (!done.has(seq)) missing.add(seq)
-    }
+  const task = meta
+  if (!task) {
+    throw new FrameError('job', '还没收到开始帧，无法确定任务规模（先发开始帧或指定 --dir 续传）')
+  }
+  if (frame.job !== task.job) {
+    throw new FrameError('job', `该片属于任务 ${frame.job}，当前任务是 ${task.job}`)
+  }
+  if (frame.seq >= task.total) {
+    throw new FrameError('range', `片号 ${frame.seq} 超出总数 ${task.total}`)
+  }
+  const expected = expectedBytes(frame.seq)
+  if (frame.bytes !== expected) {
+    throw new FrameError(
+      'len',
+      `片 ${frame.seq} 长度不符：期望 ${expected}，帧里声明 ${frame.bytes}`
+    )
   }
 
-  if (frame.job !== meta!.job) {
-    throw new FrameError('job', `帧属于任务 ${frame.job}，当前任务是 ${meta!.job}`)
-  }
-  if (frame.total !== meta!.total) {
-    throw new FrameError('job', `片总数不一致：期望 ${meta!.total}，帧里是 ${frame.total}`)
-  }
-  if (frame.seq >= meta!.total) {
-    throw new FrameError('range', `片号超出总数：${frame.seq}/${meta!.total}`)
-  }
-  if (frame.enc !== meta!.enc) {
-    throw new FrameError('enc', `编码不一致：期望 ${meta!.enc}，帧里是 ${frame.enc}`)
-  }
-
-  assertChunkLength(frame)
-
-  const bytes = decodeDataPayload(frame)
-  verifyDataFrame(frame, bytes)
-
-  const target = partPath(frame.seq, frame.crc32)
-  if (done.has(frame.seq)) {
-    // 幂等：已校验通过的片再收到一次不改变结果
-    if (existsSync(target) && verbose) info(`重复片 ${frame.seq}（已存在且校验通过）`)
-    if (!quiet && verbose) ack(`#SKIP ${frame.seq}`)
-    return
-  }
-
-  // 工作目录在建立任务时已建好，热路径上不再逐片 mkdir
-  const tmp = `${target}.tmp`
-  writeFileSync(tmp, bytes)
-  renameSync(tmp, target)
-
+  const wire = decodeSymbols(frame.payload, task.alphabet, frame.bytes)
+  verifyDataFrame(frame, wire)
+  receivedChunks += 1
+  receivedWire += wire.length
   done.add(frame.seq)
   missing.delete(frame.seq)
 
-  if (!quiet && (progressEvery === 0 ? false : receivedFrames % Math.max(1, progressEvery) === 0)) {
-    ack(`#OK ${frame.seq} ${done.size}/${meta!.total} ${bytes.length}`)
+  if (options.probe) return
+
+  const target = partPath(frame.seq, frame.crc32)
+  // 同名分片已存在（同片同 CRC）→ 跳过，整批重放也不会重复写盘
+  if (existsSync(target)) return
+
+  // 同片不同 CRC（上次那版是坏的）：先删掉旧文件，避免续传时被误认为已完成
+  for (const entry of readdirSync(dir)) {
+    if (entry.startsWith(`p${frame.seq}-`) && entry.endsWith('.bin')) {
+      try {
+        unlinkSync(join(dir, entry))
+      } catch {
+        // 删不掉也不影响：新文件用新 CRC 命名
+      }
+    }
   }
-  writeReport()
+  writeFileSync(target, wire)
+  if (verbose && receivedChunks % 32 === 0) info(`已收 ${receivedChunks}/${task.total} 片`)
 }
 
 /**
- * @description 把数据帧载荷解码为线上字节（压缩编码下还没解压）
- * @param frame 已解析的数据帧
- * @returns 线上字节
+ * @description 按序读分片的流
+ * @param total 总片数
+ * @param crcs 片号 → CRC
+ * @returns 可读流
  */
-function decodeDataPayload(frame: ParsedDataFrame): Uint8Array {
-  if (frame.enc === 'txt')
-    return Buffer.from(unescapeText(frame.payload), charset as BufferEncoding)
-  return decodePayload(frame.payload, frame.enc)
+function partStream(total: number, crcs: Map<number, string>): Readable {
+  function* generate(): Generator<Buffer> {
+    for (let seq = 0; seq < total; seq++) {
+      yield readFileSync(partPath(seq, crcs.get(seq) as string))
+    }
+  }
+  return Readable.from(generate())
 }
 
-// ---------------------------------------------------------------------------
-// 合并与最终校验
-// ---------------------------------------------------------------------------
+/**
+ * @description 找出磁盘上每片的 CRC
+ * @returns 片号 → CRC
+ */
+function collectPartCrcs(): Map<number, string> {
+  const map = new Map<number, string>()
+  for (const entry of readdirSync(dir)) {
+    const match = /^p(\d+)-([0-9a-f]{8})\.bin$/.exec(entry)
+    if (match) map.set(Number(match[1]), match[2])
+  }
+  return map
+}
 
 /**
- * @description 合并分片并做整文件校验
+ * @description 算出输出路径（防目录穿越、处理覆盖策略）
+ * @returns 输出路径；不允许写出时返回 null
+ */
+function resolveOutputPath(): string | null {
+  const task = meta as TaskMeta
+  if (options.out) return resolve(options.out)
+  const raw = task.name && task.name.length > 0 ? basename(task.name) : `job-${task.job}.bin`
+  // eslint-disable-next-line no-control-regex -- 这里要挡掉的是文件名里不可能出现的控制字符
+  const name = raw.replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_') || `job-${task.job}.bin`
+  const path = join(dir, name)
+  if (!path.startsWith(dir + sep)) {
+    info(`拒绝写出到分片目录之外：${path}`)
+    return null
+  }
+  if (existsSync(path) && !options.overwrite) {
+    info(`输出文件已存在且指定了 --no-overwrite：${path}`)
+    return null
+  }
+  return path
+}
+
+/**
+ * @description 合并分片、解压（必要时）、校验整文件并写出
  * @returns 退出码
  */
 async function mergeAndVerify(): Promise<number> {
-  const missingList = missingIndexes(meta!.total, [...done])
+  const task = meta as TaskMeta
+  const missingList = missingIndexes(task.total, [...done])
   if (missingList.length > 0) {
-    const ranges = formatIndexList(missingList, meta!.total)
-    ack(`#MISS ${ranges}`)
-    if (options.token)
-      ack(buildResumeToken({ job: meta!.job, total: meta!.total, missing: missingList }))
+    ack(`#MISS ${formatIndexList(missingList, task.total)}`)
+    ack(buildResumeToken({ job: task.job, total: task.total, missing: missingList }))
     writeReport(true)
     info(
-      `数据不全：还缺 ${missingList.length}/${meta!.total} 片（${ranges}）。\n` +
-        '把上面的片号填回 Typer 的「只发指定片」，或直接重跑一遍（已通过的片会自动跳过）。'
+      `数据不全：还缺 ${missingList.length}/${task.total} 片（${formatIndexList(
+        missingList,
+        task.total
+      )}）。\n  → 在 Typer 里粘贴上面的 @T2R 令牌，只补这些片即可；已收到的分片全部保留。`
     )
     return EXIT.INCOMPLETE
   }
 
-  if (existsSync(outPath as string) && options['no-overwrite'] === true) {
-    info(
-      `输出文件已存在：${outPath}\n` + '去掉 --no-overwrite 即可覆盖，或用 --out 指定别的输出路径。'
-    )
-    return EXIT.USAGE
-  }
+  const crcs = collectPartCrcs()
+  const source = task.total === 0 ? Readable.from([]) : partStream(task.total, crcs)
+  const outputPath = resolveOutputPath()
+  if (outputPath === null) return EXIT.USAGE
 
-  const tmpOut = `${outPath}.part`
   const hash = createHash('sha256')
-  let size = 0
-
-  // 目录只扫一次：片数上万时逐片 readdir 会变成 O(n²)
-  const parts = new Map<number, string>()
-  for (const entry of readdirSync(dir as string)) {
-    const match = /^part-(\d+)-([0-9a-f]{8})\.bin$/.exec(entry)
-    if (match) parts.set(Number(match[1]), entry)
-  }
+  let produced = 0
+  const meter = new Transform({
+    transform(chunk: Buffer, _encoding, callback) {
+      hash.update(chunk)
+      produced += chunk.length
+      callback(null, chunk)
+    }
+  })
 
   try {
-    const out = createWriteStream(tmpOut)
-    for (let seq = 0; seq < meta!.total; seq++) {
-      const entry = parts.get(seq)
-      if (!entry) throw new Error(`分片缺失：${seq}`)
-      const wire = readFileSync(join(dir as string, entry))
-      // 片上带的是"线上字节"（压缩编码下是压缩后的数据），合并时才还原成原始字节
-      const chunk = meta!.enc === 'gzb64' ? fromWireBytes(wire, 'gzb64') : wire
-      hash.update(chunk)
-      size += chunk.length
-      if (!out.write(chunk)) await once(out, 'drain')
+    const sink = createWriteStream(outputPath)
+    if (task.compression === 'br') {
+      await pipeline(source, createBrotliDecompress(), meter, sink)
+    } else {
+      await pipeline(source, meter, sink)
     }
-    await new Promise<void>((ok, bad) => out.end((error) => (error ? bad(error) : ok())))
   } catch (error) {
-    info(`合并失败：${error instanceof Error ? error.message : String(error)}`)
-    return EXIT.USAGE
-  }
-
-  const digest = hash.digest('hex')
-  if (size !== meta!.size || digest !== meta!.sha256) {
-    rmSync(tmpOut, { force: true })
-    ack(`#BAD 合并后校验失败（大小 ${size}/${meta!.size}，sha256 ${digest.slice(0, 16)}…）`)
+    // 半成品必须删掉：留着会让人误以为"已经有结果了"
+    try {
+      rmSync(outputPath, { force: true })
+    } catch {
+      // 删不掉也不影响错误提示
+    }
+    ack(`#BAD decode`)
     info(
-      '完整性校验未通过。请重跑一次（分片已通过逐片校验，通常是合并阶段磁盘或权限问题），' +
-        '或用 --keep-parts 保留分片以便进一步排查。'
+      `合并/解压失败：${error instanceof Error ? error.message : String(error)}\n` +
+        '  → 压缩档依赖"全部片都正确"。分片已保留，可继续续传；仍失败就改用不压缩重传。'
     )
     return EXIT.BAD
   }
 
-  renameSync(tmpOut, outPath as string)
-  ack(`#DONE ${outPath} ${size} ${digest}`)
-  if (!quiet) {
-    info(`完成：${meta!.total} 片 → ${outPath}（${size} 字节），整文件 SHA-256 校验通过。`)
+  const actual = hash.digest('hex')
+  if (produced !== task.size) {
+    ack('#BAD len')
+    info(`整文件大小不符：期望 ${task.size}，实际 ${produced}。分片保留，可继续续传。`)
+    return EXIT.BAD
   }
-  if (options['keep-parts'] !== true) cleanupParts()
-  else writeReport(true)
+  if (actual !== task.sha256) {
+    ack('#BAD sha256')
+    info(
+      `整文件 SHA-256 不符：期望 ${task.sha256}，实际 ${actual}。\n` +
+        '  → 数据在链路上被改写（常见原因：输入法、编辑器自动缩进/自动闭合）。分片保留，请改用 ASCII 档重传。'
+    )
+    return EXIT.BAD
+  }
+
+  if (options.keepParts) {
+    writeReport(true)
+  } else if (outputPath.startsWith(dir + sep)) {
+    // 输出文件就在分片目录里：只清分片与报告，别把结果一起删了
+    const keep = basename(outputPath)
+    for (const entry of readdirSync(dir)) {
+      if (entry === keep) continue
+      try {
+        rmSync(join(dir, entry), { recursive: true, force: true })
+      } catch {
+        // 清理失败不影响结果
+      }
+    }
+  } else {
+    try {
+      rmSync(dir, { recursive: true, force: true })
+    } catch {
+      // 清理失败不影响结果
+    }
+  }
+
+  ack(`#DONE ${task.size} ${actual} ${outputPath}`)
+  if (options.stats) {
+    const ms = Math.max(1, Date.now() - startedAt)
+    const bits = task.alphabet === 'ascii32' ? 5 : task.alphabet === 'ascii64' ? 6 : 4
+    const chars = task.wire === 0 ? 0 : Math.ceil((task.wire * 8) / bits)
+    ack(
+      `#STATS chunks=${task.total} bytes=${task.size} wire=${task.wire} chars=${chars} ` +
+        `ms=${ms} cps=${Math.round(chars / (ms / 1000))}`
+    )
+  }
+  if (!quiet) info(`完成：${outputPath}（${task.size} 字节，SHA-256 已校验）`)
   return EXIT.OK
 }
 
+// ---------------------------------------------------------------------------
+// 输入流
+// ---------------------------------------------------------------------------
+
 /**
- * @description 成功后清理分片目录里的分片与续传状态。
- * 默认的输出路径就在分片目录内，因此不能整目录删除——只清中间产物，结果文件留下
+ * @description 帧切分器：行尾与下一个 `@T2` 标记都算边界。
+ *
+ * 这样同一份实现同时覆盖三种目标端：
+ *   · 终端：每帧后面有 CR；
+ *   · 单行输入框：完全没有换行，只靠 `@T2` 标记分隔；
+ *   · 编辑器：CRLF。
+ * 载荷符号表里没有 `@`，所以 `@T2` 一定不是数据的一部分。
+ * @returns 可增量喂入的切分器
  */
-function cleanupParts(): void {
-  reportPath = null
-  const partsDir = dir as string
-  if (!isInside(partsDir, outPath as string)) {
-    rmSync(partsDir, { recursive: true, force: true })
-    return
+function createStreamSplitter(): { push(text: string): string[]; flush(): string[] } {
+  let buffer = ''
+  const markers = Object.values(MARKERS)
+
+  /**
+   * @description 判断位置 pos 处是否是一个帧标记
+   * @param pos 位置
+   * @returns 是否命中
+   */
+  function markerAt(pos: number): boolean {
+    for (const marker of markers) {
+      if (buffer.startsWith(`${marker} `, pos)) return true
+    }
+    return false
   }
-  for (const entry of readdirSync(partsDir)) {
-    if (entry === basename(outPath as string)) continue
-    rmSync(join(partsDir, entry), { recursive: true, force: true })
+
+  /**
+   * @description 切出所有完整帧
+   * @param text 新到文本
+   * @returns 完整帧文本
+   */
+  function push(text: string): string[] {
+    buffer += text
+    const lines: string[] = []
+    let start = 0
+    for (let index = 0; index < buffer.length; index++) {
+      const char = buffer[index]
+      if (char === '\n' || char === '\r') {
+        lines.push(buffer.slice(start, index))
+        if (char === '\r' && buffer[index + 1] === '\n') index += 1
+        start = index + 1
+        continue
+      }
+      if (char === '@' && index > start && markerAt(index)) {
+        lines.push(buffer.slice(start, index))
+        start = index
+      }
+    }
+    buffer = buffer.slice(start)
+    if (buffer.length > MAX_LINE_CHARS) {
+      throw new FrameError('overlong', `单帧超过 ${MAX_LINE_CHARS} 字符上限`)
+    }
+    return lines.filter((line) => line.length > 0)
+  }
+
+  /**
+   * @description 收尾：吐出残留
+   * @returns 最后一段
+   */
+  function flush(): string[] {
+    const rest = buffer
+    buffer = ''
+    return rest.length > 0 ? [rest] : []
+  }
+
+  return { push, flush }
+}
+
+/** 把控制台切到 UTF-8 代码页（15 位档的 CJK 字符要靠它原样进 stdin）。 */
+function ensureUtf8Console(): void {
+  if (process.platform !== 'win32') return
+  try {
+    spawnSync('cmd.exe', ['/c', 'chcp 65001 >nul'], { stdio: 'ignore', windowsHide: true })
+  } catch {
+    // 切不了就按当前代码页读：非 ASCII 档会报符号表之外的字符，用户可改用 ASCII 档
   }
 }
 
 /**
- * @description 判断某个路径是否位于给定目录内（用于区分"结果在分片目录里"与"结果在别处"）
- * @param parent 目录
- * @param child 待判断的路径
- * @returns 是否位于该目录内
+ * @description 主循环：先挂监听再读输入、分发帧，最后合并校验
+ * @returns 退出码
  */
-function isInside(parent: string, child: string): boolean {
-  const rel = relative(parent, child)
-  return rel.length > 0 && !rel.startsWith('..') && !isAbsolute(rel)
+async function run(): Promise<number> {
+  const splitter = createStreamSplitter()
+
+  // 指定了 --dir 且目录里有 meta.json：即使这次没有开始帧也能续传
+  if (options.dir) {
+    dir = resolve(options.dir)
+    const loaded = loadMeta(dir)
+    if (loaded) {
+      applyMeta(loaded)
+      const found = scanExistingParts()
+      if (found > 0 && !quiet) info(`续传：目录里已有 ${found}/${loaded.total} 片`)
+    }
+  }
+
+  /**
+   * @description 逐条处理，并判断是否已收到结束帧
+   * @param lines 待处理的行
+   * @returns 是否应停止读取
+   */
+  const consume = (lines: string[]): boolean => {
+    for (const line of lines) {
+      handleLine(line)
+      if (pendingEnd) return true
+    }
+    return false
+  }
+
+  let ended = false
+  const source = options.input ? createReadStream(resolve(options.input), 'utf8') : process.stdin
+
+  if (!options.input) {
+    if (process.stdin.isTTY && !options.cooked) {
+      ensureUtf8Console()
+      process.stdin.setRawMode(true)
+      if (!quiet) info('（raw 模式：不回显、无行宽限制；Ctrl+C 中止）')
+    }
+    process.stdin.setEncoding('utf8')
+  }
+
+  /**
+   * @description 输入流回调：处理 Ctrl+C / Ctrl+D 与普通数据
+   * @param chunk 输入数据块
+   */
+  const onData = (chunk: string | Buffer): void => {
+    const text = typeof chunk === 'string' ? chunk : chunk.toString('utf8')
+    if (text.includes('\u0003')) {
+      ended = true
+      source.destroy()
+      return
+    }
+    if (text.includes('\u0004')) {
+      if (consume(splitter.push(text.slice(0, text.indexOf('\u0004'))))) ended = true
+      source.destroy()
+      return
+    }
+    if (consume(splitter.push(text))) {
+      ended = true
+      // 交互式输入流（TTY）不会自己 EOF：结束帧就是"传输完成"的信号，收到就收工
+      if (process.stdin.isTTY && !options.input) source.destroy()
+    }
+  }
+
+  source.on('data', onData)
+  source.resume()
+
+  await new Promise<void>((resolvePromise) => {
+    const finish = (): void => resolvePromise()
+    source.on('end', finish)
+    source.on('close', finish)
+    source.on('error', (error) => {
+      info(`读取输入失败：${error.message}`)
+      finish()
+    })
+  })
+
+  if (!ended) consume(splitter.flush())
+
+  if (options.probe) {
+    ack(
+      `#PROBE chunks=${receivedChunks} wire=${receivedWire} noise=${noiseLines} alpha=${
+        meta ? meta.alphabet : '-'
+      }`
+    )
+    return receivedChunks > 0 ? EXIT.OK : EXIT.INCOMPLETE
+  }
+
+  if (!meta) {
+    info('没有收到任何有效帧。请确认输入流里是 Typer 生成的 v2 帧（帧头以 @T2 开头）。')
+    return noiseLines > 0 ? EXIT.INCOMPLETE : EXIT.USAGE
+  }
+
+  if (pendingEnd) {
+    if (pendingEnd.job !== meta.job) {
+      ack('#FAIL - job')
+      info(`结束帧属于任务 ${pendingEnd.job}，当前任务是 ${meta.job}。`)
+    } else if (pendingEnd.sha256 !== meta.sha256 || pendingEnd.size !== meta.size) {
+      ack('#FAIL - field')
+      info('结束帧的整文件哈希/大小与开始帧不一致：可能混入了另一次任务的数据。')
+    }
+  }
+
+  if (missingIndexes(meta.total, [...done]).length > 0) return mergeAndVerify()
+  if (!pendingEnd) {
+    info('未收到结束帧，但所有分片都已通过逐片校验，继续按开始帧的哈希合并校验。')
+  }
+  return mergeAndVerify()
 }
 
-// ---------------------------------------------------------------------------
-// 主循环
-// ---------------------------------------------------------------------------
-
 /**
- * @description 处理一行输入：解析成帧并按类型分发，无法解析的行按噪声忽略
+ * @description 处理一行输入：解析 → 分发；解析/校验失败只影响该片
  * @param rawLine 原始行
  */
 function handleLine(rawLine: string): void {
@@ -707,13 +876,8 @@ function handleLine(rawLine: string): void {
   try {
     if (frame.kind === 'begin') handleBegin(frame)
     else if (frame.kind === 'data') handleData(frame)
-    else if (frame.kind === 'resume') {
-      info(
-        `提示：这是一条续传令（缺 ${formatIndexList(frame.missing, frame.total)}），请回填到 Typer。`
-      )
-    } else if (frame.kind === 'end') {
-      pendingEnd = frame
-    }
+    else if (frame.kind === 'end') pendingEnd = frame
+    else info(`提示：这是一条续传令（缺 ${formatIndexList(frame.missing, frame.total)}）。`)
   } catch (error) {
     const code = error instanceof FrameError ? error.code : 'field'
     const seq = frame.kind === 'data' ? frame.seq : '-'
@@ -728,115 +892,6 @@ function handleLine(rawLine: string): void {
         `  → ${ERROR_HINTS[code] ?? '请重传该片'}`
     )
   }
-}
-
-let pendingEnd: ParsedEndFrame | null = null
-
-/**
- * @description 主循环：先挂监听再读输入、分发帧，最后合并校验
- * @returns 退出码
- */
-async function run(): Promise<number> {
-  const splitter = createLineSplitter()
-
-  /**
-   * @description 逐行处理，并判断是否已收到结束帧
-   * @param lines 待处理的行
-   * @returns 是否应停止读取
-   */
-  const consume = (lines: string[]): boolean => {
-    for (const line of lines) {
-      handleLine(line)
-      if (pendingEnd) return true
-    }
-    return false
-  }
-
-  let ended = false
-  /** 先在完整的输入流上挂监听，再 resume：先 resume 会让"无人接收"的数据被丢弃。 */
-  const source = options.in ? createReadStream(String(options.in), 'utf8') : process.stdin
-  let interrupted = false
-
-  if (!options.in) {
-    if (process.stdin.isTTY && options.cooked !== true) {
-      process.stdin.setRawMode(true)
-      if (!quiet) info('（raw 模式：不回显、无行宽限制；按 Ctrl+C 中止）')
-    }
-    process.stdin.setEncoding('utf8')
-  }
-
-  /**
-   * @description 输入流回调：处理 Ctrl+C / Ctrl+D 与普通数据
-   * @param chunk 输入数据块
-   */
-  const onData = (chunk: string | Buffer): void => {
-    const text = typeof chunk === 'string' ? chunk : chunk.toString('utf8')
-    if (text.includes('\u0003')) {
-      interrupted = true
-      ended = true
-      source.destroy()
-      return
-    }
-    if (text.includes('\u0004')) {
-      // raw 模式下的 Ctrl+D：当作输入结束
-      if (consume(splitter.push(text.slice(0, text.indexOf('\u0004'))))) ended = true
-      source.destroy()
-      return
-    }
-    if (consume(splitter.push(text))) {
-      ended = true
-      // 交互式输入流（TTY）不会自己 EOF：结束帧就是"传输完成"的信号，收到就收工。
-      // 不主动收工的话，等 EOF 会一直等下去，#DONE 与合并永远不出现（用户看起来就是"卡住"）。
-      // 从文件/管道读入时留给流自然结束，避免丢掉结束帧之后的内容。
-      if (process.stdin.isTTY && !options.in) source.destroy()
-    }
-  }
-
-  source.on('data', onData)
-  source.resume()
-
-  await new Promise<void>((resolvePromise) => {
-    /** @description 结束等待 */
-    const finish = (): void => resolvePromise()
-    source.on('end', finish)
-    source.on('close', finish)
-    source.on('error', (error) => {
-      info(`读取输入失败：${error.message}`)
-      finish()
-    })
-  })
-
-  if (!ended) consume(splitter.flush())
-
-  if (interrupted) {
-    info('已中止（Ctrl+C）。已通过校验的分片仍然保留，重跑即可续传。')
-    writeReport(true)
-    return EXIT.INTERRUPTED
-  }
-
-  if (!meta) {
-    info('没有收到任何有效帧。请确认输入流里是 Typer 生成的帧（每行一片）。')
-    return noiseLines > 0 ? EXIT.INCOMPLETE : EXIT.USAGE
-  }
-
-  if (pendingEnd) {
-    if (pendingEnd.job !== meta.job) {
-      ack(`#FAIL - job`)
-      info(`结束帧属于任务 ${pendingEnd.job}，当前任务是 ${meta.job}。`)
-    } else if (pendingEnd.sha256 !== meta.sha256 || pendingEnd.size !== meta.size) {
-      ack(`#FAIL - field`)
-      info('结束帧的整文件哈希/大小与开始帧不一致：可能混入了另一次任务的数据。')
-    }
-  }
-
-  const missingList = missingIndexes(meta.total, [...done])
-  if (missingList.length > 0) return mergeAndVerify()
-
-  if (!pendingEnd) {
-    info('未收到结束帧，但所有分片都已通过逐片校验，继续按开始帧的哈希合并校验。')
-  }
-
-  return mergeAndVerify()
 }
 
 run()

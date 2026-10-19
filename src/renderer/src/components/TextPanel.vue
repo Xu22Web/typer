@@ -19,8 +19,7 @@ const looksLikeFrames = computed(() => typing.text.value.trimStart().startsWith(
 const preview = computed(() => {
   if (!settings.value || typing.text.value.length === 0) return null
   const stats = buildPlan(typing.text.value, {
-    layout: settings.value.keyboard.layout,
-    forceUnicodeForAll: settings.value.keyboard.forceUnicodeForAll
+    layout: settings.value.keyboard.layout
   }).stats
 
   return { stats, estimated: estimateTotalMs(stats.typed, settings.value.timing) }
@@ -28,6 +27,12 @@ const preview = computed(() => {
 
 /** 是否处于"不限速"模式（没有可靠的耗时估算） */
 const unlimited = computed(() => settings.value?.timing.speedMode === 'max')
+
+/** 没有物理键位、无法通过键盘输入的字符数 */
+const unsupportedCount = computed(() => {
+  const map = preview.value?.stats.unsupported ?? {}
+  return Object.values(map).reduce((sum, count) => sum + count, 0)
+})
 
 /** 内容区不能开始的原因 */
 const blocker = computed(() => {
@@ -53,19 +58,9 @@ function clear(): void {
             <strong>{{ preview.stats.chars }}</strong> 字符
           </div>
         </div>
-        <div class="chip">
+        <div v-if="unsupportedCount > 0" class="chip warn">
           <div>
-            中文 <strong>{{ preview.stats.cjk }}</strong>
-          </div>
-        </div>
-        <div class="chip">
-          <div>
-            动作 <strong>{{ preview.stats.typed }}</strong>
-          </div>
-        </div>
-        <div v-if="preview.stats.layoutFallbacks > 0" class="chip warn">
-          <div>
-            布局回退 <strong>{{ preview.stats.layoutFallbacks }}</strong>
+            无法输入 <strong>{{ unsupportedCount }}</strong>
           </div>
         </div>
       </template>
@@ -87,7 +82,7 @@ function clear(): void {
       type="textarea"
       :rows="13"
       resize="none"
-      placeholder="把要输入的文本粘贴到这里（支持中文、emoji、需要 Shift 的符号）"
+      placeholder="把要输入的文本粘贴到这里（支持可打印 ASCII 与需要 Shift 的符号）"
       @keydown.ctrl.enter="typing.start()"
     />
 

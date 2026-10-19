@@ -9,7 +9,7 @@ import {
   type TimingSettings
 } from '@main/typing/scheduling/timing'
 import type { ScheduledAction } from '@main/typing/drivers/protocol'
-import type { KeyAction, KeystrokeAction } from '@main/typing/planner/types'
+import type { KeyAction } from '@main/typing/planner/types'
 import { TIMING_PRESETS } from '@main/typing/scheduling/presets'
 
 /**
@@ -46,18 +46,6 @@ const key = (char: string): KeyAction => ({
   modifiers: [],
   char
 })
-
-/**
- * @description 造一个 Unicode 报文动作，可标记为代理对的后续码元
- * @param char 字符
- * @param continues 是否为代理对的第二个码元
- * @returns Unicode 动作
- */
-const unicode = (char: string, continues = false): KeystrokeAction => {
-  const action: KeystrokeAction = { kind: 'unicode', codeUnit: 0x4e2d, char }
-  if (continues) return { ...action, continues: true }
-  return action
-}
 
 describe('baseIntervalMsFor', () => {
   it('cps 模式：1000 / cps', () => {
@@ -198,16 +186,6 @@ describe('TimingScheduler', () => {
     expect(delays).toEqual([10, 10, 510, 10, 10, 510])
   })
 
-  it('代理对的第二个码元不额外计时，且不参与 burst 计数', () => {
-    const scheduler = new TimingScheduler(
-      settings({ cps: 100, burstSize: 2, burstPauseMs: 500 }),
-      createRng(8)
-    )
-    expect(scheduler.delayFor(unicode('😀'))).toBe(10)
-    expect(scheduler.delayFor(unicode('😀', true))).toBe(MIN_DELAY_MS)
-    expect(scheduler.typedCount).toBe(1)
-  })
-
   it('显式 delay 动作直接返回其毫秒数', () => {
     const scheduler = new TimingScheduler(settings(), createRng(9))
     expect(scheduler.delayFor({ kind: 'delay', ms: 1234, reason: 'explicit' })).toBe(1234)
@@ -284,7 +262,7 @@ describe('coalesceDelays', () => {
   it('动作顺序与数量不变', () => {
     const scheduled: ScheduledAction[] = [
       { action: key('a'), delayMs: 1 },
-      { action: unicode('中'), delayMs: 1 },
+      { action: key('中'), delayMs: 1 },
       { action: key('b'), delayMs: 1 }
     ]
     const batched = coalesceDelays(scheduled, 16)
@@ -342,15 +320,15 @@ describe('coalesceDelays', () => {
       { action: key('a'), delayMs: 0 },
       { action: key('b'), delayMs: 0 },
       pause,
-      { action: unicode('中'), delayMs: 0 }
+      { action: key('c'), delayMs: 0 }
     ]
     const batched = coalesceDelays(scheduled, 0)
-    // a、b 合成一批（延迟都是 0，仍是 0），停顿原样保留，后面的中文单独一批
+    // a、b 合成一批（延迟都是 0，仍是 0），停顿原样保留，后面的字符单独一批
     expect(batched).toEqual([
       { action: key('a'), delayMs: 0 },
       { action: key('b'), delayMs: 0 },
       pause,
-      { action: unicode('中'), delayMs: 0 }
+      { action: key('c'), delayMs: 0 }
     ])
   })
 })

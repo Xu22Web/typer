@@ -3,7 +3,7 @@ import { addStandardLetters } from './common'
 
 /**
  * @description 德语布局（de-DE，QWERTZ）：只收录确定无误的键位（字母含 y/z 互换、数字行与 , .），
- * 其余（ö ä ü ß 以及 - _ + * # 等符号）一律回退到 Unicode 注入；德语符号在 Windows 各版本间的
+ * 其余（ö ä ü ß 以及 - _ + * # 等符号）一律视为不可输入；德语符号在 Windows 各版本间的
  * 物理位置与"US 位置直觉"差异较大，凭推测填表反而会打错字符
  * @returns 德语布局
  */
@@ -38,7 +38,7 @@ export function createDeLayout(): KeyboardLayout {
   return builder.build(
     'de',
     'Deutsch',
-    '仅收录字母（含 y/z 互换）、数字行与 , . ；其余字符（含 ö ä ü ß 等）走 Unicode 注入'
+    '仅收录字母（含 y/z 互换）、数字行与 , . ；其余字符（含 ö ä ü ß 等）不可输入'
   )
 }
 

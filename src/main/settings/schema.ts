@@ -10,9 +10,13 @@ import {
 import type { JitterDistribution, SpeedMode } from '../typing/scheduling/timing'
 import type { TypoCorrection, TypoStyle } from '../typing/scheduling/typo'
 import {
-  TRANSFER_ENCODINGS,
+  TRANSFER_ALPHABETS,
+  TRANSFER_COMPRESSIONS,
   TRANSFER_LIMITS,
-  type TransferEncoding
+  TRANSFER_TARGET_MODES,
+  type TransferAlphabet,
+  type TransferCompression,
+  type TransferTargetMode
 } from '@shared/transfer/transfer'
 import { DEFAULT_PLACEMENT, type DockEdge } from '../window/floatDock'
 import type { ImportCharset, LogLevel, Settings } from './types'
@@ -46,8 +50,7 @@ export const DEFAULT_SETTINGS: Settings = {
     correction: 'auto'
   },
   keyboard: {
-    layout: 'us',
-    forceUnicodeForAll: false
+    layout: 'us'
   },
   focusGuard: 'warn',
   hotkeys: {
@@ -62,11 +65,17 @@ export const DEFAULT_SETTINGS: Settings = {
     importCharset: 'auto'
   },
   transfer: {
-    encoding: 'gzb64',
+    // 远程桌面只转发真实键盘事件：默认用零 Shift 的 5 位档，避免每个字符都付修饰键间隔
+    alphabet: 'ascii32',
+    compression: 'auto',
+    quality: 9,
+    mode: 'term',
+    // 默认稳健：控制台输入队列很小，攒批直投偶尔会丢一个字符（帧头 CRC / 片 CRC 能抓到并重传，
+    // 但重传本身要花时间）。要更快就显式切到「极速」，用 --stats 观察实际丢片率。
     paceMode: 'safe',
-    chunkBytes: 8192,
-    maxFrameChars: 24576,
-    interFrameDelayMs: 120
+    chunkBytes: 16384,
+    maxFrameChars: 65536,
+    interFrameDelayMs: 0
   },
   update: {
     checkOnStartup: true
@@ -98,8 +107,9 @@ export const NUMERIC_BOUNDS = {
   burstSize: [0, 1000],
   burstPauseMs: [0, 10_000],
   typoRate: [0, 0.2],
-  chunkBytes: [64, 1024 * 1024],
-  maxFrameChars: [256, 1024 * 1024],
+  chunkBytes: TRANSFER_LIMITS.chunkBytes,
+  maxFrameChars: TRANSFER_LIMITS.maxFrameChars,
+  quality: TRANSFER_LIMITS.quality,
   // 浮窗沿边位置与自由浮动坐标都只是屏幕坐标，真正的夹取由 floatDock 按所在显示器完成；
   // 这里只挡掉明显非法的值
   floatOffset: [-100_000, 100_000],
@@ -173,19 +183,6 @@ function readString(raw: Record<string, unknown>, key: string, fallback: string)
 }
 
 /**
- * @description 把快捷键文案里跨平台遗留的 `Command` / `CommandOrControl` 统一成 `Ctrl`
- * @param accelerator 原始加速键文本
- * @returns 规范化后的加速键文本
- */
-function normalizeAccelerator(accelerator: string): string {
-  return accelerator
-    .replace(/CommandOrControl/gi, 'Ctrl')
-    .replace(/CmdOrCtrl/gi, 'Ctrl')
-    .replace(/\bCommand\b/gi, 'Ctrl')
-    .replace(/\bCmd\b/gi, 'Ctrl')
-}
-
-/**
  * @description 把未知值收窄成普通对象（非对象时给空对象）
  * @param value 候选值
  * @returns 普通对象
@@ -201,37 +198,14 @@ const TYPO_CORRECTIONS: readonly TypoCorrection[] = ['auto', 'none']
 const FOCUS_MODES: readonly FocusGuardMode[] = ['off', 'warn', 'strict']
 const LOG_LEVELS: readonly LogLevel[] = ['silent', 'error', 'warn', 'info', 'debug']
 const CHARSETS: readonly ImportCharset[] = ['auto', 'utf8', 'utf16le', 'gbk']
-const TRANSFER_ENCODING_VALUES: readonly TransferEncoding[] = TRANSFER_ENCODINGS
+const TRANSFER_ALPHABET_VALUES: readonly TransferAlphabet[] = TRANSFER_ALPHABETS
+const TRANSFER_COMPRESSION_VALUES: readonly TransferCompression[] = TRANSFER_COMPRESSIONS
+const TRANSFER_MODE_VALUES: readonly TransferTargetMode[] = TRANSFER_TARGET_MODES
 const DOCK_EDGES: readonly DockEdge[] = ['left', 'right', 'top', 'bottom']
 const FLOAT_MODES = ['docked', 'floating'] as const
 
-/** 上一版的文件传输默认值。 */
-const LEGACY_TRANSFER_DEFAULTS = {
-  encoding: 'hex',
-  paceMode: 'safe',
-  chunkBytes: 1024,
-  maxFrameChars: 4096,
-  interFrameDelayMs: 400
-} as const
-
 /**
- * @description 判断存盘的传输设置是否"从未被改动过"（逐项等于旧默认值）。
- *
- * 这种情况视为用户没有表达过偏好，升级后直接采用新的默认值（压缩编码、更大的片）——
- * 只要有一项不同就完全尊重用户的选择。
- * @param value 存盘的 transfer 字段
- * @returns 是否与旧默认值完全一致
- */
-function untouchedLegacyTransfer(value: unknown): boolean {
-  if (typeof value !== 'object' || value === null) return false
-  const record = value as Record<string, unknown>
-  return (
-    Object.keys(LEGACY_TRANSFER_DEFAULTS) as Array<keyof typeof LEGACY_TRANSFER_DEFAULTS>
-  ).every((key) => record[key] === LEGACY_TRANSFER_DEFAULTS[key])
-}
-
-/**
- * @description 把任意（旧版本或被手工编辑过的）JSON 归一化为合法设置；类型错误回退默认值、超范围夹取、未知字段丢弃，且永不抛错
+ * @description 把任意（被手工编辑过的）JSON 归一化为合法设置；类型错误回退默认值、超范围夹取、未知字段丢弃，且永不抛错
  * @param raw 原始 JSON 值
  * @returns 完整的合法设置
  */
@@ -245,7 +219,7 @@ export function normalizeSettings(raw: unknown): Settings {
   const privacy = asRecord(root.privacy)
   const files = asRecord(root.files)
   const update = asRecord(root.update)
-  const transfer = asRecord(untouchedLegacyTransfer(root.transfer) ? undefined : root.transfer)
+  const transfer = asRecord(root.transfer)
   const floating = asRecord(root.floating)
   const bounds = NUMERIC_BOUNDS
 
@@ -348,19 +322,12 @@ export function normalizeSettings(raw: unknown): Settings {
       correction: readEnum(typo, 'correction', TYPO_CORRECTIONS, DEFAULT_SETTINGS.typo.correction)
     },
     keyboard: {
-      layout,
-      forceUnicodeForAll: readBool(
-        keyboard,
-        'forceUnicodeForAll',
-        DEFAULT_SETTINGS.keyboard.forceUnicodeForAll
-      )
+      layout
     },
     focusGuard: readEnum(root, 'focusGuard', FOCUS_MODES, DEFAULT_SETTINGS.focusGuard),
     hotkeys: {
-      stop: normalizeAccelerator(readString(hotkeys, 'stop', DEFAULT_SETTINGS.hotkeys.stop)),
-      togglePause: normalizeAccelerator(
-        readString(hotkeys, 'togglePause', DEFAULT_SETTINGS.hotkeys.togglePause)
-      )
+      stop: readString(hotkeys, 'stop', DEFAULT_SETTINGS.hotkeys.stop),
+      togglePause: readString(hotkeys, 'togglePause', DEFAULT_SETTINGS.hotkeys.togglePause)
     },
     privacy: {
       persistContent: readBool(privacy, 'persistContent', DEFAULT_SETTINGS.privacy.persistContent),
@@ -382,24 +349,33 @@ export function normalizeSettings(raw: unknown): Settings {
       checkOnStartup: readBool(update, 'checkOnStartup', DEFAULT_SETTINGS.update.checkOnStartup)
     },
     transfer: {
-      encoding: readEnum(
+      alphabet: readEnum(
         transfer,
-        'encoding',
-        TRANSFER_ENCODING_VALUES,
-        DEFAULT_SETTINGS.transfer.encoding
+        'alphabet',
+        TRANSFER_ALPHABET_VALUES,
+        DEFAULT_SETTINGS.transfer.alphabet
       ),
+      compression: readEnum(
+        transfer,
+        'compression',
+        TRANSFER_COMPRESSION_VALUES,
+        DEFAULT_SETTINGS.transfer.compression
+      ),
+      quality: Math.round(
+        readNumber(transfer, 'quality', DEFAULT_SETTINGS.transfer.quality, bounds.quality)
+      ),
+      mode: readEnum(transfer, 'mode', TRANSFER_MODE_VALUES, DEFAULT_SETTINGS.transfer.mode),
       paceMode,
-      chunkBytes: readNumber(
-        transfer,
-        'chunkBytes',
-        DEFAULT_SETTINGS.transfer.chunkBytes,
-        bounds.chunkBytes
+      chunkBytes: Math.round(
+        readNumber(transfer, 'chunkBytes', DEFAULT_SETTINGS.transfer.chunkBytes, bounds.chunkBytes)
       ),
-      maxFrameChars: readNumber(
-        transfer,
-        'maxFrameChars',
-        DEFAULT_SETTINGS.transfer.maxFrameChars,
-        bounds.maxFrameChars
+      maxFrameChars: Math.round(
+        readNumber(
+          transfer,
+          'maxFrameChars',
+          DEFAULT_SETTINGS.transfer.maxFrameChars,
+          bounds.maxFrameChars
+        )
       ),
       interFrameDelayMs: readNumber(
         transfer,
@@ -455,7 +431,6 @@ export function toEngineSettings(settings: Settings): EngineSettings {
     startDelayMs: settings.startDelayMs,
     chunkSize: settings.chunkSize,
     layout: settings.keyboard.layout,
-    forceUnicodeForAll: settings.keyboard.forceUnicodeForAll,
     focusGuard: settings.focusGuard,
     seed: settings.seed,
     verifyStuckKeys: settings.verifyStuckKeys,

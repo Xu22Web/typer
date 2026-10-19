@@ -1,5 +1,10 @@
 import type { ImportCharset } from '../settings/types'
-import { TRANSFER_ENCODINGS, type TransferPrepareOptions } from '@shared/transfer/transfer'
+import {
+  TRANSFER_ALPHABETS,
+  TRANSFER_COMPRESSIONS,
+  TRANSFER_TARGET_MODES,
+  type TransferPrepareOptions
+} from '@shared/transfer/transfer'
 
 /** IPC 入参校验失败。消息会直接展示给用户，所以用中文写清楚。 */
 export class IpcValidationError extends Error {
@@ -109,19 +114,33 @@ export function parseTransferPrepareRequest(payload: unknown): TransferPrepareRe
   }
 
   const raw = (record.options ?? {}) as Record<string, unknown>
-  const encoding = raw.encoding
+  const alphabet = raw.alphabet
   if (
-    typeof encoding !== 'string' ||
-    !(TRANSFER_ENCODINGS as readonly string[]).includes(encoding)
+    typeof alphabet !== 'string' ||
+    !(TRANSFER_ALPHABETS as readonly string[]).includes(alphabet)
   ) {
-    throw new IpcValidationError(`准备传输失败：不支持的编码 ${String(encoding)}`)
+    throw new IpcValidationError(`准备传输失败：不支持的符号表 ${String(alphabet)}`)
+  }
+  const compression = raw.compression
+  if (
+    typeof compression !== 'string' ||
+    !(TRANSFER_COMPRESSIONS as readonly string[]).includes(compression)
+  ) {
+    throw new IpcValidationError(`准备传输失败：不支持的压缩方式 ${String(compression)}`)
+  }
+  const mode = raw.mode
+  if (typeof mode !== 'string' || !(TRANSFER_TARGET_MODES as readonly string[]).includes(mode)) {
+    throw new IpcValidationError(`准备传输失败：不支持的目标端 ${String(mode)}`)
   }
 
   return {
     path,
     reuse: record.reuse === true,
     options: {
-      encoding: encoding as TransferPrepareOptions['encoding'],
+      alphabet: alphabet as TransferPrepareOptions['alphabet'],
+      compression: compression as TransferPrepareOptions['compression'],
+      quality: readPositive(raw.quality, '压缩质量'),
+      mode: mode as TransferPrepareOptions['mode'],
       chunkBytes: readPositive(raw.chunkBytes, '片大小'),
       maxFrameChars: readPositive(raw.maxFrameChars, '帧长上限')
     }

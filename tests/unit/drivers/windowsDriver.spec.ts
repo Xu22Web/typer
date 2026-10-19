@@ -123,14 +123,14 @@ describe('WindowsSendInputDriver 注入', () => {
     const h = createHarness()
     const result = await h.driver.send([
       { t: 'key', vk: 0x48, mods: ['shift'], delay: 10 },
-      { t: 'unicode', cu: 0x4e2d, delay: 10 }
+      { t: 'key', vk: 0x49, mods: [], delay: 10 }
     ])
 
     expect(result).toEqual({ requested: 6, injected: 6, items: 2 })
     const typeRequest = h.requests().find((request) => request.cmd === 'type')
     // 协议 v2：扁平数组；shift 位掩码为 2
-    expect(typeRequest?.ops).toEqual([0, 1])
-    expect(typeRequest?.vals).toEqual([0x48, 0x4e2d])
+    expect(typeRequest?.ops).toEqual([0, 0])
+    expect(typeRequest?.vals).toEqual([0x48, 0x49])
     expect(typeRequest?.mods).toEqual([2, 0])
     expect(typeRequest?.delays).toEqual([10, 10])
   })
@@ -155,11 +155,14 @@ describe('WindowsSendInputDriver 注入', () => {
   it('宿主返回的事件数少于预期时报错', async () => {
     const h = createHarness({
       override: (request) =>
-        request.cmd === 'type' ? { data: { requested: 2, injected: 2, items: 1 } } : undefined
+        request.cmd === 'type' ? { data: { requested: 2, injected: 2, items: 2 } } : undefined
     })
 
     await expect(
-      h.driver.send([{ t: 'key', vk: 0x48, mods: ['shift'], delay: 1 }])
+      h.driver.send([
+        { t: 'key', vk: 0x48, mods: ['shift'], delay: 1 },
+        { t: 'key', vk: 0x49, mods: [], delay: 1 }
+      ])
     ).rejects.toMatchObject({ code: 'E_INJECT_FAILED' })
   })
 
@@ -237,8 +240,8 @@ describe('WindowsSendInputDriver 注入', () => {
     })
     await h.driver.start()
     const result = await h.driver.send([
-      { t: 'unicode', cu: 0x41, delay: 1 },
-      { t: 'unicode', cu: 0x42, delay: 1 }
+      { t: 'key', vk: 0x41, mods: [], delay: 1 },
+      { t: 'key', vk: 0x42, mods: [], delay: 1 }
     ])
     expect(result.cancelled).toBe(true)
     expect(result.injected).toBe(4)

@@ -36,9 +36,9 @@ const highlights = [
     text: '可打印 ASCII 与需要 Shift 的组合键走 Win32 SendInput，修饰键与主键在同一批事件里原子下发。'
   },
   {
-    icon: 'i-mdi-translate',
-    title: 'Unicode 报文',
-    text: '中文、emoji 等没有物理键位的字符走 KEYEVENTF_UNICODE，绕过布局与输入法。'
+    icon: 'i-mdi-timer-cog-outline',
+    title: '修饰键时序',
+    text: '修饰键与主键分开下发并预留间隔：远程桌面会把同一批里的 Shift 合批丢弃，拆开后才能生效。'
   },
   {
     icon: 'i-mdi-package-variant-closed',
@@ -58,8 +58,8 @@ const limitations = [
   '锁定屏幕、UAC 弹窗、安全桌面（Ctrl+Alt+Del 界面）无法注入',
   '部分安全软件会拦截合成按键，此时会返回可读错误而不是静默失败',
   '少数游戏或自绘界面只认扫描码、或忽略 WM_CHAR，无法通过合成按键输入',
-  '非 US 布局下"真实按键"依赖目标窗口的布局；不确定时请开启"全部用 Unicode 注入"',
-  '中文等字符使用 Unicode 注入，不经过输入法；但真实按键输入字母时，目标窗口若开着中文输入法可能被其截获'
+  '键盘布局必须与目标窗口一致；布局里没有的字符会被判定为无法输入',
+  '远程桌面只转发真实键盘事件：中文、emoji 等没有物理键位的字符无法输入（不会静默丢字，开始前会报错）'
 ]
 
 /** @description 读取应用身份信息（失败时页面上显示占位符） */

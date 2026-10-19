@@ -26,7 +26,7 @@ export interface WindowsSendInputDriverOptions {
 }
 
 /**
- * 每个注入事件（按下/抬起/修饰键/Unicode 报文）额外给多少毫秒预算。
+ * 每个注入事件（按下/抬起/修饰键）额外给多少毫秒预算。
  *
  * 目标端消化一个事件实测约 2.5ms（WinForms 控件 4~12ms/字符，一个字符 ≈ 2 个事件），
  * 这里给 4 倍余量。为什么要给：宿主会按目标端的实际消化能力补等（valve），
@@ -37,7 +37,7 @@ const PER_EVENT_BUDGET_MS = 10
 /**
  * Windows 键盘注入驱动：通过 `SendInput` 宿主完成真实注入。
  *
- * 真实按键与 Unicode 报文分别走宿主的两条注入路径；宿主内部按动作自带的 `delay` 精确等待，
+ * 所有动作都走宿主的真实按键注入路径；宿主内部按动作自带的 `delay` 精确等待，
  * 因此 Node 侧不需要高频 IPC；崩溃后自动重启，防粘键由引擎负责。
  */
 export class WindowsSendInputDriver implements KeyboardDriver {

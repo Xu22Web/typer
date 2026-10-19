@@ -44,7 +44,7 @@ const CJK_RANGES: ReadonlyArray<readonly [number, number]> = [
 ]
 
 /**
- * @description 判断单个码点是否属于 CJK / 全角标点等需要 Unicode 注入的范围
+ * @description 判断单个码点是否属于 CJK / 全角标点等没有物理键位的范围
  * @param codePoint 单个码点
  * @returns 是否属于 CJK 相关区间
  */
@@ -72,20 +72,6 @@ export function isPrintableAscii(codePoint: string): boolean {
  */
 export function toCodePoints(text: string): string[] {
   return Array.from(text)
-}
-
-/**
- * @description 把一个码点拆成 UTF-16 码元；Windows `SendInput` 的 `KEYEVENTF_UNICODE`
- * 每次只能投递一个码元，所以 U+10000 以上的字符（emoji 等）必须拆成两个动作
- * @param codePoint 单个码点
- * @returns 该码点对应的码元序列
- */
-export function toUtf16Units(codePoint: string): number[] {
-  const units: number[] = []
-  for (let i = 0; i < codePoint.length; i++) {
-    units.push(codePoint.charCodeAt(i))
-  }
-  return units
 }
 
 /**

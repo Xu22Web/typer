@@ -7,8 +7,8 @@
  */
 export type InjectionProfile = 'normal' | 'turbo'
 
-/** 文件传输的节奏档：稳健保留每字符 1ms 下限，极速把节奏交给压力阀。 */
-export type TransferPace = 'safe' | 'fast'
+/** 文件传输的节奏档：三档都逐动作投递（数据丢一个字符整片就废），差别只在间隔与攒批窗口。 */
+export type TransferPace = 'safe' | 'fast' | 'turbo'
 
 export interface ProfileLimits {
   /** 字符/秒的可选区间（UI 量程，不是节流器） */
@@ -33,6 +33,14 @@ export interface TransferPaceLimits {
    * 数字表示该档位下的固定值（极速档不需要留出落盘时间，固定 0）。
    */
   frameGapMs: number | null
+  /**
+   * 是否每个动作单独一次 `SendInput`。
+   *
+   * 数据帧必须逐动作投递：实测真实 cmd 接收端下，攒批直投会静默丢字符（一次 16 KiB 片丢几十到几百个），
+   * 逐动作投递在同样条件下零丢失。丢字符不会写坏数据（每片 CRC32 + 整文件 SHA-256 会立刻暴露），
+   * 但会让整片重传，反而更慢。
+   */
+  perItem: boolean
 }
 
 export const PROFILE_LIMITS: Record<InjectionProfile, ProfileLimits> = {
@@ -41,17 +49,17 @@ export const PROFILE_LIMITS: Record<InjectionProfile, ProfileLimits> = {
 }
 
 export const TRANSFER_PACE_LIMITS: Record<TransferPace, TransferPaceLimits> = {
-  // 帧内间隔固定 1ms/字符（两个档位一致）：实测真实终端在逐字符投递 + 1ms 间隔下
-  // 27,657 个字符零丢失，速率约 446 字符/秒——已经接近目标端消化输入的上限；
-  // 再快就只是在灌满输入队列，目标端跟不上时 Windows 会直接丢字符（数据帧丢一个就整片作废）。
-  // batchActions 也刻意保持很小：请求内宿主连续投递，一次给太多同样会丢。
-  safe: { minDelayMs: 1, batchWindowMs: 16, batchActions: 32, frameGapMs: null },
-  fast: { minDelayMs: 1, batchWindowMs: 16, batchActions: 32, frameGapMs: 0 }
+  // 帧内间隔 1ms/字符：实测真实终端在逐字符投递 + 1ms 间隔下零丢失。
+  safe: { minDelayMs: 1, batchWindowMs: 16, batchActions: 64, frameGapMs: null, perItem: true },
+  fast: { minDelayMs: 1, batchWindowMs: 16, batchActions: 128, frameGapMs: 0, perItem: true },
+  // 极速档：逐动作投递（数据帧必须如此，攒批直投实测会静默丢字符），但取消 1ms 间隔，
+  // 由宿主压力阀按目标端消化能力自适应。速度上限由目标端决定，不由我们决定。
+  turbo: { minDelayMs: 0, batchWindowMs: 0, batchActions: 256, frameGapMs: 0, perItem: true }
 }
 
 /** 档位取值（供设置层做白名单校验） */
 export const INJECTION_PROFILES: readonly InjectionProfile[] = ['normal', 'turbo']
-export const TRANSFER_PACES: readonly TransferPace[] = ['safe', 'fast']
+export const TRANSFER_PACES: readonly TransferPace[] = ['safe', 'fast', 'turbo']
 
 /**
  * @description 文本路径的攒批窗口：间隔越短，攒批越划算；接近人速时不攒批以免打乱节奏

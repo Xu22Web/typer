@@ -33,7 +33,6 @@ function engineSettings(overrides: Partial<EngineSettings> = {}): EngineSettings
     startDelayMs: 0,
     chunkSize: 8,
     layout: 'us',
-    forceUnicodeForAll: false,
     focusGuard: 'off',
     seed: 42,
     verifyStuckKeys: false,
@@ -106,10 +105,6 @@ function applyBackspaces(items: HostItem[]): string {
   let output = ''
   for (const item of items) {
     if (item.t === 'wait') continue
-    if (item.t === 'unicode') {
-      output += String.fromCharCode(item.cu)
-      continue
-    }
     const signature = `${item.vk}+${[...item.mods].sort().join(',')}`
     if (item.vk === 0x08 && item.mods.length === 0) {
       output = Array.from(output).slice(0, -1).join('')
@@ -123,20 +118,17 @@ function applyBackspaces(items: HostItem[]): string {
 describe('TypingEngine 正常流程', () => {
   it('按顺序下发全部动作，并在结束时释放修饰键', async () => {
     const h = createHarness()
-    const result = await h.engine.start('Hi中', engineSettings())
+    const result = await h.engine.start('Hi!', engineSettings())
 
     expect(result.state).toBe('completed')
     expect(h.driver.releaseAllCalls).toBe(1)
     expect(h.driver.items.length).toBeGreaterThan(0)
 
-    const chars = h.driver.items.map((item) => {
-      if (item.t === 'unicode') return item.cu
-      if (item.t === 'key') return item.vk
-      return -1
-    })
-    expect(chars).toEqual([0x48, 0x49, 0x4e2d])
+    expect(h.driver.items.map((item) => (item.t === 'key' ? item.vk : -1))).toEqual([
+      0x48, 0x49, 0x31
+    ])
     expect(h.driver.items[0]).toEqual({ t: 'key', vk: 0x48, mods: ['shift'], delay: 10 })
-    expect(h.driver.items[2]).toEqual({ t: 'unicode', cu: 0x4e2d, delay: 10 })
+    expect(h.driver.items[2]).toEqual({ t: 'key', vk: 0x31, mods: ['shift'], delay: 10 })
   })
 
   it('空文本立即完成，且不启动宿主', async () => {
@@ -322,13 +314,21 @@ describe('TypingEngine 进度', () => {
 })
 
 describe('TypingEngine 逐字符输入', () => {
-  it('全部内容都逐字符下发，不整段跳过', async () => {
+  it('可打印 ASCII 全部逐字符下发，不整段跳过', async () => {
     const h = createHarness()
-    const result = await h.engine.start('中文内容', engineSettings())
+    const result = await h.engine.start('hello world', engineSettings())
     expect(result.state).toBe('completed')
     expect(result.typed).toBe(result.total)
     expect(h.driver.batches.length).toBeGreaterThan(0)
     expect(h.driver.items.length).toBe(result.total)
+  })
+
+  it('含中文等无物理键位的字符时直接失败，不静默丢内容', async () => {
+    const h = createHarness()
+    const result = await h.engine.start('中文内容', engineSettings())
+    expect(result.state).toBe('failed')
+    expect(result.error?.message).toContain('物理键位')
+    expect(h.driver.items).toHaveLength(0)
   })
 })
 

@@ -25,7 +25,7 @@ export function createUsLayout(): KeyboardLayout {
   builder.pair('/', '?', VK.OEM_2)
   builder.pair(' ', ' ', VK.SPACE)
 
-  return builder.build('us', 'English (US)', '完整覆盖可打印 ASCII，无需 Unicode 回退')
+  return builder.build('us', 'English (US)', '完整覆盖可打印 ASCII，无不可输入字符')
 }
 
 export const US_LAYOUT = createUsLayout()

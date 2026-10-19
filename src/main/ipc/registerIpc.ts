@@ -299,11 +299,13 @@ export function registerIpcHandlers(options: RegisterIpcOptions): string[] {
         }
       })
 
+      const engineSettings = toEngineSettings(settings.get())
       logger?.info(
-        `开始文件传输：发送 ${plan.ranges}（本次 ${request.indexes.length} 片，共 ${request.total} 片）`
+        `开始文件传输：发送 ${plan.ranges}（本次 ${request.indexes.length} 片，共 ${request.total} 片，` +
+          `节奏 ${engineSettings.transferPace ?? 'safe'}）`
       )
 
-      const result = await engine.start(request, toEngineSettings(settings.get()))
+      const result = await engine.start(request, engineSettings)
       return {
         state: result.state,
         typed: result.typed,

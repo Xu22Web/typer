@@ -12,7 +12,14 @@ let work: string
 let sourcePath: string
 let session: TransferSession
 
-const OPTIONS = { encoding: 'hex' as const, chunkBytes: 256, maxFrameChars: 4096 }
+const OPTIONS = {
+  alphabet: 'hex' as const,
+  compression: 'none' as const,
+  quality: 9,
+  mode: 'term' as const,
+  chunkBytes: 1024,
+  maxFrameChars: 4096
+}
 
 /**
  * @description 生成确定性二进制内容
@@ -20,7 +27,7 @@ const OPTIONS = { encoding: 'hex' as const, chunkBytes: 256, maxFrameChars: 4096
  * @param seed 随机种子
  * @returns 二进制内容
  */
-function makeSource(size = 1024, seed = 4): Buffer {
+function makeSource(size = 4096, seed = 4): Buffer {
   const buffer = Buffer.allocUnsafe(size)
   let state = seed >>> 0
   for (let index = 0; index < size; index++) {
@@ -33,7 +40,7 @@ function makeSource(size = 1024, seed = 4): Buffer {
 beforeEach(async () => {
   work = mkdtempSync(join(tmpdir(), 'typer-session-'))
   sourcePath = join(work, 'src.bin')
-  writeFileSync(sourcePath, makeSource())
+  writeFileSync(sourcePath, makeSource(4096))
   session = new TransferSession()
   await session.prepare(sourcePath, OPTIONS)
 })
@@ -71,23 +78,23 @@ describe('TransferSession · 准备与复用', () => {
     const before = session.summary?.sha256
     const summary = await session.prepare(
       sourcePath,
-      { ...OPTIONS, chunkBytes: 128 },
+      { ...OPTIONS, chunkBytes: 1024 },
       { reuse: true }
     )
 
     expect(summary.sha256).toBe(before)
-    expect(summary.sha256).toBe(createHash('sha256').update(makeSource()).digest('hex'))
-    expect(summary.total).toBe(8)
+    expect(summary.sha256).toBe(createHash('sha256').update(makeSource(4096)).digest('hex'))
+    expect(summary.total).toBe(4)
   })
 
   it('reuse=true 但文件已被修改时必须重新哈希（不能让校验失效）', async () => {
     const before = session.summary?.sha256
     // 写入相同长度但不同内容：只要文件被动过，就不能复用旧哈希
-    writeFileSync(sourcePath, makeSource(1024, 99))
+    writeFileSync(sourcePath, makeSource(4096, 99))
 
     const summary = await session.prepare(sourcePath, OPTIONS, { reuse: true })
     expect(summary.sha256).not.toBe(before)
-    expect(summary.sha256).toBe(createHash('sha256').update(makeSource(1024, 99)).digest('hex'))
+    expect(summary.sha256).toBe(createHash('sha256').update(makeSource(4096, 99)).digest('hex'))
   })
 
   it('准备中的取消会中止哈希', async () => {
@@ -194,13 +201,13 @@ describe('TransferSession · 生成引擎任务', () => {
 describe('TransferSession · 续传状态比对', () => {
   it('匹配的令牌只暴露缺失片', () => {
     const summary = session.summary as NonNullable<typeof session.summary>
-    const matched = session.matchResume(`@TYPER1/R ${summary.job} ${summary.total} -`)
+    const matched = session.matchResume(`@T2R ${summary.job} ${summary.total} -`)
     expect(matched.missing).toEqual([])
     expect(matched.warnings.join()).toMatch(/收全/)
   })
 
   it('令牌属于别的任务时拒绝（避免两次任务混在一起）', () => {
-    expect(() => session.matchResume('@TYPER1/R deadbeef 4 2-3')).toThrow(/另一次任务/)
+    expect(() => session.matchResume('@T2R deadbeef 4 2-3')).toThrow(/另一次任务/)
   })
 
   it('匹配的报告会给出缺失片与警告', () => {

@@ -25,7 +25,7 @@ export function parseResumeState(raw: string): ResumeState {
 }
 
 /**
- * @description 解析续传令牌（`@TYPER1/R …`）
+ * @description 解析续传令牌（`@T2R …`）
  * @param text 令牌文本
  * @returns 续传状态
  */
@@ -40,7 +40,7 @@ function parseToken(text: string): ResumeState {
     )
   }
   if (frame.kind !== 'resume') {
-    throw new TransferError('resume-format', '续传令牌应以 @TYPER1/R 开头')
+    throw new TransferError('resume-format', '续传令牌应以 @T2R 开头')
   }
   return {
     job: frame.job,
