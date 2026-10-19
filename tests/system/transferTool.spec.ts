@@ -166,7 +166,7 @@ describe('typer-recv.mjs：端到端接收与完整性校验', () => {
     expect(result.code).toBe(0)
   })
 
-  it('15 位档的二进制文件逐字节还原，退出码 0', async () => {
+  it('默认 ascii32（5 位、零 Shift）档的二进制文件逐字节还原，退出码 0', async () => {
     const source = makeSource(70_000)
     writeFileSync(join(work, 'src.bin'), source)
     const all = await appFrames('src.bin')
@@ -501,7 +501,7 @@ describe('应用与接收端的一致性（同一文件、同一参数）', () =
   })
 })
 
-describe('run.bat：给目标机用的双击入口', () => {
+describe.skipIf(process.platform !== 'win32')('run.bat：给目标机用的双击入口', () => {
   it('内容只含 ASCII、行尾为 CRLF，并把参数与退出码原样交给 node', () => {
     const bat = readFileSync(toolPath('run.bat'), 'utf8')
     // cmd 逐字节解释 .bat：中文会随控制台代码页乱码，LF 行尾会让带标签的跳转失效

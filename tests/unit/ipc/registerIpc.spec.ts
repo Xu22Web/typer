@@ -587,15 +587,19 @@ describe('IPC 输入相关', () => {
   it('pause/resume/stop 返回引擎快照', async () => {
     const h = createHarness()
     const pending = h.ipcMain.invoke(IPC.typingStart, { text: 'a'.repeat(30) })
+    // 默认设置的开局倒计时是 3000ms（虚拟时钟不会自己走），
+    // 而 pause() 只在 running 时才受理：因此快照应停在 countdown
     const paused = await h.ipcMain.invoke<{ state: string }>(IPC.typingPause)
-    expect(['countdown', 'running', 'paused', 'completed']).toContain(paused.state)
+    expect(paused.state).toBe('countdown')
 
     const resumed = await h.ipcMain.invoke<{ state: string }>(IPC.typingResume)
-    expect(['countdown', 'running', 'completed']).toContain(resumed.state)
+    expect(resumed.state).toBe('countdown')
 
     const stopped = await h.ipcMain.invoke<{ state: string }>(IPC.typingStop, '测试中止')
-    expect(['countdown', 'aborted', 'completed']).toContain(stopped.state)
+    // abort 只置标志，终态要等 runOnce 收尾；先把任务跑完再断言
     await pending
+    expect(stopped.state).toBe('countdown')
+    expect(h.engine.state).toBe('aborted')
   })
 
   it('status 返回待机状态', async () => {

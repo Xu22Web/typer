@@ -276,11 +276,19 @@ describe('TypingEngine 错误处理', () => {
   })
 
   it('完成后自检粘键（verifyStuckKeys）', async () => {
-    const driver = new MockKeyboardDriver()
+    // 驱动真的报告有键按着：引擎必须把它写进告警，而不是无论怎样都不报
+    const driver = new MockKeyboardDriver({ stuckKeys: [0x10] })
     const h = createHarness({ driver })
     await h.engine.start('abc', engineSettings({ verifyStuckKeys: true }))
-    expect(h.logs.some((line) => line.includes('按下状态'))).toBe(false)
+    expect(h.logs.some((line) => line.includes('按下状态'))).toBe(true)
+    expect(h.logs.some((line) => line.includes('0x10'))).toBe(true)
     expect(h.driver.releaseAllCalls).toBe(1)
+  })
+
+  it('没有粘键时自检不产生告警', async () => {
+    const h = createHarness()
+    await h.engine.start('abc', engineSettings({ verifyStuckKeys: true }))
+    expect(h.logs.some((line) => line.includes('按下状态'))).toBe(false)
   })
 
   it('跳过不可输入字符时会记日志', async () => {

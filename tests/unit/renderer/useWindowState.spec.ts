@@ -45,6 +45,9 @@ async function loadUseWindowState(): Promise<{
   return { api, useWindowState: mod.useWindowState }
 }
 
+// 同 useUpdate：把首次模块求值提到收集阶段，避免并行负载下撞 5s 的默认超时
+await loadUseWindowState()
+
 describe('useWindowState', () => {
   it('把点击转成对应的窗口 IPC 调用', async () => {
     const { api, useWindowState } = await loadUseWindowState()

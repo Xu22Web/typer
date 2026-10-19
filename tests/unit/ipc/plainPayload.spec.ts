@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { reactive, ref } from 'vue'
+import { DEFAULT_SETTINGS } from '@main/settings/schema'
+import type { Settings } from '@main/settings/types'
 import { toPlainPayload } from '@main/ipc/plainPayload'
 
 /**
@@ -127,37 +129,18 @@ describe('toPlainPayload', () => {
   })
 
   it('真实的设置对象（含全部嵌套分组）净化后可跨 IPC 且内容不变', () => {
-    const settings = reactive({
-      startDelayMs: 3000,
-      chunkSize: 8,
-      seed: 0,
-      timing: {
-        speedMode: 'cps',
-        cps: 6,
-        wpm: 120,
-        baseIntervalMs: 80,
-        jitterMs: 25,
-        distribution: 'gaussian',
-        wordPauseMs: 0,
-        punctuationPauseMs: 120,
-        newlinePauseMs: 250,
-        paragraphPauseMs: 600,
-        burstSize: 40,
-        burstPauseMs: 400
-      },
-      typo: { rate: 0.02, style: 'adjacent', correction: 'auto' },
-      keyboard: { layout: 'us', forceUnicodeForAll: false },
-      focusGuard: 'warn',
-      hotkeys: { stop: 'Ctrl+Alt+X', togglePause: 'Ctrl+Alt+P' },
-      privacy: { persistContent: false, persistSettings: true },
-      files: { importCharset: 'auto' },
-      transfer: { encoding: 'hex', chunkBytes: 1024, maxFrameChars: 4096, interFrameDelayMs: 400 },
-      verifyStuckKeys: true,
-      logLevel: 'info'
-    })
+    // 直接以默认设置为基准：字段增删会由 typecheck:test 当场抓出，
+    // 不再手写一份容易过期的结构（旧版本这里还留着已删除的 forceUnicodeForAll / transfer.encoding）
+    const settings = reactive(structuredClone(DEFAULT_SETTINGS) as Settings)
 
     const plain = toPlainPayload(settings)
     expect(canCrossIpc(plain)).toBe(true)
     expect(plain).toEqual(JSON.parse(JSON.stringify(settings)) as typeof plain)
+    // 抽查几个嵌套分组确实被带上（含后加的 injection / update / floating）
+    const result = plain as Settings
+    expect(result.injection.profile).toBe(DEFAULT_SETTINGS.injection.profile)
+    expect(result.floating.mode).toBe(DEFAULT_SETTINGS.floating.mode)
+    expect(result.transfer.alphabet).toBe(DEFAULT_SETTINGS.transfer.alphabet)
+    expect(result.update.checkOnStartup).toBe(DEFAULT_SETTINGS.update.checkOnStartup)
   })
 })

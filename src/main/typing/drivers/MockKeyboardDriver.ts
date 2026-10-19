@@ -10,6 +10,8 @@ export interface MockDriverOptions {
   foregroundQueue?: HostForegroundData[]
   /** 为 true 时把前台窗口放进每批注入的结果里（模拟宿主"搭车"返回，省掉单独查询）。 */
   piggybackForeground?: boolean
+  /** probe 报告的"仍处于按下状态"的虚拟键；默认空（没有粘键）。 */
+  stuckKeys?: number[]
   /** 每批动作后的回调（用于在测试里推进时间/状态）。 */
   onSend?: (items: HostItem[], index: number) => void
 }
@@ -97,11 +99,11 @@ export class MockKeyboardDriver implements KeyboardDriver {
   }
 
   /**
-   * @description 始终报告没有按键粘住
-   * @returns 空的 stuckKeys
+   * @description 报告粘键情况；用 `stuckKeys` 模拟“完成后仍有键按住”的异常场景
+   * @returns 当前被设为按下的虚拟键
    */
   async probe(): Promise<HostProbeData> {
-    return { stuckKeys: [] }
+    return { stuckKeys: [...(this.options.stuckKeys ?? [])] }
   }
 
   /** @description 标记为已释放 */

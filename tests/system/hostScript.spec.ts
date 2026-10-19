@@ -30,7 +30,7 @@ function hasUtf8Bom(path: string): boolean {
   return bytes.length >= 3 && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf
 }
 
-describe('PowerShell 脚本静态校验', () => {
+describe.skipIf(process.platform !== 'win32')('PowerShell 脚本静态校验', () => {
   it.each(PS_SCRIPTS)('脚本存在：%s', (path) => {
     expect(readFileSync(path).length).toBeGreaterThan(0)
   })
@@ -136,7 +136,7 @@ describe('PowerShell 脚本静态校验', () => {
   })
 })
 
-describe('宿主 dry-run 真实启动', () => {
+describe.skipIf(process.platform !== 'win32')('宿主 dry-run 真实启动', () => {
   let session: HostSession | null = null
 
   afterAll(() => {
@@ -198,7 +198,8 @@ describe('宿主 dry-run 真实启动', () => {
     expect(released.released).toBeGreaterThan(0)
 
     const probe = await session!.request<{ stuckKeys: number[] }>('probe')
-    expect(Array.isArray(probe.stuckKeys)).toBe(true)
+    // dry-run 不产生真实按键，因此不应报任何粘键（不是“是数组就行”）
+    expect(probe.stuckKeys).toEqual([])
 
     const foreground = await session!.request<{ hwnd: number; pid: number; title: string }>(
       'foreground'
@@ -217,7 +218,9 @@ describe('宿主 dry-run 真实启动', () => {
 
   it('畸形指令不会让宿主退出', async () => {
     expect(session).not.toBeNull()
-    // 直接注入一行坏 JSON：宿主应继续服务
+    // 真的注入一行坏 JSON：宿主应记错并继续服务，而不是退出
+    session!.writeRaw('{bad json')
+    await new Promise((resolve) => setTimeout(resolve, 150))
     const healthy = await session!.request<{ inputSize: number }>('ping')
     expect(healthy.inputSize).toBe(40)
   })

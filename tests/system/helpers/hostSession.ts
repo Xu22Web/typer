@@ -94,6 +94,14 @@ export class HostSession {
   }
 
   /**
+   * @description 直接往宿主 stdin 写一行（可故意写坏 JSON），用于验证容错
+   * @param line 原始文本，不需要是合法 JSON
+   */
+  writeRaw(line: string): void {
+    this.child.stdin?.write(`${line}\n`, 'utf8')
+  }
+
+  /**
    * @description 请求宿主 shutdown 并结束进程，同时清掉所有待响应请求
    */
   dispose(): void {

@@ -233,7 +233,7 @@ describe('prepareTransfer · 整文件压缩', () => {
 
     expect(job.summary.compression).toBe('br')
     expect(job.summary.wireBytes).toBeLessThan(source.length / 4)
-    // 15 位档下字符数远少于原始字节数
+    // 5 位档下字符数远少于原始字节数
     expect(job.summary.frameChars).toBeLessThan(source.length)
 
     const parts: Buffer[] = []

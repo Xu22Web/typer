@@ -37,7 +37,12 @@ import '../../../src/preload/index'
 
 interface ExposedApi {
   settings: { set: (patch: unknown) => Promise<unknown> }
-  typing: { start: (text: string) => Promise<unknown> }
+  typing: {
+    start: (text: string) => Promise<unknown>
+    pause: () => Promise<unknown>
+    resume: () => Promise<unknown>
+    stop: (reason?: string) => Promise<unknown>
+  }
   files: { import: (path: string, charset?: string) => Promise<unknown> }
   window: {
     minimize: () => Promise<unknown>
@@ -59,6 +64,7 @@ interface ExposedApi {
     collapse: () => Promise<unknown>
     drag: (dx: number, dy: number) => Promise<unknown>
     drop: () => Promise<unknown>
+    dock: () => Promise<unknown>
     setInteractive: (interactive: boolean) => Promise<unknown>
     onState: (listener: (payload: { state: string; edge: string }) => void) => () => void
   }
@@ -218,5 +224,22 @@ describe('preload 的 IPC 参数净化', () => {
     await api.float.setInteractive(true)
     expect(callAt(4).channel).toBe('float:interactive')
     expect(callAt(4).payload).toBe(true)
+  })
+
+  it('暂停 / 继续 / 停止与贴边走约定频道', async () => {
+    const api = getApi()
+
+    await api.typing.pause()
+    expect(callAt(0).channel).toBe('typing:pause')
+
+    await api.typing.resume()
+    expect(callAt(1).channel).toBe('typing:resume')
+
+    await api.typing.stop('测试中止')
+    expect(callAt(2).channel).toBe('typing:stop')
+    expect(callAt(2).payload).toBe('测试中止')
+
+    await api.float.dock()
+    expect(callAt(3).channel).toBe('float:dock')
   })
 })

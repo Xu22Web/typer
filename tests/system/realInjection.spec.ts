@@ -96,13 +96,6 @@ describeE2E('真实注入（需要前台焦点）', () => {
     expect(target.readKeys()).not.toContain('\b')
   }, 60_000)
 
-  it('emoji 以代理对形式完整到达（不会掉半个字符）', async (ctx) => {
-    if (!focused) return ctx.skip()
-    const keys = target.readKeys()
-    expect(keys).toContain('😀')
-    expect([...keys].filter((char) => char === '😀')).toHaveLength(1)
-  })
-
   it('输入结束后没有按键粘住（releaseAll + probe 双重确认）', async (ctx) => {
     if (!focused) return ctx.skip()
 

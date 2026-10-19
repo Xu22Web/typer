@@ -10,6 +10,7 @@ import type { HostItem } from '@main/typing/drivers/protocol'
 import type { ProgressSnapshot } from '@main/typing/engine/progress'
 import type { EngineState } from '@main/typing/engine/states'
 import type { TimingSettings } from '@main/typing/scheduling/timing'
+import { buildBeginFrame, buildDataFrame, buildEndFrame } from '@main/util/frame'
 import { createVirtualClock, type VirtualClock } from '../../helpers/virtualClock'
 
 const timing: TimingSettings = {
@@ -99,14 +100,30 @@ function createHarness(): Harness {
   return { engine, driver, clock, states, progress, logs }
 }
 
-/** @description 三片数据帧，文本刻意包含数字、大写与 + / =（hex 与 b64 的典型字符） */
+/**
+ * 三片数据帧：用真实的 v2 帧构造器生成，避免 fixture 与线格式（@T2D/@T2H/@T2E）漂移。
+ * 引擎不解析帧内容，这里只关心“逐字符下发与顺序”。
+ */
+const JOB = 'abc12345'
+const DIGEST = '0'.repeat(64)
 const FRAMES = [
-  '@TYPER1/D abc 0 3 4 0000 0000 hex AABB',
-  '@TYPER1/D abc 1 3 4 0000 0000 hex CCDD',
-  '@TYPER1/D abc 2 3 2 0000 0000 hex EE'
+  buildDataFrame({ job: JOB, seq: 0, bytes: 4, crc32: '00000000', payload: 'abcd' }),
+  buildDataFrame({ job: JOB, seq: 1, bytes: 4, crc32: '00000000', payload: 'cdef' }),
+  buildDataFrame({ job: JOB, seq: 2, bytes: 2, crc32: '00000000', payload: 'ef' })
 ]
-const BEGIN = '@TYPER1/B abc12345 3 10 hex 4 demo 00'
-const END = '@TYPER1/E abc12345 3 10 00'
+const BEGIN = buildBeginFrame({
+  job: JOB,
+  total: 3,
+  size: 10,
+  wire: 10,
+  chunk: 4,
+  name: 'demo',
+  alphabet: 'ascii32',
+  compression: 'none',
+  mode: 'term',
+  sha256: DIGEST
+})
+const END = buildEndFrame({ job: JOB, total: 3, size: 10, wire: 10, sha256: DIGEST })
 
 /**
  * @description 构造一个三片式文件传输任务
@@ -244,7 +261,13 @@ describe('引擎 · 文件传输模式', () => {
 
   it('稳健/快速档逐动作投递：每批不超过 128 个动作，且都带 perItem', async () => {
     const { engine, driver } = createHarness()
-    const longFrame = `@TYPER1/D abc 0 1 200 0000 0000 gzb64 ${'QUJD'.repeat(60)}`
+    const longFrame = buildDataFrame({
+      job: 'abc12345',
+      seq: 0,
+      bytes: 200,
+      crc32: '00000000',
+      payload: 'abcd'.repeat(60)
+    })
 
     await engine.start(
       frameJob({

@@ -86,16 +86,18 @@ describe('useTheme · 跟随系统与手动切换', () => {
     expect(rootClasses.has('light')).toBe(true)
   })
 
-  it('关闭跟随系统只改开关，不动当前主题', () => {
+  it('关闭跟随系统只改开关，不动当前主题', async () => {
     const store = useThemeStore()
-    store.dark = true
-    store.followSystem = true
+    const { setDark, setFollowSystem } = useTheme()
 
-    const { setFollowSystem } = useTheme()
+    // 先真的把深色应用上去，否则“关闭跟随”根本无从验证
+    await setDark(true)
+    store.followSystem = true
     setFollowSystem(false)
 
     expect(store.followSystem).toBe(false)
     expect(store.dark).toBe(true)
-    expect(rootClasses.has('dark')).toBe(false)
+    expect(rootClasses.has('dark')).toBe(true)
+    expect(rootClasses.has('light')).toBe(false)
   })
 })

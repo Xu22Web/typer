@@ -39,7 +39,12 @@ describe('escapeNonAscii', () => {
 
 describe('encodeRequest', () => {
   it('输出一行纯 ASCII + 换行', () => {
-    const line = encodeRequest({ id: 7, cmd: 'type', items: [{ t: 'unicode', cu: 0x4e2d }] })
+    // 用当前 v2 协议的真实动作形状（unicode 项已在只走真实按键后删除）
+    const line = encodeRequest({
+      id: 7,
+      cmd: 'type',
+      items: [{ t: 'key', vk: 0x41, mods: ['shift'], delay: 10 }]
+    })
     expect(line.endsWith('\n')).toBe(true)
     expect(line.split('\n').filter((part) => part.length > 0)).toHaveLength(1)
     const payload = line.replace(/\n$/, '')
@@ -47,7 +52,7 @@ describe('encodeRequest', () => {
     expect(JSON.parse(payload)).toEqual({
       id: 7,
       cmd: 'type',
-      items: [{ t: 'unicode', cu: 0x4e2d }]
+      items: [{ t: 'key', vk: 0x41, mods: ['shift'], delay: 10 }]
     })
   })
 })

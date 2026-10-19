@@ -1,5 +1,6 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, relative } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 
 /**
@@ -9,12 +10,16 @@ import { describe, expect, it } from 'vitest'
  */
 const VDOM_ALLOWLIST = new Set(['src/renderer/src/components/FirstRunTour.vue'])
 
-/** @description 递归收集目录下所有 .vue 文件（相对项目根，正斜杠分隔） */
+/** 仓库根目录：不依赖 process.cwd()，否则从子目录/IDE 直接跑就会扫不到 SFC */
+const REPO_ROOT = fileURLToPath(new URL('../../../', import.meta.url))
+const RENDERER_ROOT = join(REPO_ROOT, 'src', 'renderer')
+
+/** @description 递归收集目录下所有 .vue 文件（相对仓库根，正斜杠分隔） */
 function collectVueFiles(dir: string): string[] {
   return readdirSync(dir).flatMap((name) => {
     const full = join(dir, name)
     if (statSync(full).isDirectory()) return collectVueFiles(full)
-    return name.endsWith('.vue') ? [full.replaceAll('\\', '/')] : []
+    return name.endsWith('.vue') ? [relative(REPO_ROOT, full).replaceAll('\\', '/')] : []
   })
 }
 
@@ -26,9 +31,9 @@ function readScriptSetupTag(source: string): string | null {
 describe('Vapor 约定', () => {
   it('渲染进程所有 SFC 都声明 vapor 属性（vapor 是文件级 opt-in，忘写会静默退回 vdom）', () => {
     const offenders: string[] = []
-    for (const file of collectVueFiles('src/renderer')) {
+    for (const file of collectVueFiles(RENDERER_ROOT)) {
       if (VDOM_ALLOWLIST.has(file)) continue
-      const tag = readScriptSetupTag(readFileSync(file, 'utf8'))
+      const tag = readScriptSetupTag(readFileSync(join(REPO_ROOT, file), 'utf8'))
       if (!tag) {
         offenders.push(`${file}：缺少 <script setup vapor>（纯模板 SFC 也会退回 vdom）`)
       } else if (!/\svapor[\s=>]/.test(tag)) {

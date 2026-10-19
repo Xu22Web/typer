@@ -1,4 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
+// 预热 Vue 的 ESM 图：useUpdate 依赖自动导入的 ref/computed。
+// 若等到 it 里再 await import，冷启动成本会落在 5s 的用例超时里（全量并行时偶发超时）。
+import 'vue'
 
 /**
  * 更新中心渲染侧状态：保证事件只订阅一次、状态与进度能反映到界面、
@@ -71,10 +74,17 @@ async function loadUseUpdate(): Promise<{
   api: UpdatesApiStub
   useUpdate: typeof import('../../../src/renderer/src/composables/useUpdate').useUpdate
 }> {
+  // 先装好 window.api 再加载模块：模块体若将来改成顶层访问 window.api，这里不会炸
+  const api = installApi()
   vi.resetModules()
   const mod = await import('../../../src/renderer/src/composables/useUpdate')
-  return { api: installApi(), useUpdate: mod.useUpdate }
+  return { api, useUpdate: mod.useUpdate }
 }
+
+// 在收集阶段先求值一次并装好 window.api 桩：全量并行运行时这几个包的首次 transform
+// 可能超过默认 5s，落到 it 里就会随机超时。resetModules 之后再次 import 只是重新求值（transform 已缓存）。
+installApi()
+await import('../../../src/renderer/src/composables/useUpdate')
 
 describe('useUpdate', () => {
   it('初始化时读取状态并触发一次检查，同时只订阅一遍', async () => {

@@ -130,7 +130,7 @@ describe('英美布局差异', () => {
     expect(lookupLayoutKey(LAYOUTS.es, 'Ñ')).toEqual({ vk: VK.OEM_1, modifiers: ['shift'] })
   })
 
-  it('非 US 布局故意只收录确定项，其余交给 Unicode 回退', () => {
+  it('非 US 布局故意只收录确定项，其余判为 unsupported（不再回退 Unicode）', () => {
     // ö 这类字符在德语布局中位置不确定，宁可不收录（回退 Unicode 一定正确）
     expect(layoutHasChar(LAYOUTS.de, 'ö')).toBe(false)
     expect(layoutHasChar(LAYOUTS.fr, '(')).toBe(false)

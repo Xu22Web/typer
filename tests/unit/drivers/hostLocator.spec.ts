@@ -1,9 +1,13 @@
 import { describe, expect, it } from 'vitest'
+import { fileURLToPath } from 'node:url'
 import {
   hostScriptCandidates,
   HostScriptNotFoundError,
   resolveHostScriptPath
 } from '@main/typing/drivers/hostLocator'
+
+/** 仓库根目录：不依赖 process.cwd()，否则从子目录/IDE 直接跑就会找不到脚本 */
+const REPO_ROOT = fileURLToPath(new URL('../../../', import.meta.url))
 
 const context = { appPath: 'C:\\app', resourcesPath: 'C:\\app\\resources' }
 
@@ -47,7 +51,7 @@ describe('resolveHostScriptPath', () => {
   it('默认使用真实文件系统（当前仓库里脚本确实存在）', () => {
     const path = resolveHostScriptPath({
       isPackaged: false,
-      appPath: process.cwd(),
+      appPath: REPO_ROOT,
       resourcesPath: 'C:\\不存在'
     })
     expect(path.endsWith('typing-host.ps1')).toBe(true)
