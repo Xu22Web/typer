@@ -133,7 +133,7 @@ function looksLikeText(bytes: Buffer): boolean {
 }
 
 /** 类型 → 中文说明 */
-const KIND_LABELS: Readonly<Record<FileKind, string>> = {
+export const KIND_LABELS: Readonly<Record<FileKind, string>> = {
   zip: 'ZIP 类容器（VSIX/JAR/DOCX/APK…）',
   gzip: 'gzip',
   '7z': '7z',

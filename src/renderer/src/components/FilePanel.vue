@@ -288,8 +288,8 @@ const previewRows = computed(() => summary.value?.preview ?? [])
                 <strong>{{ budget.ok ? '可达' : `超 ${budget.ratio.toFixed(1)} 倍` }}</strong>
               </span>
             </div>
-            <span class="budget-note" :title="`${summary.kind} · ${summary.compressionNote}`">
-              {{ summary.kind }} · {{ summary.compressionNote }}
+            <span class="budget-note" :title="`${summary.kindLabel} · ${summary.compressionNote}`">
+              {{ summary.kindLabel }} · {{ summary.compressionNote }}
             </span>
           </div>
           <div class="summary-sha" :title="summary.sha256">

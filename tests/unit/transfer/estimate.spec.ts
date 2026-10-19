@@ -41,6 +41,7 @@ function summary(
     looksUtf8: false,
     compressionNote: '',
     kind: 'binary',
+    kindLabel: '二进制',
     prepareMs: 0
   }
 }

@@ -35,7 +35,7 @@ import {
   type TransferWireCompression
 } from '@shared/transfer/transfer'
 
-import { analyzeFile } from './analyze'
+import { analyzeFile, KIND_LABELS } from './analyze'
 
 /** 准备阶段失败：消息直接展示给用户，因此用中文把"为什么不行 + 怎么办"讲清楚。 */
 export class TransferError extends Error {
@@ -447,6 +447,7 @@ export async function prepareTransfer(input: PrepareTransferInput): Promise<Prep
             }%），但按设置强制压缩了；改用「自动」可跳过这一步，省掉准备时间`
         : profile.reason,
     kind: profile.kind,
+    kindLabel: KIND_LABELS[profile.kind],
     prepareMs: Date.now() - startedAt
   }
 

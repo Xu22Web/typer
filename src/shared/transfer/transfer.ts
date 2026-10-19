@@ -195,6 +195,8 @@ export interface TransferJobSummary {
   compressionNote: string
   /** 文件类型（魔数识别结果） */
   kind: string
+  /** 文件类型的中文说明（界面直接展示，避免出现 text/binary 这类英文代号） */
+  kindLabel: string
   /** 准备阶段耗时（毫秒） */
   prepareMs: number
 }
