@@ -3,7 +3,13 @@ import { nodeSpawnAdapter } from '@main/typing/drivers/spawn'
 import { WindowsSendInputDriver } from '@main/typing/drivers/WindowsSendInputDriver'
 import type { HostItem } from '@main/typing/drivers/protocol'
 import { buildPlan } from '@main/typing/planner/plan'
-import { HOST_SCRIPT, launchTargetWindow, waitFor, type TargetWindow } from './helpers/system'
+import {
+  HOST_SCRIPT,
+  classifyDelivery,
+  launchTargetWindow,
+  waitFor,
+  type TargetWindow
+} from './helpers/system'
 
 /**
  * 真实键盘注入测试（opt-in，TYPIST_E2E=1）：唯一会**真的往一个窗口打字**
@@ -11,8 +17,9 @@ import { HOST_SCRIPT, launchTargetWindow, waitFor, type TargetWindow } from './h
  * 目标是一个自建的 WinForms 窗口（把收到的字符写回文件），断言即文本比较。
  *
  * “注入能不能送到”是环境属性：同一份托管 runner 前几次能送进去（用例真跑），某次会话
- * 没有可用的交互式输入桌面时会静默丢事件。因此先只等第一个字符：一个都到不了就判定环境
- * 不支持（CI 上跳过、本地照常报错）；只要到了第一个字符，后面就必须完整到达。
+ * 没有可用的交互式输入桌面、或者打字途中焦点被别的进程抢走时，只能送到一部分。
+ * 因此交付结果分三类：完整到达（通过）、只到达一个合法前缀含 0 个字符（环境限制，
+ * CI 跳过、本地报错）、字符内容不对（真正的注入回归，必须红）。
  */
 const enabled = process.env.TYPIST_E2E === '1'
 const describeE2E = enabled ? describe : describe.skip
@@ -44,19 +51,27 @@ describeE2E('真实注入（需要前台焦点）', () => {
   }
 
   /**
-   * @description 等目标窗口收到第一个字符，用来区分“环境送不到”与“注入真的坏了”
-   * @returns 是否收到了任意字符
+   * @description 等目标窗口把字符流打完；超时也返回已收到的部分，交给调用方区分
+   * "没跑完"（环境）与"打错了"（回归）
+   * @returns 目标窗口当前收到的字符
    */
-  const firstCharArrived = async (): Promise<boolean> => {
-    try {
-      await waitFor(() => target.readKeys().length > 0, {
-        timeoutMs: 5_000,
-        description: '目标窗口收到第一个字符'
-      })
-      return true
-    } catch {
-      return false
+  const collectDelivered = async (): Promise<string> => {
+    const settle = async (
+      predicate: () => boolean,
+      timeoutMs: number,
+      description: string
+    ): Promise<void> => {
+      try {
+        await waitFor(predicate, { timeoutMs, description })
+      } catch {
+        // 超时由调用方按"收到了多少"判定，不在这里抛
+      }
     }
+
+    // 先等第一个字符，避免环境不支持时空等十几秒；再等完整字符流落盘
+    await settle(() => target.readKeys().length > 0, 5_000, '目标窗口收到第一个字符')
+    await settle(() => target.readKeys() === SAMPLE_TEXT, 10_000, '目标窗口收到完整字符流')
+    return target.readKeys()
   }
 
   beforeAll(async () => {
@@ -104,11 +119,13 @@ describeE2E('真实注入（需要前台焦点）', () => {
     const result = await driver.send(items)
     expect(result.injected).toBe(result.requested)
 
-    // 先确认注入真的进了目标窗口：托管 runner 上 `SendInput` 有时会“报告成功但事件
-    // 到不了窗口”（会话没有可用的输入桌面）。一个字符都收不到就归为环境限制，
-    // CI 上跳过（本地仍然报错，避免把真的注入回归当成环境问题藏起来）。
-    if (!(await firstCharArrived())) {
-      const message = '目标窗口收不到注入的按键（当前会话可能没有可用的交互式输入桌面）'
+    // 完整字符流落盘才算成功；只到一部分且内容对得上 → 环境问题（没跑完），
+    // 内容对不上 → 真正的回归，交给下面的断言把 diff 打出来
+    const delivered = await collectDelivered()
+    if (classifyDelivery(delivered, SAMPLE_TEXT) === 'interrupted') {
+      const message =
+        `目标窗口只收到 ${delivered.length}/${SAMPLE_TEXT.length} 个字符：` +
+        '本环境没有可用的输入桌面，或打字途中焦点被别的进程抢走'
       if (process.env.CI) {
         console.warn(`⚠️ ${message}，本环境跳过真实注入用例`)
         return ctx.skip()
@@ -116,16 +133,9 @@ describeE2E('真实注入（需要前台焦点）', () => {
       throw new Error(message)
     }
 
-    // 必须等到**完整字符流**落盘再断言：fixture 每收到一个 WM_CHAR 就重写一次文件，
-    // 只等"文件非空"会读到只到一半的状态
-    await waitFor(() => target.readKeys() === SAMPLE_TEXT, {
-      timeoutMs: 15_000,
-      description: '目标窗口收到完整字符流'
-    })
-
-    expect(target.readKeys()).toBe(SAMPLE_TEXT)
+    expect(delivered).toBe(SAMPLE_TEXT)
     // 未显式发送退格，内容不应被改写
-    expect(target.readKeys()).not.toContain('\b')
+    expect(delivered).not.toContain('\b')
   }, 60_000)
 
   it('输入结束后没有按键粘住（releaseAll + probe 双重确认）', async (ctx) => {

@@ -72,6 +72,23 @@ export interface WaitOptions {
   description?: string
 }
 
+/** 交付结果：完整到达 / 只到一部分但内容对得上 / 内容对不上 */
+export type DeliveryVerdict = 'complete' | 'interrupted' | 'mismatch'
+
+/**
+ * @description 判定目标窗口实际收到的字符与预期文本的关系。
+ * 注入的交付能力取决于环境（会话可能没有可用的输入桌面，或打字途中焦点被抢走），
+ * 所以"只收到合法前缀"与"收到的字符本身不对"必须分开处理：前者是环境问题，
+ * 后者是真正的注入回归。
+ * @param received 目标窗口实际收到的字符
+ * @param expected 预期文本
+ * @returns 交付结果分类
+ */
+export function classifyDelivery(received: string, expected: string): DeliveryVerdict {
+  if (received === expected) return 'complete'
+  return expected.startsWith(received) ? 'interrupted' : 'mismatch'
+}
+
 /**
  * @description 轮询等待条件成立（等待窗口就绪 / 内容出现）
  * @param predicate 条件
