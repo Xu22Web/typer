@@ -1,6 +1,6 @@
 // 以 TYPIST_E2E=1 运行系统测试项目（真实注入用例）。
 // pnpm 在 Windows 上无法用 `VAR=1 cmd` 语法设置环境变量，因此用 Node 转发。
-// 托管 CI runner 上真实注入到不了目标窗口，用例自己会按 `CI` 跳过（见 tests/system/realInjection.spec.ts）。
+// 托管 CI runner 的会话偶尔没有可用的输入桌面，真实注入用例会先探测能否送达，送不到才跳过。
 import { spawn } from 'node:child_process'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'

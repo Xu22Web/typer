@@ -177,7 +177,7 @@ node scripts/bench-transfer.mjs <文件> --emit frames.txt --verify  # 文件传
 提交前也可运行 `pnpm lint`、`pnpm typecheck`、`pnpm format:check`。
 
 - **单元测试**覆盖文本归一化、ASCII 键位完整性、动作规划、节奏与错字、引擎状态机、文件传输（线格式、CRC32、续传、压缩、耗时估算）、协议分片与粘包、浮窗几何、主题、设置夹取、IPC 校验与更新流程。
-- **系统测试**使用真实 PowerShell 宿主与构建后的接收端脚本；`pnpm test:system` 会开启真实注入，在自建 WinForms 窗口中逐字比对 `WM_CHAR`，抢不到前台焦点时自动跳过，不会打到其它窗口。托管 CI runner 上没有可用的交互式输入桌面，这一层在 CI 上会自动跳过。
+- **系统测试**使用真实 PowerShell 宿主与构建后的接收端脚本；`pnpm test:system` 会开启真实注入，在自建 WinForms 窗口中逐字比对 `WM_CHAR`，抢不到前台焦点时自动跳过，不会打到其它窗口。注入前会先探测按键能否送达，送不到（例如托管 CI runner 的会话没有输入桌面）就跳过，不报假红。
 - CI 在 `windows-latest` 上执行格式检查、Lint、类型检查、单元与系统测试、构建。
 
 ## 已知限制
