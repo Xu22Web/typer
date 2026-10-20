@@ -1,6 +1,7 @@
 import { app, BrowserWindow, dialog, globalShortcut, ipcMain, Menu, net, shell } from 'electron'
 import { spawn } from 'node:child_process'
 import { readFile } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
 import { basename, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { optimizer, is } from '@electron-toolkit/utils'
@@ -330,11 +331,19 @@ async function bootstrap(): Promise<void> {
     optimizer.watchWindowShortcuts(window)
   })
 
+  const settingsFile = settingsFilePath()
   const store = new SettingsStore({
-    filePath: settingsFilePath(),
+    filePath: settingsFile,
     logger: (level, message) => logger[level](message)
   })
   store.load()
+  // 启动时把"设置在哪儿、这次是读文件还是回退默认"写进日志：
+  // 用户反馈"更新后设置被重置"时，这一行能直接区分"文件被删"与"文件还在但读坏了"
+  logger.info(
+    existsSync(settingsFile)
+      ? `设置已加载：${settingsFile}`
+      : `没有找到设置文件，本次使用默认值：${settingsFile}`
+  )
 
   // 启动时就报出宿主缺失的问题，而不是等用户点击"开始"
   try {

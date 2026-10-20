@@ -129,6 +129,8 @@ node typer-recv.mjs -o received.bin --token
 - 用发布附带的 `SHA256SUMS.txt` 或 GitHub 的 `asset.digest` 校验；摘要不符会删除文件并拒绝安装，两种来源都拿不到时只提供手动下载入口。
 - 校验通过后启动安装程序并退出本程序，由安装向导完成替换。
 - 检查带 30 秒节流；离线、限流等失败只写日志，不打扰操作。
+- **更新不会重置设置**：这是"覆盖安装"（安装器用 `--updated` 调用旧卸载程序），`%APPDATA%\Typer\settings.json` 与缓存都保持原样；只有**卸载**才会清掉用户数据（`deleteAppDataOnUninstall: true`）。所以「先卸载再装」等于重置，要保留就先拷走 `settings.json`，装完再放回去。
+- 设置文件损坏时不会直接丢：会另存为 `settings.json.corrupt` 并回退默认值，原文件可供排查。
 
 发布新版本：更新 `package.json` 的 `version`，然后推送 `v*` 标签。`release.yml` 会在 `windows-latest` 上构建安装包、生成 `SHA256SUMS.txt`，并把接收端脚本一并上传到 Release。
 

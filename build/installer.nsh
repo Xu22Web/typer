@@ -23,16 +23,24 @@
     SetShellVarContext current
   ${endif}
 
-  # 更新缓存目录：安装程序副本（约 88MB）
-  RMDir /r "$LOCALAPPDATA\${APP_FILENAME}-updater"
-  # 用户数据兜底（正常由 deleteAppDataOnUninstall 删除）
-  RMDir /r "$LOCALAPPDATA\${APP_FILENAME}"
-  # 旧产品名（小写）留下的同名目录，避免升级后残留
-  !ifdef APP_PACKAGE_NAME
-    RMDir /r "$LOCALAPPDATA\${APP_PACKAGE_NAME}-updater"
-    RMDir /r "$LOCALAPPDATA\${APP_PACKAGE_NAME}"
-    RMDir /r "$APPDATA\${APP_PACKAGE_NAME}"
-  !endif
+  # ★ 升级时绝不能删任何用户数据。
+  # 应用内更新是"覆盖安装"：安装器会先用 `--updated` 调用旧卸载程序（见
+  # app-builder-lib/templates/nsis/include/installUtil.nsh），官方模板据此跳过
+  # deleteAppDataOnUninstall 的删除。但本宏里的清理是手写的，必须自己加同样的判断，
+  # 否则每次升级都会把 %APPDATA%\typer（旧产品名下的 settings.json）与
+  # %LOCALAPPDATA%\Typer 删掉——表现就是"更新后设置被重置"。
+  ${ifNot} ${isUpdated}
+    # 更新缓存目录：安装程序副本（约 88MB）
+    RMDir /r "$LOCALAPPDATA\${APP_FILENAME}-updater"
+    # 用户数据兜底（正常由 deleteAppDataOnUninstall 删除）
+    RMDir /r "$LOCALAPPDATA\${APP_FILENAME}"
+    # 旧产品名（小写）留下的同名目录，避免卸载后残留
+    !ifdef APP_PACKAGE_NAME
+      RMDir /r "$LOCALAPPDATA\${APP_PACKAGE_NAME}-updater"
+      RMDir /r "$LOCALAPPDATA\${APP_PACKAGE_NAME}"
+      RMDir /r "$APPDATA\${APP_PACKAGE_NAME}"
+    !endif
+  ${endif}
 
   ${if} $installMode == "all"
     SetShellVarContext all

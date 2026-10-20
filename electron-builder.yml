@@ -71,7 +71,8 @@ nsis:
   # 卸载时删除用户数据（%APPDATA%\Typer：settings.json、缓存、Local Storage 等）。
   # 实测：设为 false 时卸载后 %APPDATA%\Typer 会完整残留；设为 true 后 userData、
   # 安装目录、桌面/开始菜单快捷方式与注册表项全部清除。
-  # 注意：模板在"升级流程"（--updated）下会跳过删除，以免升级时丢配置。
+  # 注意：模板在"升级流程"（--updated）下会跳过删除，以免升级时丢配置；
+  # build/installer.nsh 里手写的清理也必须遵守同一条规则（有单测盯着）。
   deleteAppDataOnUninstall: true
   # 兜底清理（必需）：electron-builder 的 NSIS 模板在安装时**无条件**把安装程序自身
   # 复制到 %LOCALAPPDATA%\Typer-updater\installer.exe（约 88MB，供差量更新使用），
