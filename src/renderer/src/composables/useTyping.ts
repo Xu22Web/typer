@@ -1,5 +1,8 @@
 import type { ProgressSnapshot } from '@main/typing/engine/progress'
 import type { EngineSnapshot, EngineState } from '@main/typing/engine/states'
+import { DEFAULT_LAYOUT_ID } from '@main/typing/planner/keymap'
+import { buildPlan } from '@main/typing/planner/plan'
+import { describePunctuation, mapPunctuation } from '@main/typing/planner/punctuation'
 import { formatDuration } from '@shared/format/duration'
 
 /**
@@ -105,16 +108,110 @@ async function syncStatus(): Promise<void> {
   }
 }
 
+/**
+ * @description 统计"字符 → 次数"表的总次数
+ * @param map 字符统计表
+ * @returns 总次数
+ */
+function countChars(map: Record<string, number>): number {
+  return Object.values(map).reduce((sum, count) => sum + count, 0)
+}
+
+/**
+ * @description 把"字符 → 次数"表写成短样例：`中×2 😀×1`（最多 8 种）
+ * @param map 字符统计表
+ * @returns 单行样例
+ */
+function samplesOf(map: Record<string, number>): string {
+  const entries = Object.entries(map)
+  const shown = entries
+    .slice(0, 8)
+    .map(([char, count]) => `${char}×${count}`)
+    .join(' ')
+  return entries.length > 8 ? `${shown} …` : shown
+}
+
+/**
+ * @description 开始前的"无法输入"清单：全角 / 中文标点先按 ASCII 近似映射替换，
+ * 仍然没有物理键位的字符（汉字、emoji、`《》` 等）直接拦下；可全部替换时请用户确认映射再继续。
+ * 内容区原文不动，只替换本次要注入的文本。
+ * @returns 实际交给引擎的文本；null 表示用户取消或存在无法替换的字符
+ */
+async function prepareText(): Promise<string | null> {
+  const source = text.value
+  const layout = useSettings().settings.value?.keyboard.layout ?? DEFAULT_LAYOUT_ID
+
+  // 没有无法输入的字符：不打扰用户
+  if (countChars(buildPlan(source, { layout }).stats.unsupported) === 0) return source
+
+  const mapped = mapPunctuation(source)
+  const leftover = buildPlan(mapped.text, { layout }).stats.unsupported
+  const leftoverTotal = countChars(leftover)
+
+  const lines: string[] = []
+  if (mapped.replaced > 0) {
+    lines.push(
+      `有 ${mapped.replaced} 个全角 / 中文标点没有物理键位，将按下面的映射替换后输入：`,
+      describePunctuation(mapped.changes, 10),
+      '内容区的原文不会被修改，只替换本次要输入的内容。'
+    )
+  }
+  if (leftoverTotal > 0) {
+    lines.push(
+      `另有 ${leftoverTotal} 个字符没有可用的近似写法：${samplesOf(leftover)}`,
+      '这些字符无法通过键盘输入，请先删掉或改成可输入的字符再开始。'
+    )
+  }
+
+  const options = {
+    type: 'warning' as const,
+    customStyle: { whiteSpace: 'pre-line' } as const
+  }
+
+  // 汉字 / emoji 换不掉，必然会失败：只提示，不启动
+  if (leftoverTotal > 0) {
+    try {
+      await ElMessageBox.alert(lines.join('\n'), '有字符无法输入', {
+        ...options,
+        confirmButtonText: '知道了'
+      })
+    } catch {
+      // 关闭弹窗同样视为已知晓
+    }
+    return null
+  }
+
+  try {
+    await ElMessageBox.confirm(lines.join('\n'), '标点将按映射替换', {
+      ...options,
+      confirmButtonText: '替换并开始',
+      cancelButtonText: '取消'
+    })
+  } catch {
+    return null
+  }
+
+  pushLog(
+    'warn',
+    `已替换 ${mapped.replaced} 个无法直接输入的标点：${describePunctuation(mapped.changes, 6)}`
+  )
+  return mapped.text
+}
+
 /** @description 把内容区的文本交给引擎开始输入；倒计时与注入节奏都由设置决定 */
 async function start(): Promise<void> {
-  if (busy.value || text.value.length === 0) return
+  if (busy.value || unsupported.value || text.value.length === 0) return
   busy.value = true
-  pushLog(
-    'info',
-    `开始：${text.value.length} 个字符（倒计时结束后将输入到「${targetWindow.value}」）`
-  )
   try {
-    const summary = await window.api.typing.start(text.value)
+    // 有无法直接输入的字符时先摆清单：能换的请用户确认，换不了的就别启动
+    const pending = await prepareText()
+    if (pending === null) return
+
+    pushLog(
+      'info',
+      `开始：${pending.length} 个字符（倒计时结束后将输入到「${targetWindow.value}」）`
+    )
+    const summary = await window.api.typing.start(pending)
     lastSummary.value = `状态 ${summary.state}｜${summary.typed}/${summary.total} 个动作｜耗时 ${formatDuration(
       summary.elapsedMs
     )}｜种子 ${summary.seed}`

@@ -1,5 +1,6 @@
 <script setup lang="ts" vapor>
 import { buildPlan } from '@main/typing/planner/plan'
+import { describePunctuation, mapPunctuation } from '@main/typing/planner/punctuation'
 import { estimateTotalMs } from '@main/typing/scheduling/timing'
 import { formatDuration } from '@shared/format/duration'
 
@@ -15,10 +16,13 @@ const settings = settingsStore.settings
 /** 文本看起来像 Typer 帧文本时给出提示（错字会破坏帧，需要把错字率设为 0）。 */
 const looksLikeFrames = computed(() => typing.text.value.trimStart().startsWith('@TYPER1/'))
 
-/** 实时预览：字符统计 + 预计耗时（与主进程使用同一套纯函数实现） */
+/** 全角 / 中文标点的 ASCII 近似替换结果（内容区原文 → 实际会输入的内容） */
+const punctuation = computed(() => mapPunctuation(typing.text.value))
+
+/** 实时预览：字符统计 + 预计耗时（按替换后的内容估算，与主进程使用同一套纯函数实现） */
 const preview = computed(() => {
   if (!settings.value || typing.text.value.length === 0) return null
-  const stats = buildPlan(typing.text.value, {
+  const stats = buildPlan(punctuation.value.text, {
     layout: settings.value.keyboard.layout
   }).stats
 
@@ -28,7 +32,15 @@ const preview = computed(() => {
 /** 是否处于"不限速"模式（没有可靠的耗时估算） */
 const unlimited = computed(() => settings.value?.timing.speedMode === 'max')
 
-/** 没有物理键位、无法通过键盘输入的字符数 */
+/** 开始时会自动换成 ASCII 近似的标点数 */
+const replaceCount = computed(() => punctuation.value.replaced)
+
+/** 替换清单（悬停提示） */
+const replaceHint = computed(
+  () => `开始输入前会按此映射替换：${describePunctuation(punctuation.value.changes, 10)}`
+)
+
+/** 替换后仍然没有物理键位、无法通过键盘输入的字符数 */
 const unsupportedCount = computed(() => {
   const map = preview.value?.stats.unsupported ?? {}
   return Object.values(map).reduce((sum, count) => sum + count, 0)
@@ -58,6 +70,11 @@ function clear(): void {
             <strong>{{ preview.stats.chars }}</strong> 字符
           </div>
         </div>
+        <div v-if="replaceCount > 0" class="chip" :title="replaceHint">
+          <div>
+            将替换 <strong>{{ replaceCount }}</strong> 个标点
+          </div>
+        </div>
         <div v-if="unsupportedCount > 0" class="chip warn">
           <div>
             无法输入 <strong>{{ unsupportedCount }}</strong>
@@ -82,7 +99,7 @@ function clear(): void {
       type="textarea"
       :rows="13"
       resize="none"
-      placeholder="把要输入的文本粘贴到这里（支持可打印 ASCII 与需要 Shift 的符号）"
+      placeholder="把要输入的文本粘贴到这里（支持可打印 ASCII；全角标点会在开始时提示按映射替换）"
       @keydown.ctrl.enter="typing.start()"
     />
 
