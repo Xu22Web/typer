@@ -516,7 +516,7 @@ const previewRows = computed(() => summary.value?.preview ?? [])
         <div class="icon i-mdi-console-line text-icon" />
         <div>
           目标端运行 <code class="mono">typer-recv.mjs</code> 或双击
-          <code class="mono">run.bat</code>；零依赖，Node ≥ 16
+          <code class="mono">run.bat</code>；零依赖，Node ≥ 14
         </div>
       </div>
       <div class="tools-actions">

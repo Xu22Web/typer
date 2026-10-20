@@ -714,7 +714,7 @@ async function restoreDefaults(): Promise<void> {
             <div class="row">
               <div class="label">
                 <div>接收脚本</div>
-                <small>零依赖（Node ≥ 16）；导出后双击同目录 run.bat 即可运行</small>
+                <small>零依赖（Node ≥ 14）；导出后双击同目录 run.bat 即可运行</small>
               </div>
               <div class="tools-actions">
                 <ElButton size="small" @click="exportTools">
