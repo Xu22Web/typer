@@ -42,6 +42,18 @@ export default defineConfig({
           testTimeout: 180_000,
           hookTimeout: 180_000
         }
+      },
+      {
+        extends: true,
+        test: {
+          name: 'e2e',
+          environment: 'node',
+          include: ['tests/e2e/**/*.spec.ts'],
+          // 一次只跑一个应用实例：两个用例共用一个窗口，不能并行
+          fileParallelism: false,
+          testTimeout: 300_000,
+          hookTimeout: 240_000
+        }
       }
     ],
     coverage: {

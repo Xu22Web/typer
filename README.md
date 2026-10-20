@@ -171,7 +171,8 @@ pnpm test          # 单元测试：假时钟 + Mock 驱动，不产生真实按
 pnpm test:watch    # 监听模式
 pnpm test:cov      # 覆盖率
 pnpm test:system   # 系统测试：宿主脚本 + 接收端端到端 + 真实注入
-pnpm test:all      # 单元 + 系统（真实注入默认跳过）
+pnpm test:e2e      # 端到端：远程调试驱动真实应用，宿主 dry-run，不产生真实按键
+pnpm test:all      # 单元 + 系统（端到端要拉起界面，故不在其中；真实注入默认跳过）
 node scripts/bench-throughput.mjs                  # 注入吞吐基准（默认 dry-run）
 node scripts/bench-throughput.mjs --real "<窗口标题>"  # 真实按键到指定窗口
 node scripts/bench-transfer.mjs <文件> --emit frames.txt --verify  # 文件传输：字符数、各档耗时、接收端逐字节校验
@@ -180,6 +181,7 @@ node scripts/bench-transfer.mjs <文件> --emit frames.txt --verify  # 文件传
 提交前也可运行 `pnpm lint`、`pnpm typecheck`、`pnpm format:check`。
 
 - **单元测试**覆盖文本归一化、ASCII 键位完整性、动作规划、节奏与错字、引擎状态机、文件传输（线格式、CRC32、续传、压缩、耗时估算）、协议分片与粘包、浮窗几何、主题、设置夹取、IPC 校验与更新流程。
+- **端到端测试**（`tests/e2e`）用远程调试端口（CDP）驱动**真实应用**：界面填内容 → 点开始 → 引擎跑到完成态；`prepare → plan → start` 跑通文件输入；完成后浮窗按设置停在「返回主窗口」。宿主以 dry-run 启动（`TYPER_DRY_RUN=1`），并把子进程的 `APPDATA` 指到临时目录，因此不真实按键、也不碰本机配置。不引入 Playwright，直接用 Node 自带的 WebSocket 说 CDP。
 - **系统测试**使用真实 PowerShell 宿主与构建后的接收端脚本；`pnpm test:system` 会开启真实注入，在自建 WinForms 窗口中逐字比对 `WM_CHAR`，抢不到前台焦点时自动跳过，不会打到其它窗口。字符只到一部分（含 0 个，但内容与预期一致）视为环境限制——托管 runner 的会话可能没有输入桌面或中途丢焦点——用例会跳过而不报假红；字符内容对不上才判失败。
 - CI 在 `windows-latest` 上执行格式检查、Lint、类型检查、单元与系统测试、构建。
 

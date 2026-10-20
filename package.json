@@ -39,8 +39,9 @@
     "icons": "node scripts/generate-icons.mjs",
     "test": "vitest run --project unit",
     "test:watch": "vitest --project unit",
-    "test:all": "pnpm run build:tools && vitest run",
+    "test:all": "pnpm run build:tools && vitest run --project unit --project system",
     "test:system": "pnpm run build:tools && node scripts/run-system-tests.mjs",
+    "test:e2e": "vitest run --project e2e",
     "test:cov": "vitest run --project unit --coverage"
   },
   "dependencies": {

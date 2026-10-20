@@ -302,6 +302,9 @@ function buildDriver(): KeyboardDriver {
         appPath: app.getAppPath(),
         resourcesPath: process.resourcesPath
       },
+      // 端到端调试用：宿主只走协议、不真的注入按键（tests/e2e 会设 TYPER_DRY_RUN=1），
+      // 否则自动化跑起来会把字打到当时前台的那个窗口上
+      dryRun: process.env['TYPER_DRY_RUN'] === '1',
       onLog: (level, message) => logger[level](message)
     })
   } catch (error) {
