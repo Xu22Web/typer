@@ -1,6 +1,6 @@
 <script setup lang="ts" vapor>
-import { buildPlan } from '@main/typing/planner/plan'
-import { describePunctuation, mapPunctuation } from '@main/typing/planner/punctuation'
+import { buildPlan, stripUnsupported } from '@main/typing/planner/plan'
+import { mapPunctuation } from '@main/typing/planner/punctuation'
 import { estimateTotalMs } from '@main/typing/scheduling/timing'
 import { formatDuration } from '@shared/format/duration'
 
@@ -16,13 +16,17 @@ const settings = settingsStore.settings
 /** 文本看起来像 Typer 帧文本时给出提示（错字会破坏帧，需要把错字率设为 0）。 */
 const looksLikeFrames = computed(() => typing.text.value.trimStart().startsWith('@TYPER1/'))
 
-/** 全角 / 中文标点的 ASCII 近似替换结果（内容区原文 → 实际会输入的内容） */
-const punctuation = computed(() => mapPunctuation(typing.text.value))
+/** 开始前会怎么处理键盘打不出来的字符：中文标点映射成英文标点，其余直接忽略 */
+const prepared = computed(() => {
+  const mapped = mapPunctuation(typing.text.value)
+  const { text: usable, dropped } = stripUnsupported(mapped.text, settings.value?.keyboard.layout)
+  return { mapped: mapped.replaced, ignored: dropped, text: usable }
+})
 
-/** 实时预览：字符统计 + 预计耗时（按替换后的内容估算，与主进程使用同一套纯函数实现） */
+/** 实时预览：字符统计 + 预计耗时（按实际会输入的文本估算，与主进程使用同一套纯函数实现） */
 const preview = computed(() => {
   if (!settings.value || typing.text.value.length === 0) return null
-  const stats = buildPlan(punctuation.value.text, {
+  const stats = buildPlan(prepared.value.text, {
     layout: settings.value.keyboard.layout
   }).stats
 
@@ -32,19 +36,11 @@ const preview = computed(() => {
 /** 是否处于"不限速"模式（没有可靠的耗时估算） */
 const unlimited = computed(() => settings.value?.timing.speedMode === 'max')
 
-/** 开始时会自动换成 ASCII 近似的标点数 */
-const replaceCount = computed(() => punctuation.value.replaced)
+/** 将映射成英文标点的字符数 */
+const mappedCount = computed(() => prepared.value.mapped)
 
-/** 替换清单（悬停提示） */
-const replaceHint = computed(
-  () => `开始输入前会按此映射替换：${describePunctuation(punctuation.value.changes, 10)}`
-)
-
-/** 替换后仍然没有物理键位、无法通过键盘输入的字符数 */
-const unsupportedCount = computed(() => {
-  const map = preview.value?.stats.unsupported ?? {}
-  return Object.values(map).reduce((sum, count) => sum + count, 0)
-})
+/** 将被忽略的字符数（没有对应的键盘按键） */
+const ignoredCount = computed(() => prepared.value.ignored)
 
 /** 内容区不能开始的原因 */
 const blocker = computed(() => {
@@ -70,14 +66,18 @@ function clear(): void {
             <strong>{{ preview.stats.chars }}</strong> 字符
           </div>
         </div>
-        <div v-if="replaceCount > 0" class="chip" :title="replaceHint">
+        <div v-if="mappedCount > 0" class="chip" title="中文 / 全角标点会映射成对应的英文标点">
           <div>
-            将替换 <strong>{{ replaceCount }}</strong> 个标点
+            转英文 <strong>{{ mappedCount }}</strong> 个标点
           </div>
         </div>
-        <div v-if="unsupportedCount > 0" class="chip warn">
+        <div
+          v-if="ignoredCount > 0"
+          class="chip warn"
+          title="这些字符没有对应的键盘按键，开始时会跳过"
+        >
           <div>
-            无法输入 <strong>{{ unsupportedCount }}</strong>
+            忽略 <strong>{{ ignoredCount }}</strong> 个
           </div>
         </div>
       </template>

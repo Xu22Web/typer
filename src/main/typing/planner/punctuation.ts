@@ -4,7 +4,7 @@
  * 为什么需要它：远程桌面（RDP / Citrix / 云桌面）只转发真实键盘事件，`KEYEVENTF_UNICODE`
  * 报文到不了远端，没有物理键位的字符只能换成"有键位的近似字符"再输入。
  * 这里只处理标点与全角形式：汉字、emoji 没有近似写法，硬换会篡改内容，
- * 仍然保持"开始前列为不可输入"的行为。
+ * 交由调用方直接忽略（见 `plan.stripUnsupported`）。
  *
  * 主进程与渲染进程共用（预览、开始前确认、日志），因此不依赖任何运行时环境。
  */
@@ -108,19 +108,4 @@ export function mapPunctuation(input: string): PunctuationResult {
   }
 
   return { text: out.join(''), changes: [...counts.values()], replaced }
-}
-
-/**
- * @description 生成替换清单的可读文案：`、 → ,（×2），。 → .（×1）`
- * @param changes 替换清单
- * @param limit 最多展示几种（超出部分只报总数）
- * @returns 单行文案；清单为空时返回空串
- */
-export function describePunctuation(changes: readonly PunctuationChange[], limit = 8): string {
-  if (changes.length === 0) return ''
-  const visible = changes
-    .slice(0, Math.max(0, limit))
-    .map((change) => `${change.from} → ${change.to}（×${change.count}）`)
-    .join('，')
-  return changes.length > limit ? `${visible} …（共 ${changes.length} 种）` : visible
 }

@@ -4,6 +4,7 @@ import {
   countTypedActions,
   iterateActions,
   resolveChar,
+  stripUnsupported,
   type PlanOptions
 } from '@main/typing/planner/plan'
 import { getLayout, VK } from '@main/typing/planner/keymap'
@@ -177,6 +178,25 @@ describe('错字模拟', () => {
     const total = countTypedActions('hello world', options())
     const actions = [...iterateActions('hello world', options())]
     expect(actions).toHaveLength(total)
+  })
+})
+
+describe('stripUnsupported', () => {
+  it('丢掉没有键盘按键的字符，其余内容顺序不变', () => {
+    expect(stripUnsupported('a中b😀c')).toEqual({ text: 'abc', dropped: 2 })
+  })
+
+  it('换行与 Tab 会保留', () => {
+    expect(stripUnsupported('中a\nb\tc')).toEqual({ text: 'a\nb\tc', dropped: 1 })
+  })
+
+  it('全部可输入时原样返回', () => {
+    expect(stripUnsupported('Hello !@# 123')).toEqual({ text: 'Hello !@# 123', dropped: 0 })
+  })
+
+  it('按布局判断：布局没收录的符号也算不可输入', () => {
+    expect(stripUnsupported('a(b', 'fr')).toEqual({ text: 'ab', dropped: 1 })
+    expect(stripUnsupported('a(b', 'us')).toEqual({ text: 'a(b', dropped: 0 })
   })
 })
 

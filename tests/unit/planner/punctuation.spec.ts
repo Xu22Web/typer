@@ -1,10 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { buildPlan } from '@main/typing/planner/plan'
-import {
-  describePunctuation,
-  mapPunctuation,
-  toAsciiPunctuation
-} from '@main/typing/planner/punctuation'
+import { mapPunctuation, toAsciiPunctuation } from '@main/typing/planner/punctuation'
 
 describe('toAsciiPunctuation', () => {
   it('中文标点换成语义等价的 ASCII', () => {
@@ -84,25 +80,5 @@ describe('mapPunctuation', () => {
       标: 1,
       点: 1
     })
-  })
-})
-
-describe('describePunctuation', () => {
-  it('清单为空时返回空串', () => {
-    expect(describePunctuation([])).toBe('')
-  })
-
-  it('按 `原字符 → 替换（×次数）` 拼接', () => {
-    expect(
-      describePunctuation([
-        { from: '、', to: ',', count: 2 },
-        { from: '。', to: '.', count: 1 }
-      ])
-    ).toBe('、 → ,（×2），。 → .（×1）')
-  })
-
-  it('超出上限时只报种类数', () => {
-    const changes = ['a', 'b', 'c'].map((from) => ({ from, to: from, count: 1 }))
-    expect(describePunctuation(changes, 2)).toBe('a → a（×1），b → b（×1） …（共 3 种）')
   })
 })

@@ -251,4 +251,29 @@ export function countTypedActions(input: string, options: PlanOptions = {}): num
   return collector.typed
 }
 
+/**
+ * @description 去掉没有任何键位可输入的字符（汉字、emoji 等），其余内容原样保留。
+ * 文本输入允许"打不出来的部分跳过、其它照常输入"，因此这里只做减法，不做替换
+ * ——把中文换成拼音之类的改写会篡改内容，不在自动处理范围内。
+ * @param input 原始文本
+ * @param layout 目标窗口使用的键盘布局
+ * @returns 剩余文本与被丢弃的字符数
+ */
+export function stripUnsupported(
+  input: string,
+  layout?: PlanOptions['layout']
+): { text: string; dropped: number } {
+  const keyboard = getLayout(layout)
+  const { text } = normalizeText(input)
+  const kept: string[] = []
+  let dropped = 0
+
+  for (const char of toCodePoints(text)) {
+    if (resolveChar(char, keyboard).kind === 'unsupported') dropped += 1
+    else kept.push(char)
+  }
+
+  return { text: kept.join(''), dropped }
+}
+
 export { DEFAULT_LAYOUT_ID }
