@@ -31,7 +31,10 @@
     powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts/typing-host.ps1
 #>
 param(
-    [switch]$DryRun
+    [switch]$DryRun,
+    # 端到端测试用：把"本来会发出"的按键事件追加到该文件（每行 `vk,up`）。
+    # 它只记录、不注入；配合 -DryRun 可以校对"目标窗口本该收到的内容"（见 tests/e2e）。
+    [string]$Record = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -223,6 +226,22 @@ public static class TyperNative
     private static readonly List<int> HeldModifiers = new List<int>();
     private static readonly object HeldLock = new object();
 
+    /// 记录模式（端到端测试用）：把每个真正会发出的事件记成 "vk,up"，
+    /// 记录本身不产生任何按键，宿主仍按 dry-run / 真实注入照常执行
+    public static bool RecordEnabled = false;
+    private static readonly List<string> Recorded = new List<string>();
+
+    /// 取走并清空已记录的事件（每条形如 "16,0"：虚拟键码与是否抬起）
+    public static string[] TakeRecorded()
+    {
+        lock (HeldLock)
+        {
+            string[] lines = Recorded.ToArray();
+            Recorded.Clear();
+            return lines;
+        }
+    }
+
     /// 当前保持按住的修饰键位掩码（跳批次保持：连续同修饰键的字符只付一次按下/抬起）
     private static int HeldModMask = 0;
 
@@ -371,6 +390,21 @@ public static class TyperNative
         int count = pending.Count;
         LastFlushTicks = 0;
         if (count == 0) return 0;
+
+        // 记录模式：按发送顺序把本批事件记下来（含修饰键的按下/抬起），
+        // 端到端测试据此重放"目标窗口本该收到的按键"。
+        if (RecordEnabled)
+        {
+            lock (HeldLock)
+            {
+                for (int i = 0; i < count; i++)
+                {
+                    bool isUp = (pending[i].U.ki.dwFlags & KEYEVENTF_KEYUP) != 0;
+                    Recorded.Add(pending[i].U.ki.wVk + (isUp ? ",1" : ",0"));
+                }
+            }
+        }
+
         if (dryRun) { pending.Clear(); return count; }
 
         // 复用一块缓冲区：每批都 ToArray() 会在高吞吐时产生大量短命数组
@@ -585,6 +619,14 @@ public static class TyperNative
                 }
                 requested += 2;
 
+                // 修饰键过渡必须**排在已排好的主键之后**：攒批时（delays[i] == 0）上一组的
+                // 主键还留在 pending 里，若直接发过渡，Shift 的抬起会插到它前面——目标端看到的是
+                // "Shift 先松开再打出 H"，大写与符号会偶发变成小写/数字（实测由端到端录制复现）。
+                if ((removeMask | addMask) != 0)
+                {
+                    injected += FlushBatch(pending, dryRun, false);
+                }
+
                 injected += ApplyModifierTransition(HeldModMask, modifiers, dryRun, modLeadMs, modTailMs, sendScan);
                 HeldModMask = modifiers;
 
@@ -772,6 +814,20 @@ function Get-ProbeResult {
 }
 
 # ---------------------------------------------------------------------------
+# 记录模式：每批发送完把"本来会发出"的事件落盘，供端到端测试重放
+# ---------------------------------------------------------------------------
+$recordEncoding = New-Object System.Text.UTF8Encoding($false)
+function Write-Recorded {
+    param([int]$RequestId = 0)
+    if (-not $Record) { return }
+    $lines = @([TyperNative]::TakeRecorded())
+    if ($lines.Count -eq 0) { return }
+    # 开头写一行 `#请求号`：端到端测试可以据此看出一批事件的归属（解析时跳过非数字行）
+    $payload = @("#$RequestId") + $lines
+    [System.IO.File]::AppendAllText($Record, (($payload -join "`n") + "`n"), $recordEncoding)
+}
+
+# ---------------------------------------------------------------------------
 # 主循环
 # ---------------------------------------------------------------------------
 if ($null -ne $compileError) {
@@ -779,6 +835,9 @@ if ($null -ne $compileError) {
     Send-Fail -Id 0 -Code 'E_NATIVE_COMPILE' -Message '输入宿主编译失败' -Detail $compileError
     exit 1
 }
+
+# 记录模式（端到端测试）：不影响注入行为，只把本批事件额外落盘
+if ($Record) { [TyperNative]::RecordEnabled = $true }
 
 $osDescription = [System.Environment]::OSVersion.VersionString
 $psVersion = $PSVersionTable.PSVersion.ToString()
@@ -857,6 +916,9 @@ while ($true) {
                 }
 
                 $result = [TyperNative]::SendBatch($opArray, $valArray, $modArray, $delayArray, $sendScan, $perItem, $modLeadMs, $modTailMs, [bool]$DryRun, [int]$epoch)
+
+                # 记录模式：把这一批"本来会发出"的事件落盘（只记录，不影响注入）
+                Write-Recorded -RequestId $id
 
                 # 顺带把"本批结束时谁在前台"带回去：焦点守护每批都要查一次，
                 # 单独发一条 foreground 指令会多一次进程往返（实测约 1ms/批）

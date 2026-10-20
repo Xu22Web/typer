@@ -1,8 +1,15 @@
 import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { describe, expect, it, afterAll } from 'vitest'
 import { encodeHostItems, type HostItem } from '@main/typing/drivers/protocol'
 import { HostSession } from './helpers/hostSession'
-import { HOST_SCRIPT, runPowershell, TARGET_SCRIPT } from './helpers/system'
+import {
+  createTempDir,
+  HOST_SCRIPT,
+  removeTempDir,
+  runPowershell,
+  TARGET_SCRIPT
+} from './helpers/system'
 
 /**
  * 系统测试（无副作用，不产生任何真实按键）：覆盖脚本语法、UTF-8 BOM（Windows PowerShell
@@ -224,4 +231,40 @@ describe.skipIf(process.platform !== 'win32')('宿主 dry-run 真实启动', () 
     const healthy = await session!.request<{ inputSize: number }>('ping')
     expect(healthy.inputSize).toBe(40)
   })
+})
+
+describe.skipIf(process.platform !== 'win32')('宿主记录模式（-Record）', () => {
+  let session: HostSession | null = null
+  let dir = ''
+  let recordPath = ''
+
+  afterAll(() => {
+    session?.dispose()
+    if (dir) removeTempDir(dir)
+  })
+
+  it('攒批（delay 为 0）时先发主键再切修饰键：Shift 不会被提前松开', async () => {
+    dir = createTempDir('typer-record-')
+    recordPath = join(dir, 'keys.txt')
+    session = await HostSession.start({ dryRun: true, recordPath })
+
+    // 模拟极速档的攒批：只有第一个动作有延迟，后续动作与它在同一批里 ——
+    // H（Shift）紧接着 e（无修饰键），修饰键过渡必须排在 H 之后
+    await session.request('type', {
+      ops: [0, 0],
+      vals: [0x48, 0x45],
+      mods: [2, 0],
+      delays: [8, 0],
+      modLeadMs: 15,
+      modTailMs: 10
+    })
+
+    const lines = readFileSync(recordPath, 'utf8')
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0 && !line.startsWith('#'))
+
+    // 16 = Shift。期望：Shift↓ → H↓ H↑ → Shift↑ → e↓ e↑
+    expect(lines).toEqual(['16,0', '72,0', '72,1', '16,1', '69,0', '69,1'])
+  }, 120_000)
 })

@@ -7,14 +7,20 @@
  *    节奏全部照走，但一次 `SendInput` 都不发，因此在开发机上跑不会把字打到别的窗口。
  * 2. **不能污染真实配置**：把子进程的 `APPDATA` 指到临时目录，`app.getPath('userData')`
  *    随之落在这里，`settings.json`、缓存、日志都与开发者本机的 `%APPDATA%\Typer` 隔离。
+ *
+ * 不注入按键不等于“看不到结果”：宿主额外把**本来会发出**的按键事件记进 `recordPath`
+ * （`-Record`），测试用它重放出“目标窗口本该收到的文本”，再与源内容 / 接收端还原结果逐字节比对。
  */
-import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { execFile, spawn, spawnSync, type ChildProcess } from 'node:child_process'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { promisify } from 'node:util'
 
 import { CdpClient, sleep, waitFor, type CdpTarget } from './cdp'
+
+const run = promisify(execFile)
 
 /** 仓库根目录（本文件在 tests/e2e/helpers 下） */
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../..')
@@ -35,6 +41,8 @@ export interface E2EApp {
   log: string[]
   /** 调试端口 */
   port: number
+  /** 宿主按键记录文件（每行 `vk,up`）：用来重放出“目标窗口本该收到的文本” */
+  recordPath: string
   /** 结束应用、断开连接并清理临时目录 */
   stop: () => Promise<void>
 }
@@ -99,6 +107,7 @@ export async function startE2EApp(): Promise<E2EApp> {
   mkdirSync(appData, { recursive: true })
 
   const cli = resolve(repoRoot, 'node_modules', 'electron-vite', 'bin', 'electron-vite.js')
+  const recordPath = join(dataRoot, 'keys.txt')
   const log: string[] = []
   const child = spawn(process.execPath, [cli, 'dev', '--remoteDebuggingPort', String(E2E_PORT)], {
     cwd: repoRoot,
@@ -106,6 +115,8 @@ export async function startE2EApp(): Promise<E2EApp> {
       ...process.env,
       // 宿主：只走协议，不真的注入按键
       TYPER_DRY_RUN: '1',
+      // 但把“本来会发出”的按键事件记下来，供测试重放内容
+      TYPER_RECORD_PATH: recordPath,
       // 配置与缓存隔离，绝不碰本机真实的 %APPDATA%\Typer
       APPDATA: appData
     },
@@ -151,6 +162,7 @@ export async function startE2EApp(): Promise<E2EApp> {
       cdp: client,
       log,
       port: E2E_PORT,
+      recordPath,
       stop: async () => {
         client.close()
         await stopChild(child)
@@ -216,4 +228,61 @@ export function makeSampleFile(): { dir: string; file: string; bytes: number } {
   const content = `${lines.join('\n')}\n`
   writeFileSync(file, content, 'utf8')
   return { dir, file, bytes: Buffer.byteLength(content) }
+}
+
+/**
+ * @description 清空宿主记录文件（每次运行前调用，确保只重放本次的按键）
+ * @param recordPath 宿主记录文件路径
+ */
+export function resetRecording(recordPath: string): void {
+  writeFileSync(recordPath, '')
+}
+
+/**
+ * @description 读取宿主记录下来的按键行（文件还没创建时返回空数组）
+ * @param recordPath 宿主记录文件路径
+ * @returns 形如 `vk,up` 的行
+ */
+export function readRecordedLines(recordPath: string): string[] {
+  if (!existsSync(recordPath)) return []
+  return readFileSync(recordPath, 'utf8')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+}
+
+/**
+ * @description 定位接收端脚本（构建产物，由 `pnpm build:tools` 从 tools/typer-recv.ts 打包生成）
+ * @returns 脚本绝对路径
+ */
+export function receiverPath(): string {
+  const path = join(repoRoot, 'tools', 'typer-recv.mjs')
+  if (!existsSync(path)) {
+    throw new Error(
+      `缺少接收端构建产物 ${path}：请先运行 pnpm build:tools（由 tools/typer-recv.ts 打包生成）`
+    )
+  }
+  return path
+}
+
+/**
+ * @description 真实跑一遍接收端（把重放出来的帧文本喂给它，让它还原文件）
+ * @param args 接收端参数
+ * @param cwd 工作目录（相对路径参数以它为基准）
+ * @returns 退出码与输出
+ */
+export async function runReceiver(
+  args: string[],
+  cwd: string
+): Promise<{ code: number; stdout: string; stderr: string }> {
+  try {
+    const { stdout, stderr } = await run(process.execPath, [receiverPath(), ...args], {
+      cwd,
+      maxBuffer: 32 * 1024 * 1024
+    })
+    return { code: 0, stdout, stderr }
+  } catch (error) {
+    const failure = error as { code?: number; stdout?: string; stderr?: string }
+    return { code: failure.code ?? -1, stdout: failure.stdout ?? '', stderr: failure.stderr ?? '' }
+  }
 }

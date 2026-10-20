@@ -20,6 +20,13 @@ export interface WindowsSendInputDriverOptions {
   powershellPath?: string
   /** 只解析动作、不真正注入（用于系统自检/测试） */
   dryRun?: boolean
+  /**
+   * 把"本来会发出"的按键事件追加到这个文件（每行 `vk,up`）。
+   *
+   * 端到端测试用它拿到"目标窗口本该收到的按键流"，再重放出文本交给接收端校验；
+   * 它只记录、不影响注入行为（可与 dryRun 组合使用）。
+   */
+  recordPath?: string
   requestTimeoutMs?: number
   maxRestarts?: number
   onLog?: (level: 'info' | 'warn' | 'error', message: string) => void
@@ -64,6 +71,7 @@ export class WindowsSendInputDriver implements KeyboardDriver {
       options.hostScriptPath
     ]
     if (options.dryRun) args.push('-DryRun')
+    if (options.recordPath) args.push('-Record', options.recordPath)
 
     this.client = new ProcessLinesClient({
       command: options.powershellPath ?? 'powershell.exe',

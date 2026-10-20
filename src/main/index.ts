@@ -305,6 +305,8 @@ function buildDriver(): KeyboardDriver {
       // 端到端调试用：宿主只走协议、不真的注入按键（tests/e2e 会设 TYPER_DRY_RUN=1），
       // 否则自动化跑起来会把字打到当时前台的那个窗口上
       dryRun: process.env['TYPER_DRY_RUN'] === '1',
+      // 记录模式：把"本来会发出"的按键事件落盘，端到端测试据此重放内容（同样不注入）
+      recordPath: process.env['TYPER_RECORD_PATH'] || undefined,
       onLog: (level, message) => logger[level](message)
     })
   } catch (error) {

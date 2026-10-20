@@ -15,6 +15,8 @@ export interface CreateDriverOptions {
   platform: NodeJS.Platform | string
   locator: HostLocatorContext
   dryRun?: boolean
+  /** 把"本来会发出"的按键事件记录到该文件（端到端测试用，不影响注入） */
+  recordPath?: string
   requestTimeoutMs?: number
   maxRestarts?: number
   onLog?: (level: 'info' | 'warn' | 'error', message: string) => void
@@ -35,6 +37,7 @@ export function createDriver(options: CreateDriverOptions): KeyboardDriver {
     spawn: nodeSpawnAdapter,
     hostScriptPath: resolveHostScriptPath(options.locator),
     dryRun: options.dryRun,
+    recordPath: options.recordPath,
     requestTimeoutMs: options.requestTimeoutMs,
     maxRestarts: options.maxRestarts,
     onLog: options.onLog

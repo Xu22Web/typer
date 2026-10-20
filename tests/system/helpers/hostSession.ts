@@ -36,10 +36,12 @@ export class HostSession {
 
   /**
    * @description 启动 PowerShell 宿主并等到它应答 ping（首启含 Add-Type 编译）
-   * @param options dryRun 时不产生真实按键
+   * @param options dryRun 时不产生真实按键；recordPath 把"本来会发出"的事件落盘
    * @returns 已就绪的宿主会话
    */
-  static async start(options: { dryRun?: boolean } = {}): Promise<HostSession> {
+  static async start(
+    options: { dryRun?: boolean; recordPath?: string } = {}
+  ): Promise<HostSession> {
     const args = [
       '-NoProfile',
       '-NonInteractive',
@@ -49,6 +51,7 @@ export class HostSession {
       HOST_SCRIPT
     ]
     if (options.dryRun) args.push('-DryRun')
+    if (options.recordPath) args.push('-Record', options.recordPath)
 
     const child = spawn(POWERSHELL, args, { windowsHide: true })
     const session = new HostSession(child)
