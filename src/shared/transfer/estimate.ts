@@ -8,10 +8,15 @@ import type { TransferJobSummary } from './transfer'
  * 所以这里接受一个可覆盖的 `charsPerSecond`：界面用最近一次实测值，没有实测时才用档位默认值。
  */
 export interface TransferEstimateConfig {
-  /** 片间额外停顿 */
+  /** 片间额外停顿（应当是**生效值**，即档位固定值优先） */
   interFrameDelayMs: number
   /** 每秒字符数；省略则取 {@link DEFAULT_CHARS_PER_SECOND} */
   charsPerSecond?: number
+  /**
+   * 开始帧 / 结束帧各发几遍（引擎的 `FRAME_HEAD_REDUNDANCY`）。
+   * 不说就是 1：估算与引擎必须用同一个值，否则预估会偏小。
+   */
+  headCopies?: number
 }
 
 export interface TransferEstimate {
@@ -50,9 +55,10 @@ export function estimateTransferMs(
   config: TransferEstimateConfig
 ): TransferEstimate {
   const charsPerSecond = Math.max(1, config.charsPerSecond ?? DEFAULT_CHARS_PER_SECOND)
-  // 帧数 = 数据片 + 开始帧 + 结束帧（`line` 模式没有行尾换行，按 0 计）
+  // 帧数 = 数据片 + 开始帧 + 结束帧（两者都会连发，`line` 模式没有行尾换行，按 0 计）
   const lineBreaks = summary.mode === 'line' ? 0 : 1
-  const frames = summary.total + 2
+  const headCopies = Math.max(0, Math.round(config.headCopies ?? 1))
+  const frames = summary.total + 2 * headCopies
   if (summary.frameChars <= 0) {
     return { ms: 0, keystrokeChars: 0, charsPerSecond }
   }

@@ -1,7 +1,7 @@
 <script setup lang="ts" vapor>
 import { buildPlan, stripUnsupported } from '@main/typing/planner/plan'
 import { mapPunctuation } from '@main/typing/planner/punctuation'
-import { estimateTotalMs } from '@main/typing/scheduling/timing'
+import { estimateTypingMs } from '@main/typing/scheduling/estimate'
 import { formatDuration } from '@shared/format/duration'
 
 /**
@@ -23,14 +23,21 @@ const prepared = computed(() => {
   return { mapped: mapped.replaced, ignored: dropped, text: usable }
 })
 
-/** 实时预览：字符统计 + 预计耗时（按实际会输入的文本估算，与主进程使用同一套纯函数实现） */
+/** 实时预览：字符统计 + 预计耗时（按实际会输入的文本，与引擎同一套规划 + 节奏算法） */
 const preview = computed(() => {
-  if (!settings.value || typing.text.value.length === 0) return null
-  const stats = buildPlan(prepared.value.text, {
-    layout: settings.value.keyboard.layout
-  }).stats
+  const current = settings.value
+  if (!current || typing.text.value.length === 0) return null
+  const target = prepared.value.text
+  const stats = buildPlan(target, { layout: current.keyboard.layout }).stats
+  // 与运行时同口径：错字与纠正、标点/空格/换行停顿、抖动都算进去
+  const estimate = estimateTypingMs(target, {
+    timing: current.timing,
+    layout: current.keyboard.layout,
+    profile: current.injection.profile,
+    typo: current.typo
+  })
 
-  return { stats, estimated: estimateTotalMs(stats.typed, settings.value.timing) }
+  return { stats, estimated: estimate.ms }
 })
 
 /** 是否处于"不限速"模式（没有可靠的耗时估算） */

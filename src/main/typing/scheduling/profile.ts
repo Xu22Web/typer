@@ -71,3 +71,16 @@ export function textBatchWindowMs(profile: InjectionProfile, baseIntervalMs: num
   if (profile === 'turbo') return Math.min(16, Math.max(4, baseIntervalMs * 8))
   return baseIntervalMs < 6 ? 8 : 0
 }
+
+/**
+ * @description 实际生效的片间停顿：档位固定值优先，`null` 时才用设置里的值。
+ * 引擎按它决定真实停顿，界面按它估算耗时——两处必须同源，否则预估与实测会差一截。
+ * @param pace 传输节奏档
+ * @param interFrameDelayMs 设置里的片间停顿
+ * @returns 生效的毫秒数
+ */
+export function effectiveFrameGapMs(pace: TransferPace, interFrameDelayMs: number): number {
+  const fixed = TRANSFER_PACE_LIMITS[pace].frameGapMs
+  if (fixed !== null) return fixed
+  return Math.max(0, Math.round(interFrameDelayMs))
+}

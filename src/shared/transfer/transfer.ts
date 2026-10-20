@@ -136,6 +136,17 @@ export const TRANSFER_LIMITS = {
 /** 十六进制预览的行数（每行 16 字节）。 */
 export const HEX_PREVIEW_ROWS = 16
 
+/**
+ * 开始帧 / 结束帧各发几遍。
+ *
+ * 这两帧决定接收端能不能开工、什么时候合并校验，丢一个字符就得整趟重来；
+ * 而实测链路上确实出现过"整行只丢一个字符"，接收端的帧头 CRC 能当场发现但没东西可补。
+ * 接收端对同一 job 的重复开始帧是幂等的，结束帧重复到达也无副作用，重复成本只有几百个字符。
+ *
+ * 引擎按它决定实际发送量，界面按同一个值估算耗时——两边必须同源，否则预估会偏小。
+ */
+export const FRAME_HEAD_REDUNDANCY = 3
+
 export interface HexPreviewRow {
   offset: number
   hex: string

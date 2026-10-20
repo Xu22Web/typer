@@ -114,23 +114,6 @@ export function baseIntervalMsFor(settings: TimingSettings): number {
 }
 
 /**
- * @description 按当前设置与字符总数估算总耗时（用于 UI 预估，实际以真实输入为准）
- * @param charCount 动作总数
- * @param settings 节奏设置
- * @returns 预计总耗时毫秒数
- */
-export function estimateTotalMs(charCount: number, settings: TimingSettings): number {
-  // 不限速时没有可靠的估算依据（速度由目标窗口决定），返回 0 让界面改为文案提示
-  if (settings.speedMode === 'max') return 0
-  const base = baseIntervalMsFor(settings)
-  const extra =
-    settings.jitterMs > 0 ? (settings.distribution === 'gaussian' ? 0 : settings.jitterMs / 2) : 0
-  const burst =
-    settings.burstSize > 0 ? Math.floor(charCount / settings.burstSize) * settings.burstPauseMs : 0
-  return Math.max(charCount, 1) * (base + extra) + burst
-}
-
-/**
  * @description 把连续的小间隔攒成一批：每批只有第一个动作带延迟（等于该批间隔之和），
  * 其余动作延迟为 0。宿主是"见到延迟就先断批、再等待"，所以攒批后每批只产生一次
  * `SendInput`——总时长不变（延迟之和不变），但调用次数少一个数量级。

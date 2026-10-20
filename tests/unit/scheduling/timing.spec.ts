@@ -3,7 +3,6 @@ import { createRng } from '@main/typing/scheduling/rng'
 import {
   baseIntervalMsFor,
   coalesceDelays,
-  estimateTotalMs,
   MIN_DELAY_MS,
   TimingScheduler,
   type TimingSettings
@@ -64,7 +63,6 @@ describe('baseIntervalMsFor', () => {
 
   it('max（不限速）模式的基础间隔为 0', () => {
     expect(baseIntervalMsFor(settings({ speedMode: 'max', baseIntervalMs: 33 }))).toBe(0)
-    expect(estimateTotalMs(10, settings({ speedMode: 'max' }))).toBe(0)
   })
 
   it('非法输入不会产生 0/负数/NaN', () => {
@@ -202,21 +200,6 @@ describe('TimingScheduler', () => {
     expect(scheduler.typedCount).toBe(0)
     // reset 之后第一个换行不应被当作空行
     expect(scheduler.delayFor({ kind: 'key', vk: 0x0d, modifiers: [], char: '\n' })).toBe(310)
-  })
-})
-
-describe('estimateTotalMs', () => {
-  it('随字符数线性增长，并为 0 字符兜底', () => {
-    const config = settings({ cps: 10, jitterMs: 0 })
-    expect(estimateTotalMs(10, config)).toBe(1000)
-    expect(estimateTotalMs(0, config)).toBeGreaterThan(0)
-    expect(estimateTotalMs(20, config)).toBeGreaterThan(estimateTotalMs(10, config))
-  })
-
-  it('burst 停顿计入估算', () => {
-    const withBurst = estimateTotalMs(10, settings({ cps: 10, burstSize: 5, burstPauseMs: 100 }))
-    const withoutBurst = estimateTotalMs(10, settings({ cps: 10 }))
-    expect(withBurst).toBeGreaterThan(withoutBurst)
   })
 })
 

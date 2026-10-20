@@ -56,6 +56,21 @@ describe('estimateTransferMs', () => {
     expect(result.ms).toBe(305)
   })
 
+  it('开始帧 / 结束帧连发多遍时按实际发送量算', () => {
+    const once = estimateTransferMs(summary(3, 300), {
+      interFrameDelayMs: 0,
+      charsPerSecond: 1000
+    })
+    const thrice = estimateTransferMs(summary(3, 300), {
+      interFrameDelayMs: 0,
+      charsPerSecond: 1000,
+      headCopies: 3
+    })
+    // 数据片 3 + 开始/结束各 3 遍 = 9 帧，每帧 1 个行尾
+    expect(thrice.keystrokeChars).toBe(309)
+    expect(thrice.ms).toBeGreaterThan(once.ms)
+  })
+
   it('单行模式没有行尾：只算帧字符', () => {
     const result = estimateTransferMs(summary(3, 300, 'line'), {
       interFrameDelayMs: 0,

@@ -5,33 +5,25 @@ import type { HostForegroundData, HostTypeData, ScheduledAction } from '../drive
 import { toHostItems } from '../drivers/protocol'
 import { createRng, resolveSeed, type Rng } from '../scheduling/rng'
 import {
-  PROFILE_LIMITS,
-  TRANSFER_PACE_LIMITS,
-  textBatchWindowMs,
-  type InjectionProfile,
-  type TransferPace
-} from '../scheduling/profile'
-import {
   baseIntervalMsFor,
   coalesceDelays,
   FRAME_MODE_TIMING,
   TimingScheduler,
   type TimingSettings
 } from '../scheduling/timing'
+import {
+  effectiveFrameGapMs,
+  PROFILE_LIMITS,
+  TRANSFER_PACE_LIMITS,
+  textBatchWindowMs,
+  type InjectionProfile,
+  type TransferPace
+} from '../scheduling/profile'
 import type { TypoCorrection, TypoOptions, TypoStyle } from '../scheduling/typo'
 import { FocusGuard, type FocusGuardMode, type FocusSnapshot } from '../focus/focusGuard'
 import { computeProgress, type ProgressFrames, type ProgressSnapshot } from './progress'
 import { isBusy, type EngineSnapshot, type EngineState } from './states'
-import type { TransferAlphabet } from '@shared/transfer/transfer'
-
-/**
- * 开始帧/结束帧各发几遍。
- *
- * 这两帧决定接收端能不能开工、什么时候合并校验，丢一个字符就得整趟重来；
- * 而实测链路上确实出现过"整行只丢一个字符"，接收端的帧头 CRC 能当场发现但没东西可补。
- * 接收端对同一 job 的重复开始帧是幂等的，结束帧重复到达也无副作用，重复成本只有几百个字符。
- */
-const FRAME_HEAD_REDUNDANCY = 3
+import { FRAME_HEAD_REDUNDANCY, type TransferAlphabet } from '@shared/transfer/transfer'
 
 /**
  * 一次输入任务的来源。
@@ -156,6 +148,13 @@ export class TypingEngine {
   private lastForeground: HostForegroundData | null = null
   /** 单个请求的动作数（极速档按实测速率调整，保证暂停/停止的粒度） */
   private actionsPerRequest = 0
+  /**
+   * 未在输入的时长（倒计时 + 暂停）。
+   *
+   * “已用时 / 速度 / 预计剩余”都应当只统计**真正在敲键盘**的时间：把倒计时或一分钟暂停
+   * 算进去，会直接把平均速度拉低、让恢复后的剩余时间凭空变大。
+   */
+  private idleMs = 0
 
   /**
    * @description 保存注入的依赖（驱动、时钟、随机源与回调）
@@ -211,6 +210,7 @@ export class TypingEngine {
     this.pressureWarned = false
     this.lastForeground = null
     this.actionsPerRequest = Math.max(1, settings.chunkSize)
+    this.idleMs = 0
     this.frames =
       task.kind === 'frames'
         ? { done: 0, total: task.indexes.length, lastIndex: -1, failed: 0 }
@@ -245,7 +245,8 @@ export class TypingEngine {
       state: outcome,
       typed: this.typedCount,
       total: this.totalCount,
-      elapsedMs: Math.max(0, this.deps.now() - this.startedAt),
+      // 只算真正在输入的时间：暂停与倒计时不算“耗时”
+      elapsedMs: this.activeElapsedMs(),
       seed,
       error
     }
@@ -372,7 +373,10 @@ export class TypingEngine {
         // 不能把 Shift 一直按在目标窗口上（用户这时多半会去别的窗口操作）
         await this.releaseModifiers('暂停')
         this.setState('paused')
+        const pausedAt = this.deps.now()
         await this.waitWhilePaused()
+        // 暂停期间没有输入：不能算进已用时，否则平均速度会被拉低、剩余时间凭空变大
+        this.idleMs += Math.max(0, this.deps.now() - pausedAt)
         if (this.aborted) return false
         // 继续输入也要像首次开始一样先走倒计时，避免"一点继续就立刻打字"
         if (!(await this.runCountdown(settings))) return false
@@ -476,8 +480,10 @@ export class TypingEngine {
 
     const pace = TRANSFER_PACE_LIMITS[settings.transferPace ?? 'safe']
     const scheduler = new TimingScheduler(FRAME_MODE_TIMING, rngFactory(seed), pace.minDelayMs)
-    const interFrameDelay =
-      pace.frameGapMs ?? Math.max(0, Math.round(settings.interFrameDelayMs ?? 0))
+    const interFrameDelay = effectiveFrameGapMs(
+      settings.transferPace ?? 'safe',
+      settings.interFrameDelayMs ?? 0
+    )
 
     /**
      * @description 按节奏下发一段文本（不带行尾换行）。
@@ -561,7 +567,10 @@ export class TypingEngine {
         if (this.paused) {
           await this.releaseModifiers('暂停')
           this.setState('paused')
+          const pausedAt = this.deps.now()
           await this.waitWhilePaused()
+          // 与文本模式一致：暂停不算已用时
+          this.idleMs += Math.max(0, this.deps.now() - pausedAt)
           if (this.aborted) return 'aborted'
           // 与文本模式一致：继续之后先倒计时再接着发
           if (!(await this.runCountdown(settings))) return 'aborted'
@@ -768,6 +777,14 @@ export class TypingEngine {
   }
 
   /**
+   * @description 已用时长（毫秒）：只算真正在输入的时间，排除倒计时与暂停
+   * @returns 活跃时间
+   */
+  private activeElapsedMs(): number {
+    return Math.max(0, this.deps.now() - this.startedAt - this.idleMs)
+  }
+
+  /**
    * @description 走一次开始倒计时（首次开始与"暂停后继续"共用同一套节奏）
    * @param settings 引擎设置（取 startDelayMs）
    * @returns 是否走完；false 表示期间被中止
@@ -780,10 +797,13 @@ export class TypingEngine {
       const remaining = deadline - this.deps.now()
       this.countdownRemainingMs = remaining
       this.emitProgress(true)
+      const tickStart = this.deps.now()
       await this.deps.sleep(
         Math.min(COUNTDOWN_TICK_MS, Math.max(1, remaining)),
         () => !this.aborted
       )
+      // 倒计时里没有输入：逐片计入闲置时间，界面上的"已用时"因此始终从 0 开始涨
+      this.idleMs += Math.max(0, this.deps.now() - tickStart)
     }
     this.countdownRemainingMs = 0
     return !this.aborted
@@ -831,7 +851,7 @@ export class TypingEngine {
       computeProgress({
         typed: this.typedCount,
         total: this.totalCount,
-        elapsedMs: now - this.startedAt,
+        elapsedMs: this.activeElapsedMs(),
         baseIntervalMs: this.baseIntervalMs,
         stage: this.stateValue === 'countdown' ? 'countdown' : 'typing',
         countdownRemainingMs: this.countdownRemainingMs,

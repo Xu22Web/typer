@@ -1,6 +1,7 @@
 <script setup lang="ts" vapor>
 import {
   CHUNK_PRESETS,
+  FRAME_HEAD_REDUNDANCY,
   TRANSFER_ALPHABET_OPTIONS,
   TRANSFER_MODE_OPTIONS,
   durationTone,
@@ -11,6 +12,7 @@ import {
 } from '@shared/transfer/transfer'
 import { formatDuration } from '@shared/format/duration'
 import { PACE_CHARS_PER_SECOND, estimateTransferMs, meetsBudget } from '@shared/transfer/estimate'
+import { effectiveFrameGapMs } from '@main/typing/scheduling/profile'
 
 /**
  * 文件输入面板：把选中的文件切成"每片一行"的帧并按需补发/续传。
@@ -45,6 +47,14 @@ const preparing = transfer.preparing
 /** 最近一次实测的每秒字符数（没有实测时用档位默认值） */
 const measuredCps = ref<number | null>(null)
 
+// 换了文件就丢掉上次的实测速度：换台机器 / 换个目标端，旧速度只会把预估带偏
+watch(
+  () => summary.value?.job,
+  () => {
+    measuredCps.value = null
+  }
+)
+
 // 运行中直接用引擎报的真实速率刷新预估：链路到底多快，只有跑起来才知道
 watch(
   () => typing.progress.value?.aps,
@@ -54,13 +64,17 @@ watch(
   }
 )
 
-/** 预计耗时：帧逐字符下发，耗时 = 字符数 ÷ 每秒字符数 */
+/** 预计耗时：帧逐字符下发，耗时 = 字符数 ÷ 每秒字符数（帧头重复与片间停顿与引擎同源） */
 const estimate = computed(() => {
   const job = summary.value
   const current = settings.value
   if (!job || !current) return null
   return estimateTransferMs(job, {
-    interFrameDelayMs: current.transfer.interFrameDelayMs,
+    interFrameDelayMs: effectiveFrameGapMs(
+      current.transfer.paceMode,
+      current.transfer.interFrameDelayMs
+    ),
+    headCopies: FRAME_HEAD_REDUNDANCY,
     charsPerSecond:
       measuredCps.value ?? PACE_CHARS_PER_SECOND[current.transfer.paceMode] ?? undefined
   })

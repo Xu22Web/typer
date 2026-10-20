@@ -461,3 +461,46 @@ describe('TypingEngine 焦点守护', () => {
     expect(calls).toBe(0)
   })
 })
+
+describe('时间统计（只算真正在输入的时间）', () => {
+  it('倒计时不计入已用时', async () => {
+    const clock = createVirtualClock()
+    // 每下发一批模拟"敲了 10ms"
+    const driver = new MockKeyboardDriver({ onSend: () => clock.advance(10) })
+    const h = createHarness({ driver, clock })
+
+    const result = await h.engine.start('abc', engineSettings({ startDelayMs: 500 }))
+
+    // 墙钟走了 510ms（500ms 倒计时 + 10ms 输入），已用时应只有 10ms
+    expect(result.elapsedMs).toBe(10)
+    expect(h.progress[h.progress.length - 1]?.elapsedMs).toBe(10)
+  })
+
+  it('暂停时长不计入已用时，恢复后的速度与剩余时间不会被暂停拖偏', async () => {
+    let batches = 0
+    const clock = createVirtualClock()
+    const driver = new MockKeyboardDriver({
+      onSend: () => {
+        batches += 1
+        clock.advance(20)
+        if (batches === 1) h.engine.pause()
+      }
+    })
+    const h = createHarness({ driver, clock })
+    const pending = h.engine.start('abcdefgh', engineSettings({ chunkSize: 2, startDelayMs: 100 }))
+
+    // 暂停在批次边界生效：等引擎真正切到 paused
+    for (let i = 0; i < 200 && !h.states.includes('paused'); i++) {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    }
+    expect(h.states).toContain('paused')
+    clock.advance(60_000)
+    h.engine.resume()
+    const result = await pending
+
+    expect(result.state).toBe('completed')
+    expect(result.typed).toBe(8)
+    // 4 批 × 20ms = 80ms；两次 100ms 倒计时与 60s 暂停都不算
+    expect(result.elapsedMs).toBe(80)
+  })
+})
