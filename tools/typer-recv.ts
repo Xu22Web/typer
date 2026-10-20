@@ -9,7 +9,7 @@
  *   · 走 raw 模式并关回显，接收端自己把控制台代码页切到 UTF-8；
  *   · 默认边收边落盘，中断后重跑即可续传；失败只补缺失片。
  *
- * 零第三方依赖，只用 node: 内置模块，Node >= 16 可运行。
+ * 零第三方依赖，只用 node: 内置模块，Node >= 14 可运行（目标机常见的是 Node 14/16）。
  * 本文件由 `pnpm build:tools` 打成单文件 tools/typer-recv.mjs 后分发。
  */
 import { spawnSync } from 'node:child_process'
@@ -21,6 +21,7 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  rmdirSync,
   rmSync,
   statSync,
   unlinkSync,
@@ -28,6 +29,8 @@ import {
 } from 'node:fs'
 import { basename, join, resolve, sep } from 'node:path'
 import { Readable, Transform } from 'node:stream'
+// 源码按现代写法写；`stream/promises` 是 Node 15 才有的模块，产物里这条引用由
+// build-tools.mjs 的 alias 换成 scripts/node14/stream-promises.mjs（promisify 包装）
 import { pipeline } from 'node:stream/promises'
 import { createBrotliDecompress } from 'node:zlib'
 
@@ -307,6 +310,41 @@ function expectedBytes(seq: number): number {
   const head = task.total - 1
   if (seq < head) return task.chunk
   return task.wire - head * task.chunk
+}
+
+/**
+ * @description 删除文件或整个目录，永不抛错。
+ *
+ * `fs.rmSync` 是 Node 14.14 才加的，更老的 14.x 退回 unlink/rmdir（否则清理会静默失败）。
+ * @param target 目标路径
+ * @param recursive 目录需要递归删除时为 true
+ */
+function removePath(target: string, recursive = false): void {
+  const rm: typeof rmSync | undefined = rmSync
+  if (rm) {
+    try {
+      rm(target, { recursive, force: true })
+    } catch {
+      // 删不掉不影响结果
+    }
+    return
+  }
+  try {
+    unlinkSync(target)
+  } catch {
+    if (recursive) {
+      try {
+        for (const entry of readdirSync(target)) removePath(join(target, entry), true)
+      } catch {
+        // 不是目录（或已经不存在）
+      }
+    }
+    try {
+      rmdirSync(target)
+    } catch {
+      // 删不掉不影响结果
+    }
+  }
 }
 
 /** 保存任务元信息（重启后没有开始帧也能续传）。 */
@@ -593,11 +631,7 @@ async function mergeAndVerify(): Promise<number> {
     }
   } catch (error) {
     // 半成品必须删掉：留着会让人误以为"已经有结果了"
-    try {
-      rmSync(outputPath, { force: true })
-    } catch {
-      // 删不掉也不影响错误提示
-    }
+    removePath(outputPath)
     ack(`#BAD decode`)
     info(
       `合并/解压失败：${error instanceof Error ? error.message : String(error)}\n` +
@@ -628,18 +662,10 @@ async function mergeAndVerify(): Promise<number> {
     const keep = basename(outputPath)
     for (const entry of readdirSync(dir)) {
       if (entry === keep) continue
-      try {
-        rmSync(join(dir, entry), { recursive: true, force: true })
-      } catch {
-        // 清理失败不影响结果
-      }
+      removePath(join(dir, entry), true)
     }
   } else {
-    try {
-      rmSync(dir, { recursive: true, force: true })
-    } catch {
-      // 清理失败不影响结果
-    }
+    removePath(dir, true)
   }
 
   ack(`#DONE ${task.size} ${actual} ${outputPath}`)

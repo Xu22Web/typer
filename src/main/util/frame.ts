@@ -1,6 +1,6 @@
 // Typer 文件传输「线格式」v2 的唯一实现。
 // 主进程（生成帧、算续传计划）与接收端脚本（tools/typer-recv.ts）共用同一份实现，收发两端不可能出现实现漂移。
-// 只用 node: 内置模块、零第三方依赖，Node >= 16 可运行。
+// 只用 node: 内置模块、零第三方依赖，Node >= 14 可运行。
 // 帧一定是单行：ASCII 帧头 + 不含空白的符号载荷。目标是终端或输入框，回车即提交，
 // 任何控制字符都会把数据搅乱，所以二进制必须先编码（见 util/codec.ts）。
 
@@ -133,7 +133,7 @@ function getCrcTable(): Uint32Array {
 
 /**
  * @description 标准 CRC32（IEEE 802.3，与 `zlib.crc32` 同值）；自带实现是因为 `zlib.crc32` 需要
- * Node 20.15+，而接收端脚本要能在 Node 16 上跑
+ * Node 20.15+，而接收端脚本要能在 Node 14 上跑
  * @param input 字节序列
  * @returns 无符号 32 位整数
  */
@@ -273,7 +273,7 @@ export function buildBeginFrame(meta: BeginFrameMeta): string {
   if (typeof meta.sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(meta.sha256)) {
     throw new FrameError('field', '整文件 sha256 不合法（应为 64 位小写 hex）')
   }
-  const name = meta.name ? Buffer.from(String(meta.name), 'utf8').toString('base64url') : '-'
+  const name = meta.name ? encodeName(String(meta.name)) : '-'
   const head = [
     MARKERS.begin,
     meta.job,
@@ -587,13 +587,31 @@ function readUint(text: string, name: string): number {
 }
 
 /**
+ * @description 文件名 → base64url 文本。
+ *
+ * 不用 `Buffer.toString('base64url')`：那要 Node 14.18+，而接收端脚本可能跑在更老的 Node 14 上。
+ * 改成标准 base64 再手工换字符并去掉补位 `=`（解码端由 Buffer 自己容错缺位）。
+ * @param name 文件名
+ * @returns base64url 文本（不含 `=`）
+ */
+function encodeName(name: string): string {
+  return Buffer.from(name, 'utf8')
+    .toString('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '')
+}
+
+/**
  * @description 还原 base64url 编码的文件名（非法内容按"未指定"处理，不阻断传输）
  * @param encoded base64url 文本
  * @returns 文件名或 null
  */
 function decodeName(encoded: string): string | null {
   try {
-    const text = Buffer.from(encoded, 'base64url').toString('utf8')
+    const text = Buffer.from(encoded.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString(
+      'utf8'
+    )
     return text.length > 0 ? text : null
   } catch {
     return null
