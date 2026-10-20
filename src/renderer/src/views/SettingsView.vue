@@ -312,8 +312,7 @@ async function restoreDefaults(): Promise<void> {
               <div class="label">
                 <div>每字符最小间隔</div>
                 <small
-                  >0 表示只用档位自带的下限。云桌面 / 远程桌面里远端输入队列紧张会丢字符，
-                  抬到几毫秒能让队列退到不饱和（代价是变慢）</small
+                  >相邻两个字符之间的最小间隔；0 表示沿用注入档位的下限，填正值时两者取较大者</small
                 >
               </div>
               <ElInputNumber v-model="draft.injection.minDelayMs" :min="0" :max="50" />
@@ -326,15 +325,14 @@ async function restoreDefaults(): Promise<void> {
               <span class="icon i-mdi-keyboard-outline" /><span>修饰键时序</span>
             </h2>
             <p class="group-desc">
-              远程桌面 / 云桌面会把同一次投递里的修饰键与主键合批丢弃，于是
-              <code>Shift+1</code> 到远端只剩 <code>1</code>。宿主要把修饰键单独下发并留间隔；
-              链路延迟明显时（云桌面、跨地域远程桌面）可以把这里调大，一般 30~60 毫秒就够。
+              修饰键（Shift / Ctrl / Alt / Win）与主键分开下发，按下后与抬起前各插入一段等待；
+              连续使用同一修饰键的字符保持按住，只在切换时支付这段间隔。
             </p>
 
             <div class="row">
               <div class="label">
                 <div>按下后延迟</div>
-                <small>修饰键按下到真正打主键之间的等待；Shift 组合打不出来时先调这里</small>
+                <small>修饰键按下之后，到主键按下之间的等待时间（默认 15 毫秒）</small>
               </div>
               <ElInputNumber v-model="draft.modifier.leadMs" :min="0" :max="500" :step="5" />
               <div class="unit">毫秒</div>
@@ -343,7 +341,7 @@ async function restoreDefaults(): Promise<void> {
             <div class="row">
               <div class="label">
                 <div>抬起前延迟</div>
-                <small>松开修饰键之前的等待；太短会让紧跟的字符被误当成带修饰键</small>
+                <small>修饰键抬起之前，到下一个按键之间的等待时间（默认 10 毫秒）</small>
               </div>
               <ElInputNumber v-model="draft.modifier.tailMs" :min="0" :max="500" :step="5" />
               <div class="unit">毫秒</div>
@@ -361,8 +359,8 @@ async function restoreDefaults(): Promise<void> {
               <div class="label">
                 <div>输入结束后</div>
                 <small
-                  >「留在浮窗」不会抢焦点：结果留在桌面上，点浮窗里的「返回主窗口」才回主界面；
-                  「自动返回」是旧行为</small
+                  >结束后浮窗如何收起：「留在浮窗」保持卡片展开，点卡片上的「返回主窗口」才回到主窗口；
+                  「自动返回」直接隐藏浮窗并召回主窗口</small
                 >
               </div>
               <ElSegmented
@@ -455,15 +453,12 @@ async function restoreDefaults(): Promise<void> {
             <h2 class="group-title">
               <span class="icon i-mdi-keyboard-return" /><span>换行与行首</span>
             </h2>
-            <p class="group-desc">
-              有些目标里 Enter 会直接提交（聊天框、Web
-              表单），编辑器又会把上一行的缩进自动带到下一行， 两者都会让结果与原文不一致。
-            </p>
+            <p class="group-desc">换行用哪个按键，以及换行后如何处理行首。</p>
 
             <div class="row">
               <div class="label">
                 <div>换行键</div>
-                <small>表单里 Enter 会提交时，改用 Shift+Enter 或 Ctrl+Enter</small>
+                <small>文本里的换行由哪个按键发出（默认 Enter）</small>
               </div>
               <ElSegmented
                 v-model="draft.text.newlineKey"
@@ -478,11 +473,10 @@ async function restoreDefaults(): Promise<void> {
             <div class="row">
               <div class="label">
                 <div>行首归位</div>
-                <small>
-                  编辑器（如 VS Code）会在换行后自动插入上一行缩进，叠加源文本缩进后整行右移：
-                  选「归位并清残留」后每次换行先回列 0 并选中该行残留内容，再由输入覆盖。 终端里
-                  Home 有别的语义，保持「不处理」
-                </small>
+                <small
+                  >换行后对行首的处理：「归位」发 Home 回到行首；「归位并清残留」再发 Shift+End
+                  选中该行已有内容</small
+                >
               </div>
               <ElSegmented
                 v-model="draft.text.lineStart"
