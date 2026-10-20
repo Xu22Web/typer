@@ -11,8 +11,9 @@
  * 文件用例还会把重放出来的帧文本交给**真正的接收端** `tools/typer-recv.mjs` 还原文件，
  * 并与源文件逐字节比对——所以断言的是“收到了什么”，而不只是“任务跑完了”。
  */
-import { readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { createHash } from 'node:crypto'
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { basename, join } from 'node:path'
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
@@ -33,13 +34,30 @@ import { parseRecordedEvents, replayAsText } from './helpers/replay'
 /** 文本用例：ASCII 字符 + 大小写 + 需要 Shift 的符号，长度固定便于断言动作数 */
 const TEXT_SAMPLE = 'Hello, Typer! 0123456789 abc XYZ ~#@'
 
+/**
+ * @description 从接收端的 `#DONE <size> <sha256> <path>` 行里取出它**实测**的字节数与摘要
+ * @param stdout 接收端标准输出
+ * @returns 实测的字节数与 SHA-256；没有 #DONE 行时返回 null
+ */
+function parseDoneLine(stdout: string): { size: number; sha256: string } | null {
+  const line = stdout.split(/\r?\n/).find((item) => item.startsWith('#DONE '))
+  if (!line) return null
+  const [, size, sha256] = line.split(' ')
+  return { size: Number(size), sha256: sha256 ?? '' }
+}
+
 describe.skipIf(process.platform !== 'win32')('端到端（真实应用 + dry-run 宿主）', () => {
   let app: E2EApp
   let sample: { dir: string; file: string; bytes: number }
+  /** 源文件的 SHA-256：测试自己算一份，用来对比发送端声明与接收端实测 */
+  let sourceSha256: string
 
   beforeAll(async () => {
-    app = await startE2EApp()
     sample = makeSampleFile()
+    sourceSha256 = createHash('sha256').update(readFileSync(sample.file)).digest('hex')
+    // 「选择文件」的原生对话框由操作系统绘制，无法被可靠地自动化；
+    // 把答案预置给主进程，测试才能真的去点界面上的按钮
+    app = await startE2EApp({ pickPaths: [sample.file] })
     await applyFastSettings(app.cdp)
     // 在页面里挂一个进度监听：用于断言"进度确实在推进"而不只是终态正确
     await app.cdp.evaluate(`(() => {
@@ -190,11 +208,13 @@ describe.skipIf(process.platform !== 'win32')('端到端（真实应用 + dry-ru
         mode: 'term'
       }
 
-      const prepared = await app.cdp.evaluate<{ total: number; size: number }>(
+      const prepared = await app.cdp.evaluate<{ total: number; size: number; sha256: string }>(
         `(async () => await window.api.transfer.prepare(${JSON.stringify(sample.file)}, ${JSON.stringify(options)}))()`
       )
       expect(prepared.total).toBeGreaterThan(0)
       expect(prepared.size).toBe(sample.bytes)
+      // 发送端这一端：它会写进开始/结束帧、供接收端校验的摘要，必须就是源文件的摘要
+      expect(prepared.sha256).toBe(sourceSha256)
 
       const plan = await app.cdp.evaluate<{ indexes: number[] }>(
         '(async () => await window.api.transfer.plan({}))()'
@@ -235,7 +255,13 @@ describe.skipIf(process.platform !== 'win32')('端到端（真实应用 + dry-ru
       )
       expect(received.code).toBe(0)
       expect(received.stderr).toBe('')
-      expect(received.stdout).toContain('#DONE')
+
+      // 接收端实测：它自己算出来的字节数与 SHA-256 必须与源文件一致
+      //（#BAD sha256 时接收端会以非 0 退出并打印期望/实际两个摘要）
+      const done = parseDoneLine(received.stdout)
+      expect(done).not.toBeNull()
+      expect(done?.size).toBe(sample.bytes)
+      expect(done?.sha256).toBe(sourceSha256)
 
       // 逐字节比对：收到的文件必须与源文件完全一致（CRC32 + SHA-256 已由接收端校验过）
       const restored = readFileSync(join(sample.dir, 'received.bin'))
@@ -243,5 +269,149 @@ describe.skipIf(process.platform !== 'win32')('端到端（真实应用 + dry-ru
       expect(restored.length).toBe(sample.bytes)
     },
     RUN_TIMEOUT_MS + 30_000
+  )
+
+  it(
+    '文件输入走界面：点「选择文件」→ 点开始 → 接收端还原后与源文件逐字节一致',
+    async () => {
+      // 切到「文件」模式（文本模式的输入框与文件面板互斥）
+      await app.cdp.evaluate(`(() => {
+        const group = document.querySelector('#tour-mode-switch')
+        if (!group) throw new Error('找不到模式切换')
+        const button = [...group.querySelectorAll('button, [role="tab"]')].find((item) =>
+          item.textContent.includes('文件')
+        )
+        if (!button) throw new Error('找不到「文件」模式')
+        button.click()
+        return true
+      })()`)
+
+      // 真正去点界面上的「选择文件」：主进程按 TYPER_PICK_PATHS 直接给出结果，不弹原生框
+      await waitFor(
+        () =>
+          app.cdp.evaluate<boolean>(`(() => {
+              const panel = document.querySelector('.file-panel')
+              if (!panel) return false
+              return [...panel.querySelectorAll('button')].some((item) =>
+                item.textContent.includes('选择文件')
+              )
+            })()`),
+        { timeoutMs: 30_000, intervalMs: 200, label: '文件面板出现「选择文件」按钮' }
+      )
+
+      resetRecording(app.recordPath)
+      await app.cdp.evaluate(`(() => {
+        const panel = document.querySelector('.file-panel')
+        const button = [...panel.querySelectorAll('button')].find((item) =>
+          item.textContent.includes('选择文件')
+        )
+        button.click()
+        return true
+      })()`)
+
+      // 面板出现文件名与片数 = 对话框结果已经回到界面、并且分片准备完成
+      const panelText = await waitFor(
+        async () => {
+          const text = await app.cdp.evaluate<string>(
+            "(document.querySelector('.file-panel')?.innerText ?? '')"
+          )
+          return text.includes(basename(sample.file)) ? text : null
+        },
+        { timeoutMs: 90_000, intervalMs: 300, label: '界面完成文件准备' }
+      )
+      expect(panelText).not.toContain('还没有选择文件')
+
+      const startLabel = await waitFor(
+        () =>
+          app.cdp.evaluate<string | null>(`(() => {
+              const button = document.querySelector('#tour-start button')
+              if (!button || button.disabled) return null
+              return button.textContent.trim()
+            })()`),
+        { timeoutMs: 30_000, intervalMs: 200, label: '「开始发送」按钮可用' }
+      )
+      expect(startLabel).toContain('发送')
+
+      await app.cdp.evaluate(`(() => {
+        document.querySelector('#tour-start button').click()
+        return true
+      })()`)
+
+      const run = await waitFor(
+        async () => {
+          const status = await app.cdp.evaluate<{ state: string; typed: number; total: number }>(
+            '(async () => await window.api.typing.status())()'
+          )
+          return ['completed', 'aborted', 'failed'].includes(status.state) ? status : null
+        },
+        { timeoutMs: RUN_TIMEOUT_MS, intervalMs: 300, label: '文件输入跑到终态' }
+      )
+      expect(run.state).toBe('completed')
+      expect(run.typed).toBe(run.total)
+
+      // 收到的内容：把重放的按键流交给真正的接收端还原，再与源文件逐字节比对
+      const frameText = replayAsText(parseRecordedEvents(readRecordedLines(app.recordPath)))
+      expect(frameText.startsWith('@T2')).toBe(true)
+      writeFileSync(join(sample.dir, 'frames-ui.txt'), frameText, 'utf8')
+
+      const received = await runReceiver(
+        [
+          '--in',
+          'frames-ui.txt',
+          '-o',
+          'received-ui.bin',
+          '-d',
+          join(sample.dir, 'shards-ui'),
+          '--quiet'
+        ],
+        sample.dir
+      )
+      expect(received.code).toBe(0)
+
+      // 接收端实测的摘要 = 源文件摘要（与发送端声明的一致，三方对齐）
+      const doneUi = parseDoneLine(received.stdout)
+      expect(doneUi).not.toBeNull()
+      expect(doneUi?.size).toBe(sample.bytes)
+      expect(doneUi?.sha256).toBe(sourceSha256)
+
+      const restored = readFileSync(join(sample.dir, 'received-ui.bin'))
+      expect(restored.equals(readFileSync(sample.file))).toBe(true)
+
+      // 接收端脚本这一端也要单独验证：界面里「插入接收脚本 / 导出脚本」给用户的，
+      // 是主进程读出来的脚本全文（随包分发的构建产物）。把它落到一个**干净的目录**里
+      // （周围没有 node_modules、也没有仓库其它文件）单独执行——只有脚本本身自包含、
+      // 没有被漏打包的依赖时才能跑通，跑不通就说明是接收端脚本的问题。
+      const toolScript = await app.cdp.evaluate<{ path: string; text: string }>(
+        '(async () => await window.api.transfer.toolScript())()'
+      )
+      expect(toolScript.text.length).toBeGreaterThan(0)
+      // 界面拿到的必须就是随包分发的那个产物，避免"界面上是一份、跑的是另一份"
+      expect(readFileSync(toolScript.path, 'utf8')).toBe(toolScript.text)
+
+      const standalone = join(sample.dir, 'standalone')
+      mkdirSync(standalone, { recursive: true })
+      const standaloneScript = join(standalone, 'typer-recv.mjs')
+      writeFileSync(standaloneScript, toolScript.text, 'utf8')
+      writeFileSync(join(standalone, 'frames.txt'), frameText, 'utf8')
+
+      const receivedStandalone = await runReceiver(
+        ['--in', 'frames.txt', '-o', 'received.bin', '-d', 'shards', '--quiet'],
+        standalone,
+        standaloneScript
+      )
+      expect(receivedStandalone.code).toBe(0)
+      expect(receivedStandalone.stderr).toBe('')
+
+      // 界面分发出去的那份脚本，实测结果也必须与源文件对齐
+      const doneStandalone = parseDoneLine(receivedStandalone.stdout)
+      expect(doneStandalone).not.toBeNull()
+      expect(doneStandalone?.size).toBe(sample.bytes)
+      expect(doneStandalone?.sha256).toBe(sourceSha256)
+
+      const restoredStandalone = readFileSync(join(standalone, 'received.bin'))
+      expect(restoredStandalone.equals(readFileSync(sample.file))).toBe(true)
+      expect(restoredStandalone.equals(restored)).toBe(true)
+    },
+    RUN_TIMEOUT_MS + 60_000
   )
 })

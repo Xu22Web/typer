@@ -97,11 +97,23 @@ async function stopChild(child: ChildProcess): Promise<void> {
   await sleep(600)
 }
 
+export interface E2EAppOptions {
+  /**
+   * 预置的“用户选择结果”：按顺序回答主进程的原生文件对话框（`TYPER_PICK_PATHS`）。
+   *
+   * 原生对话框由操作系统绘制，没有可靠的注入点，`SendKeys` / UI Automation 都要依赖前台焦点
+   * 与会话状态（远程桌面、锁屏、多显示器下尤其不稳）。这里改用应用层的显式开关，
+   * 让「选择文件」这一步的结果确定，从而能把**界面按钮**到终态的整条链路都跑起来。
+   */
+  pickPaths?: string[]
+}
+
 /**
  * @description 启动应用、连上主窗口并等 preload 暴露 `window.api`
+ * @param options 启动选项
  * @returns 端到端夹具
  */
-export async function startE2EApp(): Promise<E2EApp> {
+export async function startE2EApp(options: E2EAppOptions = {}): Promise<E2EApp> {
   const dataRoot = mkdtempSync(join(tmpdir(), 'typer-e2e-data-'))
   const appData = join(dataRoot, 'APPDATA')
   mkdirSync(appData, { recursive: true })
@@ -117,6 +129,10 @@ export async function startE2EApp(): Promise<E2EApp> {
       TYPER_DRY_RUN: '1',
       // 但把“本来会发出”的按键事件记下来，供测试重放内容
       TYPER_RECORD_PATH: recordPath,
+      // 「选择文件」的预置答案（未传时不设置该变量，主进程照常弹真实对话框）
+      ...(options.pickPaths && options.pickPaths.length > 0
+        ? { TYPER_PICK_PATHS: options.pickPaths.join(';') }
+        : {}),
       // 配置与缓存隔离，绝不碰本机真实的 %APPDATA%\Typer
       APPDATA: appData
     },
@@ -269,14 +285,16 @@ export function receiverPath(): string {
  * @description 真实跑一遍接收端（把重放出来的帧文本喂给它，让它还原文件）
  * @param args 接收端参数
  * @param cwd 工作目录（相对路径参数以它为基准）
+ * @param scriptPath 要执行的接收端脚本；缺省为仓库里的构建产物
  * @returns 退出码与输出
  */
 export async function runReceiver(
   args: string[],
-  cwd: string
+  cwd: string,
+  scriptPath: string = receiverPath()
 ): Promise<{ code: number; stdout: string; stderr: string }> {
   try {
-    const { stdout, stderr } = await run(process.execPath, [receiverPath(), ...args], {
+    const { stdout, stderr } = await run(process.execPath, [scriptPath, ...args], {
       cwd,
       maxBuffer: 32 * 1024 * 1024
     })

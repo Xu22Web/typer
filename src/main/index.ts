@@ -16,6 +16,7 @@ import {
 } from './ipc/registerIpc'
 import { SettingsStore } from './settings/store'
 import type { ImportCharset, Settings } from './settings/types'
+import { createPickQueue, PICK_QUEUE_ENV } from './transfer/pickQueue'
 import { copyToolsTo, TransferSession } from './transfer/session'
 import { readToolScript } from './transfer/toolScript'
 import { resolveToolsDir } from './transfer/toolsLocator'
@@ -46,6 +47,8 @@ let mainWindow: BrowserWindow | null = null
 let updates: UpdateService | null = null
 let transfer: TransferSession | null = null
 let floating: FloatingWindowController | null = null
+/** 预置的文件选择结果队列（仅自动化测试通过环境变量启用） */
+let presetPicks: ReturnType<typeof createPickQueue> | null = null
 
 /**
  * @description 把一条消息广播给所有未销毁的窗口
@@ -198,9 +201,15 @@ function createUnavailableDriver(message: string): KeyboardDriver {
 
 /**
  * @description 选择要传输的文件：不做扩展名过滤（任意文件都要能传）
+ *
+ * 原生对话框的返回值在自动化测试里没有稳定的注入点，所以先问一次预置队列：
+ * 设了 `TYPER_PICK_PATHS` 且不是打包版本时直接给出结果，其余情况照常弹框。
  * @returns 文件路径；用户取消时返回 null
  */
 async function pickTransferFile(): Promise<string | null> {
+  presetPicks ??= createPickQueue(process.env[PICK_QUEUE_ENV], !app.isPackaged)
+  const preset = presetPicks.next()
+  if (preset !== undefined) return preset
   const focused = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
   const options = {
     title: '选择要输入的文件',
