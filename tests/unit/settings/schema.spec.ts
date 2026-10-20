@@ -199,11 +199,46 @@ describe('toEngineSettings', () => {
       seed: 99,
       verifyStuckKeys: settings.verifyStuckKeys,
       profile: 'normal',
+      minDelayMs: settings.injection.minDelayMs,
+      modifierLeadMs: settings.modifier.leadMs,
+      modifierTailMs: settings.modifier.tailMs,
+      newlineKey: settings.text.newlineKey,
+      lineStart: settings.text.lineStart,
       transferPace: 'safe',
       interFrameDelayMs: settings.transfer.interFrameDelayMs,
       timing: settings.timing,
       typo: { rate: 0.1, style: 'transpose', correction: 'none' }
     })
+  })
+
+  it('修饰键时序与最小间隔：默认值、夹取与非法值回退', () => {
+    expect(DEFAULT_SETTINGS.modifier).toEqual({ leadMs: 15, tailMs: 10 })
+    expect(DEFAULT_SETTINGS.injection.minDelayMs).toBe(0)
+
+    // 云桌面链路慢时可以调大，上限 500ms；负数夹到 0
+    const raised = normalizeSettings({ modifier: { leadMs: 40, tailMs: 25 } })
+    expect(raised.modifier).toEqual({ leadMs: 40, tailMs: 25 })
+
+    const clamped = normalizeSettings({ modifier: { leadMs: 9999, tailMs: -5 } })
+    expect(clamped.modifier.leadMs).toBe(NUMERIC_BOUNDS.modifierLeadMs[1])
+    expect(clamped.modifier.tailMs).toBe(NUMERIC_BOUNDS.modifierTailMs[0])
+
+    const bad = normalizeSettings({ modifier: { leadMs: 'lots' }, injection: { minDelayMs: 999 } })
+    expect(bad.modifier.leadMs).toBe(DEFAULT_SETTINGS.modifier.leadMs)
+    expect(bad.injection.minDelayMs).toBe(NUMERIC_BOUNDS.injectionMinDelayMs[1])
+  })
+
+  it('换行与行首：默认值、非法枚举回退与局部合并', () => {
+    expect(DEFAULT_SETTINGS.text).toEqual({ newlineKey: 'enter', lineStart: 'off' })
+    expect(normalizeSettings({ text: { newlineKey: 'alt-enter' } }).text.newlineKey).toBe('enter')
+    expect(normalizeSettings({ text: { lineStart: 'home-select' } }).text.lineStart).toBe(
+      'home-select'
+    )
+    expect(normalizeSettings({ text: { lineStart: 'tab' } }).text.lineStart).toBe('off')
+
+    const base = normalizeSettings({ text: { newlineKey: 'shift-enter', lineStart: 'home' } })
+    const merged = mergeSettings(base, { text: { lineStart: 'home-select' } })
+    expect(merged.text).toEqual({ newlineKey: 'shift-enter', lineStart: 'home-select' })
   })
 
   it('文件传输设置：默认值、夹取与非法枚举回退', () => {
@@ -240,7 +275,9 @@ describe('toEngineSettings', () => {
       edge: 'right',
       offset: 24,
       x: 0,
-      y: 0
+      y: 0,
+      // 结束后默认留在浮窗，不自动弹回主界面
+      finishBehavior: 'manual'
     })
 
     const fallback = normalizeSettings({ floating: { mode: '中间', edge: '中间', offset: 'x' } })
@@ -261,6 +298,13 @@ describe('toEngineSettings', () => {
   it('局部更新浮窗设置时保留其它项（嵌套分组逐层合并）', () => {
     const base = normalizeSettings({ floating: { edge: 'bottom', offset: 320 } })
     const merged = mergeSettings(base, { floating: { offset: 480 } })
-    expect(merged.floating).toEqual({ mode: 'docked', edge: 'bottom', offset: 480, x: 0, y: 0 })
+    expect(merged.floating).toEqual({
+      mode: 'docked',
+      edge: 'bottom',
+      offset: 480,
+      x: 0,
+      y: 0,
+      finishBehavior: 'manual'
+    })
   })
 })

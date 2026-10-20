@@ -226,8 +226,11 @@ export class TimingScheduler {
 
     if (this.settings.speedMode === 'max') {
       this.typed += 1
-      this.lastWasNewline = action.kind === 'key' && action.char === '\n'
-      return 0
+      if (action.kind === 'key' && action.char !== '') {
+        this.lastWasNewline = action.char === '\n'
+      }
+      // 不限速也遵守用户设定的下限：云桌面里这个下限就是为了不让远端输入队列被打满
+      return this.floorMs > 0 ? this.floorMs : 0
     }
 
     const char = action.char
@@ -249,7 +252,9 @@ export class TimingScheduler {
       delay += this.settings.burstPauseMs
     }
 
-    this.lastWasNewline = isNewline
+    // 空字符的动作（行首归位的 Home / Shift+End）不参与"上一动作是换行"的判定，
+    // 否则插入它们会把"连续换行 = 段落停顿"吃掉
+    if (char !== '') this.lastWasNewline = isNewline
 
     return quantizeDelay(delay, this.floorMs)
   }

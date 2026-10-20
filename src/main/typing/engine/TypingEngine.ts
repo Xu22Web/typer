@@ -1,6 +1,7 @@
 import { buildPlan, countTypedActions, iterateActions, type PlanOptions } from '../planner/plan'
 import { describeSkipped } from '../planner/text'
-import type { KeyboardDriver } from '../drivers/KeyboardDriver'
+import type { LineStartMode, NewlineKey } from '../planner/types'
+import type { KeyboardDriver, SendOptions } from '../drivers/KeyboardDriver'
 import type { HostForegroundData, HostTypeData, ScheduledAction } from '../drivers/protocol'
 import { toHostItems } from '../drivers/protocol'
 import { createRng, resolveSeed, type Rng } from '../scheduling/rng'
@@ -70,6 +71,16 @@ export interface EngineSettings {
   transferPace?: TransferPace
   /** 文件传输：片与片之间的额外停顿（给接收端落盘/回显留时间） */
   interFrameDelayMs?: number
+  /** 每个字符的最小间隔下限（毫秒）：与档位自带下限取较大值，0 / 省略表示不额外抬升 */
+  minDelayMs?: number
+  /** 修饰键按下后、打主键前的等待（毫秒）；省略时用宿主默认的 15 */
+  modifierLeadMs?: number
+  /** 抬起修饰键之前的等待（毫秒）；省略时用宿主默认的 10 */
+  modifierTailMs?: number
+  /** 换行按键（只作用于文本输入；文件传输恒用 Enter） */
+  newlineKey?: NewlineKey
+  /** 换行后的行首处理（只作用于文本输入） */
+  lineStart?: LineStartMode
   timing: TimingSettings
   typo: {
     rate: number
@@ -110,6 +121,31 @@ const PRESSURE_WARN_MS = 300
 
 /** 单批至少下发多少个动作（极速档按实测速率调整批次大小时的兜底） */
 const MIN_ACTIONS_PER_REQUEST = 32
+
+/**
+ * @description 把修饰键时序设置转成下发选项
+ *
+ * 只写入已定义的键：宿主对缺省字段使用自己的默认值（15 / 10），
+ * 而过早写入 undefined 会让 `encodeHostItems` 的判断变得难以推断。
+ * @param settings 引擎设置子集
+ * @returns 驱动下发选项（可能为空对象）
+ */
+function modifierSendOptions(settings: EngineSettings): SendOptions {
+  const options: SendOptions = {}
+  if (settings.modifierLeadMs !== undefined) options.modLeadMs = settings.modifierLeadMs
+  if (settings.modifierTailMs !== undefined) options.modTailMs = settings.modifierTailMs
+  return options
+}
+
+/**
+ * @description 实际生效的每字符最小间隔：档位自带下限与用户设定的下限取较大值
+ * @param profileFloorMs 档位自带下限（标准 1ms / 极速 0ms）
+ * @param userFloorMs 用户设置的下限（0 表示不额外抬升）
+ * @returns 生效下限（毫秒）
+ */
+function effectiveMinDelayMs(profileFloorMs: number, userFloorMs: number | undefined): number {
+  return Math.max(profileFloorMs, Math.max(0, userFloorMs ?? 0))
+}
 
 /**
  * 极速档每次 `SendInput` 至少攒多少个动作。
@@ -300,10 +336,11 @@ export class TypingEngine {
     expectedFocus: FocusSnapshot | null
   ): Promise<RunResult['state']> {
     const planBase: PlanOptions = {
-      layout: settings.layout
+      layout: settings.layout,
+      // 换行方式与行首归位只属于文本输入：文件传输的帧必须用真回车且不能被插入额外按键
+      newline: settings.newlineKey ?? 'enter',
+      lineStart: settings.lineStart ?? 'off'
     }
-
-    // 统计动作总数：与产出使用"同种子、同起点"的独立随机源，保证总数准确
     const typoOptions: TypoOptions = {
       rate: settings.typo.rate,
       style: settings.typo.style,
@@ -347,7 +384,12 @@ export class TypingEngine {
 
     const profile = settings.profile ?? 'normal'
     const limits = PROFILE_LIMITS[profile]
-    const scheduler = new TimingScheduler(settings.timing, rngFactory(seed), limits.minDelayMs)
+    const scheduler = new TimingScheduler(
+      settings.timing,
+      rngFactory(seed),
+      effectiveMinDelayMs(limits.minDelayMs, settings.minDelayMs)
+    )
+    const sendOptions = modifierSendOptions(settings)
     const actions = iterateActions(text, {
       ...planBase,
       typo: { ...typoOptions, rng: rngFactory(seed) }
@@ -400,7 +442,7 @@ export class TypingEngine {
         batchWindow > 0
           ? coalesceDelays(pending, batchWindow, profile === 'turbo' ? TURBO_MIN_GROUP : 1)
           : pending
-      const result = await this.driver.send(toHostItems(outgoing))
+      const result = await this.driver.send(toHostItems(outgoing), sendOptions)
       this.lastForeground = result.foreground ?? null
       // 被中止打断的批次只注入了一部分，别把它算进进度
       if (result.cancelled) return false
@@ -479,7 +521,13 @@ export class TypingEngine {
     await this.driver.start()
 
     const pace = TRANSFER_PACE_LIMITS[settings.transferPace ?? 'safe']
-    const scheduler = new TimingScheduler(FRAME_MODE_TIMING, rngFactory(seed), pace.minDelayMs)
+    // 帧路径只接"注入层"的两个设置：最小间隔与修饰键时序；换行/行首归位会破坏帧内容
+    const scheduler = new TimingScheduler(
+      FRAME_MODE_TIMING,
+      rngFactory(seed),
+      effectiveMinDelayMs(pace.minDelayMs, settings.minDelayMs)
+    )
+    const sendOptions = modifierSendOptions(settings)
     const interFrameDelay = effectiveFrameGapMs(
       settings.transferPace ?? 'safe',
       settings.interFrameDelayMs ?? 0
@@ -512,7 +560,7 @@ export class TypingEngine {
         // 中止只在下发之间生效：子批大小决定了"紧急停止"的延迟上限
         if (this.aborted) return false
         const batch = items.slice(offset, offset + pace.batchActions)
-        const result = await this.driver.send(batch, { perItem: pace.perItem })
+        const result = await this.driver.send(batch, { perItem: pace.perItem, ...sendOptions })
         this.lastForeground = result.foreground ?? null
         this.noteHostPressure(result)
         if (result.cancelled) return false

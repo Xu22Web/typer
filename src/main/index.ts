@@ -68,10 +68,12 @@ function floatingPageUrl(): string {
 }
 
 /**
- * @description 运行期同步进度浮窗：进行中最小化主窗口并显示浮窗，终态收起浮窗并召回主窗口
+ * @description 运行期同步进度浮窗：进行中最小化主窗口并显示浮窗；结束后按设置决定是自动召回主窗口，
+ * 还是把浮窗钉在完成态、等用户点「返回主窗口」
  * @param state 引擎状态
+ * @param settings 当前设置（决定结束后的行为）
  */
-function syncFloatingWindow(state: EngineState): void {
+function syncFloatingWindow(state: EngineState, settings: Settings): void {
   if (isBusy(state)) {
     const window = mainWindow
     if (window && !window.isDestroyed() && !window.isMinimized()) window.minimize()
@@ -80,6 +82,12 @@ function syncFloatingWindow(state: EngineState): void {
   }
 
   if (!isTerminal(state)) return
+
+  // manual（默认）：不抢焦点、不弹回主界面，把结果留在浮窗上等用户自己返回
+  if (settings.floating.finishBehavior === 'manual') {
+    floating?.pin()
+    return
+  }
 
   floating?.hide()
   const window = mainWindow
@@ -97,8 +105,8 @@ function toFloatPlacement(floating: Settings['floating']): FloatPlacement {
   return { mode: 'docked', edge: floating.edge, offset: floating.offset }
 }
 
-/** @description 控制器使用的摆放 → 设置里的浮窗摆放 */
-function fromFloatPlacement(placement: FloatPlacement): Settings['floating'] {
+/** @description 控制器使用的摆放 → 设置里的浮窗摆放（只写摆放字段，其它项交给深合并保留） */
+function fromFloatPlacement(placement: FloatPlacement): Partial<Settings['floating']> {
   if (placement.mode === 'floating') {
     return { mode: 'floating', edge: 'right', offset: 0, x: placement.x, y: placement.y }
   }
@@ -362,7 +370,7 @@ async function bootstrap(): Promise<void> {
     now: realNow,
     onState: (snapshot) => {
       bridge.onState(snapshot)
-      syncFloatingWindow(snapshot.state)
+      syncFloatingWindow(snapshot.state, store.get())
     },
     onProgress: bridge.onProgress,
     onLog: (level, message) => {
@@ -432,6 +440,8 @@ async function bootstrap(): Promise<void> {
       isMaximized: () => mainWindow?.isMaximized() ?? false,
       focusMain: () => {
         const window = mainWindow
+        // 先收起浮窗：从浮窗点「返回主窗口」时，浮窗再留在桌面上就多余了
+        floating?.hide()
         if (!window || window.isDestroyed()) return
         if (window.isMinimized()) window.restore()
         window.show()

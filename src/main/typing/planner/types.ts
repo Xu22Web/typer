@@ -6,6 +6,25 @@
  */
 export type Modifier = 'shift' | 'ctrl' | 'alt' | 'win'
 
+/**
+ * 换行按键。
+ *
+ * 云桌面里常见两类目标：终端/编辑器要的是 Enter，聊天框与 Web 表单里 Enter 却会直接提交，
+ * 所以需要把"换行"换成 Shift+Enter 或 Ctrl+Enter。
+ */
+export type NewlineKey = 'enter' | 'shift-enter' | 'ctrl-enter'
+
+/**
+ * 换行后的行首处理。
+ *
+ * 编辑器（VS Code 等）会在 Enter 后自动插入上一行的缩进，再叠加源文本自带的缩进，
+ * 结果整行右移。这里用"回到列 0"的按键序列把行首拉回去：
+ * - `off`：不处理（终端里没有自动缩进，也就不需要额外按键）
+ * - `home`：只发 Home，把光标移回列 0
+ * - `home-select`：Home 后再 Shift+End，选中该行残留的自动缩进/自动补全内容，后续输入直接覆盖
+ */
+export type LineStartMode = 'off' | 'home' | 'home-select'
+
 /** 真实虚拟键事件。 */
 export interface KeyAction {
   kind: 'key'

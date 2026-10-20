@@ -28,12 +28,20 @@ const preview = computed(() => {
   const current = settings.value
   if (!current || typing.text.value.length === 0) return null
   const target = prepared.value.text
-  const stats = buildPlan(target, { layout: current.keyboard.layout }).stats
-  // 与运行时同口径：错字与纠正、标点/空格/换行停顿、抖动都算进去
+  const planOptions = {
+    layout: current.keyboard.layout,
+    newline: current.text.newlineKey,
+    lineStart: current.text.lineStart
+  }
+  const stats = buildPlan(target, planOptions).stats
+  // 与运行时同口径：错字与纠正、标点/空格/换行停顿、抖动、行首归位与最小间隔都算进去
   const estimate = estimateTypingMs(target, {
     timing: current.timing,
     layout: current.keyboard.layout,
     profile: current.injection.profile,
+    minDelayMs: current.injection.minDelayMs,
+    newline: current.text.newlineKey,
+    lineStart: current.text.lineStart,
     typo: current.typo
   })
 

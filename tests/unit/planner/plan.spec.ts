@@ -179,6 +179,42 @@ describe('错字模拟', () => {
     const actions = [...iterateActions('hello world', options())]
     expect(actions).toHaveLength(total)
   })
+
+  it('换行键可切换为 Shift+Enter / Ctrl+Enter', () => {
+    const shift = keysOf(buildPlan('a\nb', { newline: 'shift-enter' }).actions)[1]
+    expect(shift).toEqual({ kind: 'key', vk: VK.ENTER, modifiers: ['shift'], char: '\n' })
+
+    const ctrl = keysOf(buildPlan('a\nb', { newline: 'ctrl-enter' }).actions)[1]
+    expect(ctrl).toEqual({ kind: 'key', vk: VK.ENTER, modifiers: ['ctrl'], char: '\n' })
+
+    // 默认仍是 Enter：文件传输与终端依赖这一点
+    const enter = keysOf(buildPlan('a\nb').actions)[1]
+    expect(enter?.modifiers).toEqual([])
+  })
+
+  it('行首归位：home 只发 Home，home-select 再补 Shift+End', () => {
+    const home = keysOf(buildPlan('a\nb', { lineStart: 'home' }).actions)
+    expect(home.map((action) => action.vk)).toEqual([0x41, VK.ENTER, VK.HOME, 0x42])
+    // 归位动作不带字符：节奏调度靠空 char 区分"这不是文字"
+    expect(home.map((action) => action.char)).toEqual(['a', '\n', '', 'b'])
+
+    const select = keysOf(buildPlan('a\nb', { lineStart: 'home-select' }).actions)
+    expect(select.map((action) => action.vk)).toEqual([0x41, VK.ENTER, VK.HOME, VK.END, 0x42])
+    expect(select[3]?.modifiers).toEqual(['shift'])
+  })
+
+  it('末尾换行不做行首归位（打完就结束，不白花事件预算）', () => {
+    const keys = keysOf(buildPlan('a\n', { lineStart: 'home-select' }).actions)
+    expect(keys.map((action) => action.vk)).toEqual([0x41, VK.ENTER])
+  })
+
+  it('归位动作计入动作总数，进度与预估同口径', () => {
+    const text = 'a\nb\nc'
+    // 3 个字符 + 2 个换行 + 每次换行 2 个归位动作
+    expect(countTypedActions(text, { lineStart: 'home-select' })).toBe(3 + 2 + 4)
+    expect(countTypedActions(text, { lineStart: 'home' })).toBe(3 + 2 + 2)
+    expect(countTypedActions(text)).toBe(3 + 2)
+  })
 })
 
 describe('stripUnsupported', () => {

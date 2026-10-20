@@ -1,6 +1,6 @@
 <script setup lang="ts" vapor>
 import { BAR_THICKNESS, CARD_GAP, cardRect, pillRect } from '@main/window/floatDock'
-import { STATE_LABELS } from '@main/typing/engine/states'
+import { isTerminal, STATE_LABELS } from '@main/typing/engine/states'
 import { formatDuration } from '@shared/format/duration'
 
 /**
@@ -59,6 +59,9 @@ const floating = computed(() => viewState.value === 'floating')
 
 /** 进度百分比（0–100） */
 const percent = computed(() => Math.round((typing.progress.value?.percent ?? 0) * 100))
+
+/** 是否已结束（完成 / 中止 / 出错）：结束后主窗口不再自动召回，由这里提供返回入口 */
+const finished = computed(() => isTerminal(typing.state.value))
 
 /** 是否处于倒计时（此时中心数字显示剩余秒数） */
 const counting = computed(() => typing.state.value === 'countdown')
@@ -246,18 +249,30 @@ onMounted(async () => {
 
       <div class="actions">
         <button
-          class="act"
+          v-if="finished"
+          class="act primary"
           type="button"
-          :title="paused ? '继续输入' : '暂停输入'"
-          @click.stop="togglePause()"
+          title="收起浮窗并回到主窗口"
+          @click.stop="restoreMain()"
         >
-          <span :class="paused ? 'i-mdi-play' : 'i-mdi-pause'" />
-          <span>{{ paused ? '继续' : '暂停' }}</span>
+          <span class="i-mdi-open-in-app" />
+          <span>返回主窗口</span>
         </button>
-        <button class="act danger" type="button" title="停止输入" @click.stop="stop()">
-          <span class="i-mdi-stop" />
-          <span>停止</span>
-        </button>
+        <template v-else>
+          <button
+            class="act"
+            type="button"
+            :title="paused ? '继续输入' : '暂停输入'"
+            @click.stop="togglePause()"
+          >
+            <span :class="paused ? 'i-mdi-play' : 'i-mdi-pause'" />
+            <span>{{ paused ? '继续' : '暂停' }}</span>
+          </button>
+          <button class="act danger" type="button" title="停止输入" @click.stop="stop()">
+            <span class="i-mdi-stop" />
+            <span>停止</span>
+          </button>
+        </template>
       </div>
     </div>
   </div>
@@ -523,6 +538,17 @@ onMounted(async () => {
 
     &:hover {
       background: color-mix(in srgb, var(--danger) 22%, transparent);
+    }
+  }
+
+  &.primary {
+    border-color: transparent;
+    background: var(--accent);
+    color: #fff;
+
+    &:hover {
+      background: color-mix(in srgb, var(--accent) 86%, #000);
+      border-color: transparent;
     }
   }
 }

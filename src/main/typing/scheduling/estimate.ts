@@ -1,4 +1,5 @@
 import { iterateActions } from '../planner/plan'
+import type { LineStartMode, NewlineKey } from '../planner/types'
 import { PROFILE_LIMITS, type InjectionProfile } from './profile'
 import { createRng } from './rng'
 import { TimingScheduler, type TimingSettings } from './timing'
@@ -16,6 +17,12 @@ export interface TypingEstimateOptions {
   typo?: { rate: number; style: TypoStyle; correction: TypoCorrection } | null
   /** 注入档位：决定每个动作的最小间隔 */
   profile?: InjectionProfile
+  /** 用户设定的每字符最小间隔下限（毫秒）：与档位下限取较大值 */
+  minDelayMs?: number
+  /** 换行按键（与运行时保持一致才有可比性） */
+  newline?: NewlineKey
+  /** 换行后的行首归位（会多出按键，必须计入预估） */
+  lineStart?: LineStartMode
   /** 抖动与造错的随机种子，默认 {@link PREVIEW_SEED} */
   seed?: number
 }
@@ -45,13 +52,18 @@ export function estimateTypingMs(text: string, options: TypingEstimateOptions): 
   const scheduler = new TimingScheduler(
     options.timing,
     createRng(seed),
-    PROFILE_LIMITS[profile].minDelayMs
+    Math.max(PROFILE_LIMITS[profile].minDelayMs, Math.max(0, options.minDelayMs ?? 0))
   )
   const typo = options.typo ? { ...options.typo, rng: createRng(seed) } : null
 
   let ms = 0
   let actions = 0
-  for (const action of iterateActions(text, { layout: options.layout, typo })) {
+  for (const action of iterateActions(text, {
+    layout: options.layout,
+    typo,
+    newline: options.newline ?? 'enter',
+    lineStart: options.lineStart ?? 'off'
+  })) {
     ms += scheduler.delayFor(action)
     if (action.kind !== 'delay') actions += 1
   }

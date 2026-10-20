@@ -19,7 +19,14 @@ import {
   type TransferTargetMode
 } from '@shared/transfer/transfer'
 import { DEFAULT_PLACEMENT, type DockEdge } from '../window/floatDock'
-import type { ImportCharset, LogLevel, Settings } from './types'
+import type {
+  FinishBehavior,
+  ImportCharset,
+  LineStartMode,
+  LogLevel,
+  NewlineKey,
+  Settings
+} from './types'
 
 export type { ImportCharset, LogLevel, Settings } from './types'
 
@@ -42,7 +49,20 @@ export const DEFAULT_SETTINGS: Settings = {
     burstPauseMs: 400
   },
   injection: {
-    profile: 'normal'
+    profile: 'normal',
+    // 0 = 只用档位自带的下限；云桌面链路慢时可以抬到几毫秒，给远端输入队列留喘息
+    minDelayMs: 0
+  },
+  modifier: {
+    // 远程桌面会把同一次 SendInput 里的修饰键与主键合批丢弃（Shift+1 到远端只剩 1），
+    // 所以修饰键必须单独下发并留间隔；链路延迟大时用户可自行加大
+    leadMs: 15,
+    tailMs: 10
+  },
+  text: {
+    newlineKey: 'enter',
+    // 默认不补偿：终端里 Home 有别的语义；编辑器自动缩进的场景由用户显式开启
+    lineStart: 'off'
   },
   typo: {
     rate: 0.02,
@@ -83,7 +103,9 @@ export const DEFAULT_SETTINGS: Settings = {
   floating: {
     ...(DEFAULT_PLACEMENT as { mode: 'docked'; edge: DockEdge; offset: number }),
     x: 0,
-    y: 0
+    y: 0,
+    // 默认留在浮窗：结束后自动弹回主窗口会抢焦点，打断用户的下一步操作
+    finishBehavior: 'manual'
   },
   verifyStuckKeys: true,
   logLevel: 'info'
@@ -96,6 +118,11 @@ export const NUMERIC_BOUNDS = {
   // 归一化时按实际档位从 PROFILE_LIMITS 取值
   chunkSize: PROFILE_LIMITS.normal.chunkSize,
   seed: [0, 0xffffffff],
+  // 修饰键按下后 / 抬起前的等待：云桌面链路慢时允许调大（默认 15 / 10）
+  modifierLeadMs: [0, 500],
+  modifierTailMs: [0, 500],
+  // 每个字符的最小间隔下限：0 表示不额外抬升，上限只需覆盖“慢链路”这一档
+  injectionMinDelayMs: [0, 50],
   cps: PROFILE_LIMITS.normal.cps,
   wpm: [10, 1000],
   baseIntervalMs: [1, 2000],
@@ -203,6 +230,9 @@ const TRANSFER_COMPRESSION_VALUES: readonly TransferCompression[] = TRANSFER_COM
 const TRANSFER_MODE_VALUES: readonly TransferTargetMode[] = TRANSFER_TARGET_MODES
 const DOCK_EDGES: readonly DockEdge[] = ['left', 'right', 'top', 'bottom']
 const FLOAT_MODES = ['docked', 'floating'] as const
+const NEWLINE_KEYS: readonly NewlineKey[] = ['enter', 'shift-enter', 'ctrl-enter']
+const LINE_START_MODES: readonly LineStartMode[] = ['off', 'home', 'home-select']
+const FINISH_BEHAVIORS: readonly FinishBehavior[] = ['manual', 'auto']
 
 /**
  * @description 把任意（被手工编辑过的）JSON 归一化为合法设置；类型错误回退默认值、超范围夹取、未知字段丢弃，且永不抛错
@@ -215,6 +245,8 @@ export function normalizeSettings(raw: unknown): Settings {
   const injection = asRecord(root.injection)
   const typo = asRecord(root.typo)
   const keyboard = asRecord(root.keyboard)
+  const modifier = asRecord(root.modifier)
+  const text = asRecord(root.text)
   const hotkeys = asRecord(root.hotkeys)
   const privacy = asRecord(root.privacy)
   const files = asRecord(root.files)
@@ -261,7 +293,33 @@ export function normalizeSettings(raw: unknown): Settings {
     ),
     chunkSize: readNumber(root, 'chunkSize', DEFAULT_SETTINGS.chunkSize, limits.chunkSize),
     seed: Math.floor(readNumber(root, 'seed', DEFAULT_SETTINGS.seed, bounds.seed)),
-    injection: { profile },
+    injection: {
+      profile,
+      minDelayMs: readNumber(
+        injection,
+        'minDelayMs',
+        DEFAULT_SETTINGS.injection.minDelayMs,
+        bounds.injectionMinDelayMs
+      )
+    },
+    modifier: {
+      leadMs: readNumber(
+        modifier,
+        'leadMs',
+        DEFAULT_SETTINGS.modifier.leadMs,
+        bounds.modifierLeadMs
+      ),
+      tailMs: readNumber(
+        modifier,
+        'tailMs',
+        DEFAULT_SETTINGS.modifier.tailMs,
+        bounds.modifierTailMs
+      )
+    },
+    text: {
+      newlineKey: readEnum(text, 'newlineKey', NEWLINE_KEYS, DEFAULT_SETTINGS.text.newlineKey),
+      lineStart: readEnum(text, 'lineStart', LINE_START_MODES, DEFAULT_SETTINGS.text.lineStart)
+    },
     timing: {
       speedMode,
       cps: readNumber(timing, 'cps', DEFAULT_SETTINGS.timing.cps, limits.cps),
@@ -391,7 +449,13 @@ export function normalizeSettings(raw: unknown): Settings {
       edge: readEnum(floating, 'edge', DOCK_EDGES, DEFAULT_SETTINGS.floating.edge),
       offset: readNumber(floating, 'offset', DEFAULT_SETTINGS.floating.offset, bounds.floatOffset),
       x: readNumber(floating, 'x', DEFAULT_SETTINGS.floating.x, bounds.floatCoord),
-      y: readNumber(floating, 'y', DEFAULT_SETTINGS.floating.y, bounds.floatCoord)
+      y: readNumber(floating, 'y', DEFAULT_SETTINGS.floating.y, bounds.floatCoord),
+      finishBehavior: readEnum(
+        floating,
+        'finishBehavior',
+        FINISH_BEHAVIORS,
+        DEFAULT_SETTINGS.floating.finishBehavior
+      )
     }
   }
 }
@@ -409,6 +473,8 @@ export function mergeSettings(base: Settings, patch: unknown): Settings {
     ...patchRecord,
     timing: { ...base.timing, ...asRecord(patchRecord.timing) },
     injection: { ...base.injection, ...asRecord(patchRecord.injection) },
+    modifier: { ...base.modifier, ...asRecord(patchRecord.modifier) },
+    text: { ...base.text, ...asRecord(patchRecord.text) },
     typo: { ...base.typo, ...asRecord(patchRecord.typo) },
     keyboard: { ...base.keyboard, ...asRecord(patchRecord.keyboard) },
     hotkeys: { ...base.hotkeys, ...asRecord(patchRecord.hotkeys) },
@@ -435,6 +501,11 @@ export function toEngineSettings(settings: Settings): EngineSettings {
     seed: settings.seed,
     verifyStuckKeys: settings.verifyStuckKeys,
     profile: settings.injection.profile,
+    minDelayMs: settings.injection.minDelayMs,
+    modifierLeadMs: settings.modifier.leadMs,
+    modifierTailMs: settings.modifier.tailMs,
+    newlineKey: settings.text.newlineKey,
+    lineStart: settings.text.lineStart,
     transferPace: settings.transfer.paceMode,
     interFrameDelayMs: settings.transfer.interFrameDelayMs,
     timing: settings.timing,

@@ -6,6 +6,9 @@ export const VK = {
   TAB: 0x09,
   ENTER: 0x0d,
   ESCAPE: 0x1b,
+  /** End / Home：扩展键，宿主会自动加 KEYEVENTF_EXTENDEDKEY */
+  END: 0x23,
+  HOME: 0x24,
   SPACE: 0x20,
   SHIFT: 0x10,
   CONTROL: 0x11,

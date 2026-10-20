@@ -13,26 +13,66 @@ import {
   type LayoutId
 } from './keymap'
 import { isCjk, normalizeText, toCodePoints } from './text'
-import type { KeyAction, KeystrokeAction, PlanStats, TypingPlan } from './types'
+import type {
+  KeyAction,
+  KeystrokeAction,
+  LineStartMode,
+  Modifier,
+  NewlineKey,
+  PlanStats,
+  TypingPlan
+} from './types'
 
 export interface PlanOptions {
   /** 目标窗口使用的键盘布局（决定"真实按键"如何映射） */
   layout?: LayoutId | string
   /** 造错设置；`null` / 省略表示不打错 */
   typo?: TypoOptions | null
+  /** 换行按键；默认 Enter。文件传输不接受这项设置（帧必须用真回车） */
+  newline?: NewlineKey
+  /** 换行后的行首处理；默认 off（终端里 Home 有别的语义，不能默认发） */
+  lineStart?: LineStartMode
 }
 
 export type CharResolution =
   { kind: 'key'; action: KeyAction } | { kind: 'unsupported'; char: string }
 
-export const NEWLINE_ACTION: KeyAction = {
-  kind: 'key',
-  vk: VK.ENTER,
-  modifiers: [],
-  char: '\n'
+/**
+ * @description 构造换行动作（按设置选择是否带修饰键）
+ * @param mode 换行按键
+ * @returns 换行对应的真实按键动作
+ */
+export function newlineAction(mode: NewlineKey = 'enter'): KeyAction {
+  const modifiers: Modifier[] =
+    mode === 'shift-enter' ? ['shift'] : mode === 'ctrl-enter' ? ['ctrl'] : []
+  return { kind: 'key', vk: VK.ENTER, modifiers, char: '\n' }
 }
 
+/** 默认换行（Enter）。 */
+export const NEWLINE_ACTION: KeyAction = newlineAction('enter')
+
 export const TAB_ACTION: KeyAction = { kind: 'key', vk: VK.TAB, modifiers: [], char: '\t' }
+
+/**
+ * 行首归位：把光标移到列 0。
+ *
+ * VS Code 的"智能 Home"从首非空白处按一次正好回到列 0；没有智能 Home 的编辑器里
+ * Home 本来就到列 0（幂等）。
+ */
+export const HOME_ACTION: KeyAction = { kind: 'key', vk: VK.HOME, modifiers: [], char: '' }
+
+/**
+ * 选中本行到行尾（Shift+End）。
+ *
+ * 放在 Home 之后使用：Enter 后该行只有编辑器自动插入的缩进/自动补全内容，
+ * 选中它再输入就能整体覆盖。选区**不跨换行**，即使自动缩进为 0（空选区）也不会删掉上一行。
+ */
+export const SELECT_LINE_ACTION: KeyAction = {
+  kind: 'key',
+  vk: VK.END,
+  modifiers: ['shift'],
+  char: ''
+}
 
 /**
  * @description 单字符 → 真实按键；没有物理键位的字符（中文、emoji 等）返回 unsupported
@@ -62,6 +102,10 @@ interface PlanCollector {
 interface IterateContext {
   layout: KeyboardLayout
   typo: TypoOptions | null
+  /** 换行按键（默认 Enter） */
+  newline: NewlineKey
+  /** 换行后是否做行首归位 */
+  lineStart: LineStartMode
   collector?: PlanCollector
 }
 
@@ -121,6 +165,23 @@ function* iterateCodes(codes: string[], context: IterateContext): Generator<Keys
   for (let index = 0; index < codes.length; index++) {
     const char = codes[index] as string
     const next = codes[index + 1]
+
+    // 换行：先打换行键，再按设置做行首归位。
+    // 末尾的换行不补偿——打完就结束了，多发 Home/Shift+End 只会白花事件预算。
+    if (char === '\n') {
+      if (context.collector) context.collector.typed += 1
+      yield newlineAction(context.newline)
+
+      if (context.lineStart !== 'off' && next !== undefined) {
+        if (context.collector) context.collector.typed += 1
+        yield HOME_ACTION
+        if (context.lineStart === 'home-select') {
+          if (context.collector) context.collector.typed += 1
+          yield SELECT_LINE_ACTION
+        }
+      }
+      continue
+    }
 
     // 相邻字符颠倒：打错 -> 退格 -> 重打（correction = none 时保留颠倒结果）
     if (
@@ -188,7 +249,9 @@ export function* iterateActions(
   const { text } = normalizeText(input)
   yield* iterateCodes(toCodePoints(text), {
     layout: getLayout(options.layout),
-    typo: options.typo ?? null
+    typo: options.typo ?? null,
+    newline: options.newline ?? 'enter',
+    lineStart: options.lineStart ?? 'off'
   })
 }
 
@@ -211,6 +274,8 @@ export function buildPlan(input: string, options: PlanOptions = {}): TypingPlan 
     ...iterateCodes(codes, {
       layout: getLayout(options.layout),
       typo: options.typo ?? null,
+      newline: options.newline ?? 'enter',
+      lineStart: options.lineStart ?? 'off',
       collector
     })
   ]
@@ -243,6 +308,8 @@ export function countTypedActions(input: string, options: PlanOptions = {}): num
   const iterator = iterateCodes(toCodePoints(text), {
     layout: getLayout(options.layout),
     typo: options.typo ?? null,
+    newline: options.newline ?? 'enter',
+    lineStart: options.lineStart ?? 'off',
     collector
   })
   while (!iterator.next().done) {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { MockKeyboardDriver } from '@main/typing/drivers/MockKeyboardDriver'
-import { LAYOUTS } from '@main/typing/planner/keymap'
+import { LAYOUTS, VK } from '@main/typing/planner/keymap'
 import {
   TypingEngine,
   type EngineSettings,
@@ -282,6 +282,38 @@ describe('引擎 · 文件传输模式', () => {
     expect(driver.batches.length).toBeGreaterThan(1)
     expect(driver.sendOptions.every((options) => options.perItem === true)).toBe(true)
     expect(Math.max(...driver.batches.map((batch) => batch.length))).toBeLessThanOrEqual(128)
+  })
+
+  it('帧路径带修饰键延迟，但忽略换行键与行首归位（数据内容必须原样）', async () => {
+    const { engine, driver } = createHarness()
+    const text = 'a\nb'
+
+    await engine.start(
+      frameJob({
+        total: 1,
+        indexes: [0],
+        render: () => text,
+        charsOf: () => text.length,
+        begin: undefined,
+        end: undefined
+      }),
+      engineSettings({
+        modifierLeadMs: 40,
+        modifierTailMs: 25,
+        // 这两项只属于文本输入：帧不能被插进 Home/End，换行也必须是真回车
+        newlineKey: 'shift-enter',
+        lineStart: 'home-select'
+      })
+    )
+
+    expect(driver.sendOptions.every((options) => options.modLeadMs === 40)).toBe(true)
+    expect(driver.sendOptions.every((options) => options.modTailMs === 25)).toBe(true)
+    expect(driver.items.map((item) => (item.t === 'key' ? item.vk : -1))).toEqual([
+      0x41,
+      VK.ENTER,
+      0x42,
+      VK.ENTER
+    ])
   })
 
   it('极速档：逐动作投递、零延迟，速度交给压力阀', async () => {

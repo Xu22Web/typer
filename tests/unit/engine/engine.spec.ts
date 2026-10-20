@@ -504,3 +504,52 @@ describe('时间统计（只算真正在输入的时间）', () => {
     expect(result.elapsedMs).toBe(80)
   })
 })
+
+describe('修饰键时序与最小间隔', () => {
+  it('把修饰键按下/抬起延迟透传给驱动（远程桌面里 Shift 被丢弃时靠它兜底）', async () => {
+    const h = createHarness()
+    await h.engine.start('a!', engineSettings({ modifierLeadMs: 40, modifierTailMs: 25 }))
+
+    expect(h.driver.sendOptions.length).toBeGreaterThan(0)
+    expect(h.driver.sendOptions.every((options) => options.modLeadMs === 40)).toBe(true)
+    expect(h.driver.sendOptions.every((options) => options.modTailMs === 25)).toBe(true)
+  })
+
+  it('没有设置修饰键延迟时不下发这两个字段（由宿主用自己的默认值 15 / 10）', async () => {
+    const h = createHarness()
+    await h.engine.start('a', engineSettings())
+
+    expect(h.driver.sendOptions.every((options) => options.modLeadMs === undefined)).toBe(true)
+    expect(h.driver.sendOptions.every((options) => options.modTailMs === undefined)).toBe(true)
+  })
+
+  it('最小间隔：用户下限会把每字符间隔抬到该值', async () => {
+    const fast = { ...timing, baseIntervalMs: 1 }
+
+    const plain = createHarness()
+    await plain.engine.start('a', engineSettings({ timing: fast }))
+    expect(plain.driver.items[0]).toEqual({ t: 'key', vk: 0x41, mods: [], delay: 1 })
+
+    const raised = createHarness()
+    await raised.engine.start('a', engineSettings({ timing: fast, minDelayMs: 8 }))
+    expect(raised.driver.items[0]).toEqual({ t: 'key', vk: 0x41, mods: [], delay: 8 })
+  })
+
+  it('换行方式与行首归位只作用于文本输入，并按动作数计入进度总数', async () => {
+    const h = createHarness()
+    const result = await h.engine.start(
+      'a\nb',
+      engineSettings({ newlineKey: 'shift-enter', lineStart: 'home-select' })
+    )
+
+    expect(result.state).toBe('completed')
+    // 3 个字符 + 1 次换行 + Home + Shift+End
+    expect(result.total).toBe(5)
+    expect(result.typed).toBe(5)
+    expect(h.driver.items.map((item) => (item.t === 'key' ? item.vk : -1))).toEqual([
+      0x41, 0x0d, 0x24, 0x23, 0x42
+    ])
+    // 换行必须是 Shift+Enter（在表单里 Enter 会直接提交）
+    expect(h.driver.items[1]).toMatchObject({ t: 'key', vk: 0x0d, mods: ['shift'] })
+  })
+})

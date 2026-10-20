@@ -78,7 +78,18 @@ describe('estimateTypingMs', () => {
   })
 
   it('不限速模式估 0；极速档允许 0 间隔，标准档每个动作至少 1ms', () => {
-    expect(estimateTypingMs('abc', { timing: timing({ speedMode: 'max' }) }).ms).toBe(0)
+    // 不限速只属于极速档（设置层会把标准档的 max 回退成 cps）
+    expect(
+      estimateTypingMs('abc', { timing: timing({ speedMode: 'max' }), profile: 'turbo' }).ms
+    ).toBe(0)
+    // 但用户显式设定的每字符下限依然生效：云桌面里不把远端输入队列打满
+    expect(
+      estimateTypingMs('abc', {
+        timing: timing({ speedMode: 'max' }),
+        profile: 'turbo',
+        minDelayMs: 5
+      }).ms
+    ).toBe(15)
     expect(
       estimateTypingMs('abc', { timing: timing({ baseIntervalMs: 0 }), profile: 'turbo' }).ms
     ).toBe(0)
@@ -91,5 +102,20 @@ describe('estimateTypingMs', () => {
     const estimate = estimateTypingMs('中文', { timing: timing() })
     expect(estimate.actions).toBe(0)
     expect(estimate.ms).toBe(0)
+  })
+
+  it('用户设定的最小间隔会抬高每个动作的耗时', () => {
+    const fast = timing({ baseIntervalMs: 1 })
+    expect(estimateTypingMs('abc', { timing: fast }).ms).toBe(3)
+    expect(estimateTypingMs('abc', { timing: fast, minDelayMs: 8 }).ms).toBe(24)
+  })
+
+  it('换行键与行首归位都会计入预估（否则预览会比实际短一截）', () => {
+    const config = { timing: timing() }
+    // a + 换行 + b
+    expect(estimateTypingMs('a\nb', config).actions).toBe(3)
+    // home-select：每次换行多两个归位动作
+    expect(estimateTypingMs('a\nb', { ...config, lineStart: 'home-select' }).actions).toBe(5)
+    expect(estimateTypingMs('a\nb', { ...config, lineStart: 'home' }).actions).toBe(4)
   })
 })

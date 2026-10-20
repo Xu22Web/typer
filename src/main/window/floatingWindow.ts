@@ -72,6 +72,11 @@ export interface FloatingWindowController {
   state: () => FloatViewState
   /** 当前摆放 */
   placement: () => FloatPlacement
+  /**
+   * 把卡片钉在展开态：指针离开后不自动收起。
+   * 用于"输入结束但主窗口不召回"的场景——结果要一直看得见，等用户点「返回主窗口」。
+   */
+  pin: () => void
   /** 渲染进程是否可以让窗口接收鼠标（贴边时默认点击穿透） */
   setInteractive: (interactive: boolean) => void
   /** 销毁窗口并释放资源 */
@@ -134,6 +139,8 @@ export function createFloatingWindow(options: FloatingWindowOptions): FloatingWi
   let dragActive = false
   /** 拖动落定后指针就在窗口上，此时不该立刻再展开 */
   let armed = true
+  /** 是否钉住卡片（钉住时指针离开也不收起） */
+  let pinned = false
 
   /** @description 当前窗口所在的显示器工作区（窗口还没建时用主显示器） */
   const workArea = (): WorkArea => {
@@ -261,6 +268,12 @@ export function createFloatingWindow(options: FloatingWindowOptions): FloatingWi
 
       if (state !== 'expanded') return
 
+      // 钉住（输入已结束、等用户手动返回）时不按指针位置收起
+      if (pinned) {
+        leftAt = 0
+        return
+      }
+
       // 展开后指针可能还停在细条上（卡片贴在细条旁边），这不算"离开"
       if (hitCard(cardScreenBounds(window.getBounds(), lastEdge()), point, HOVER_PAD)) {
         leftAt = 0
@@ -347,6 +360,8 @@ export function createFloatingWindow(options: FloatingWindowOptions): FloatingWi
   return {
     show: () => {
       visible = true
+      // 新一轮运行重新开始：上一次"钉住"的完成态不能带过来
+      pinned = false
       try {
         if (!window || window.isDestroyed()) window = build()
         if (window.isMinimized()) window.restore()
@@ -373,6 +388,7 @@ export function createFloatingWindow(options: FloatingWindowOptions): FloatingWi
     },
     hide: () => {
       visible = false
+      pinned = false
       animationToken += 1
       state = placement.mode === 'floating' ? 'floating' : 'docked'
       forceInteractive = false
@@ -383,6 +399,13 @@ export function createFloatingWindow(options: FloatingWindowOptions): FloatingWi
     isVisible: () => visible && !!window && !window.isDestroyed() && window.isVisible(),
     expand: () => {
       doExpand()
+    },
+    pin: () => {
+      pinned = true
+      doExpand()
+      // 钉住的目的就是让人看见结果：贴边细条下强制可交互，否则鼠标进不去
+      forceInteractive = true
+      applyClickThrough()
     },
     collapse: () => {
       doCollapse()
