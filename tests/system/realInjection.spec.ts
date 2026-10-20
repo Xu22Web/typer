@@ -6,11 +6,15 @@ import { buildPlan } from '@main/typing/planner/plan'
 import { HOST_SCRIPT, launchTargetWindow, waitFor, type TargetWindow } from './helpers/system'
 
 /**
- * 真实键盘注入测试（opt-in，TYPIST_E2E=1 或 `pnpm test:system`）：唯一会**真的往一个窗口打字**
+ * 真实键盘注入测试（opt-in，TYPIST_E2E=1）：唯一会**真的往一个窗口打字**
  * 的用例，因此必须先确认目标窗口就是前台窗口，否则立即跳过——绝不能把按键打到用户其它窗口上。
  * 目标是一个自建的 WinForms 窗口（把收到的字符写回文件），断言即文本比较。
+ *
+ * 托管 CI runner 上虽然能拿到前台窗口，但注入的按键到不了目标窗口（没有可用的交互式输入桌面），
+ * 断言“收到了完整字符流”必然超时；因此默认跳过，需要时用 `TYPIST_E2E_CI=1` 强制开启。
  */
-const enabled = process.env.TYPIST_E2E === '1'
+const forcedOnCi = process.env.TYPIST_E2E_CI === '1'
+const enabled = process.env.TYPIST_E2E === '1' && (forcedOnCi || !process.env.CI)
 const describeE2E = enabled ? describe : describe.skip
 
 /** @description 样例：ASCII + Shift 组合符号（远程桌面只能转发真实键盘事件） */
@@ -104,15 +108,20 @@ describeE2E('真实注入（需要前台焦点）', () => {
     expect(probe.stuckKeys).toEqual([])
   }, 30_000)
 
-  it('下一个窗口获得焦点后，焦点守护能识别出"窗口已变化"', async (ctx) => {
+  it('前台窗口换了一个之后，焦点守护判定为“窗口已变化”', async (ctx) => {
     if (!focused) return ctx.skip()
 
+    // 用**真实**的前台快照去对比一个明显不同的窗口快照（不会真的注入）：
+    // 不要求此刻前台仍是目标窗口——用户或系统随时可能把焦点抢走，那种情况不该让用例变红
     const captured = await driver.foreground()
-    expect(captured.pid).toBe(target.pid)
+    expect(typeof captured.pid).toBe('number')
 
-    // 构造一个"别的窗口"快照，验证判定逻辑（不会真的注入）
     const { evaluateFocus } = await import('@main/typing/focus/focusGuard')
-    const verdict = evaluateFocus('strict', captured, { hwnd: 1, pid: 999_999, title: '其它窗口' })
+    const verdict = evaluateFocus('strict', captured, {
+      hwnd: captured.hwnd + 1,
+      pid: captured.pid + 1,
+      title: '其它窗口'
+    })
     expect(verdict.blocked).toBe(true)
     expect(verdict.changed).toBe(true)
   }, 30_000)

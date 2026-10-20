@@ -37,7 +37,8 @@ jobs:
 
       - name: System tests
         # 默认层：校验宿主脚本语法/编码，并以 -DryRun 真实启动宿主（不产生真实按键）。
-        # 真实注入层需要 TYPIST_E2E=1 且能取得前台窗口，CI 上不开启。
+        # 真实注入层在托管 runner 上会自动跳过：那里拿得到前台窗口，但注入的按键到不了
+        # 目标窗口（没有可用的交互式输入桌面），只会得到一条假红；需要时设 TYPIST_E2E_CI=1 强制开启。
         run: pnpm test:system
 
       - name: Build
