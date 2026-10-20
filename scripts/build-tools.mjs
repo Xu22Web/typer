@@ -2,7 +2,7 @@
 // 并生成同目录的启动脚本 tools/run.bat。
 // 目标机（用户要"把文件从本机传到另一台机器"）通常没有 npm / 没有构建环境，因此产物必须：
 //   · 单文件自包含（除 node: 内置模块外不引入任何第三方依赖）；
-//   · 兼容 Node 16（很多老机器只有 Node 16），所以构建后要自检有没有用到更高版本才有的 API；
+//   · 兼容 Node 14（目标机常见的仍是 Node 14 / 16），所以构建后要自检有没有用到更高版本才有的语法与 API；
 //   · 能直接 `node typer-recv.mjs` 跑（ESM，靠 .mjs 扩展名让 Node 按模块解析）；
 //   · **整份只有一行、且不含任何注释**：这份产物会被 Typer 逐字符打进目标机的编辑器再保存，
 //     单行省掉每行的回车（个别场合还能整段粘进单行输入框），注释则纯属白打的字符
@@ -35,15 +35,21 @@ const LINE_BREAK_ESCAPE = new Map([
 ])
 
 /**
- * Node 16 上不存在或易踩的 API：产物里出现即说明兼容性被破坏。
+ * Node 14 上不存在、或版本比 Node 14 新太多的语法与 API：产物里出现即说明兼容性被破坏。
  * 用字符串匹配是因为产物是打包后的单行文件，脚本里拿不到 AST。
+ *
+ * `node:` 前缀也在这里：esbuild 在 target < node14.18 时会自动去掉它，这条用来守住它别悄悄又回来。
  */
 const FORBIDDEN_APIS = [
   'structuredClone',
   '.at(',
   'findLast',
   'Object.hasOwn',
-  'AbortSignal.timeout'
+  'AbortSignal.timeout',
+  'replaceAll',
+  'base64url',
+  'stream/promises',
+  'node:'
 ]
 
 /**
@@ -61,11 +67,33 @@ const RUN_BAT = [
   'exit /b %errorlevel%',
   '',
   ':no_node',
-  'echo Node.js not found on PATH. Install Node 16 or newer, then run this file again.',
+  'echo Node.js not found on PATH. Install Node 14 or newer, then run this file again.',
   'pause',
   'exit /b 1',
   ''
 ].join('\r\n')
+
+/**
+ * Node 14 兼容：只靠 esbuild 的原生能力，不写自定义插件。
+ *
+ *   · 语法降级 —— `target: 'node14'`：`??=` / `?.` 等由 esbuild 自己换成 Node 14 能解析的写法；
+ *   · `node:` 前缀 —— esbuild 在 bundle + target < node14.18 时自动去掉（`'fs'` 与 `'node:fs'` 是同一个内置模块）；
+ *   · `node:stream/promises` —— esbuild 不知道它是 Node 15 才加的模块，所以用原生 `alias` 指到垫片文件
+ *     （scripts/node14/stream-promises.mjs，用 Node 14 也有的回调式 pipeline 包一层 Promise）。
+ *
+ * 查过现成插件：esbuild-plugins-node-modules-polyfill / vite-plugin-node-polyfills / node-stdlib-browser
+ * 一类都是「给浏览器补 Node 内置模块」，没有哪个插件做「把新版 Node 的内置模块 / 宿主 API 降级到旧版 Node」
+ * ——那是运行时能力，core-js 一类 polyfill 也不覆盖（只管 ECMAScript 内置对象，不管 fs/stream/Buffer 编码）。
+ * 所以 `Buffer` 的 `base64url`（14.18+）、`fs.rmSync`（14.14+）这类差异只能在源码里写兼容写法，
+ * 由 FORBIDDEN_APIS 兜住它们再次出现。
+ */
+const STREAM_PROMISES_SHIM = join(root, 'scripts', 'node14', 'stream-promises.mjs')
+
+/** 源码里带不带 `node:` 前缀都可能出现，都映射到同一个垫片。 */
+const NODE14_ALIAS = {
+  'node:stream/promises': STREAM_PROMISES_SHIM,
+  'stream/promises': STREAM_PROMISES_SHIM
+}
 
 /**
  * @description 在文本里找出所有命中片段，返回 "第 N 行 / 偏移 M" 形式的位置描述
@@ -116,7 +144,7 @@ function toSingleLine(code) {
 async function canonical(code) {
   const result = await esbuild.transform(code, {
     loader: 'js',
-    target: 'node16',
+    target: 'node14',
     minifyWhitespace: true,
     minifySyntax: true,
     minifyIdentifiers: false,
@@ -134,7 +162,7 @@ async function canonical(code) {
 async function safeSingleLine(code) {
   const result = await esbuild.transform(code, {
     loader: 'js',
-    target: 'node16',
+    target: 'node14',
     minify: true,
     legalComments: 'none',
     supported: { 'template-literal': false }
@@ -169,14 +197,18 @@ async function bundle() {
     bundle: true,
     platform: 'node',
     format: 'esm',
-    target: 'node16',
+    target: 'node14',
     // 压缩：产物要作为文本打进目标终端，体积就是输入耗时。
     // 注释也由 minify 一并去掉（legalComments: none 连许可证注释都不留）
     minify: true,
     sourcemap: false,
     legalComments: 'none',
+    // Node 14 只差一个 Node 15 才有的内置模块：用原生 alias 换成垫片（见 NODE14_ALIAS）
+    alias: NODE14_ALIAS,
     write: false
   })
+  // `node:` 前缀由 esbuild 按 target 自动去掉，`node:stream/promises` 已由 alias 换掉，
+  // 这里拿到的就是能直接跑在 Node 14 上的产物。
   const raw = built.outputFiles[0].text
 
   try {
@@ -217,7 +249,7 @@ async function main() {
 
   for (const api of FORBIDDEN_APIS) {
     if (output.includes(api)) {
-      problems.push([`产物里出现了 Node 16 不可用 / 易踩的 API：${api}`, locate(output, api)])
+      problems.push([`产物里出现了 Node 14 不兼容的 API / 语法：${api}`, locate(output, api)])
     }
   }
 
