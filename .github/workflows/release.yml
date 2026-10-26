@@ -51,15 +51,36 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           $tag = if ('${{ github.ref_type }}' -eq 'tag') { '${{ github.ref_name }}' } else { "v$((Get-Content package.json | ConvertFrom-Json).version)" }
+
           # tools/ 下的接收端产物（脚本 + run.bat）也作为资产发布：目标机往往只有 Node 而没有仓库，
           # 直接下载这几个文件最省事（应用内也能「导出脚本 / 插入接收脚本到文本输入」，两条路都留）
-          $files = @(Get-ChildItem dist/*.exe).FullName +
-                   @(Get-ChildItem dist/SHA256SUMS.txt).FullName +
-                   @(Get-ChildItem tools/*.mjs).FullName +
-                   @(Get-ChildItem tools/run.bat).FullName +
-                   @(Get-ChildItem tools/README.md).FullName
-          if (gh release view $tag 2>$null) {
+          # 先确认资产齐全，缺东西就早失败，别发布一个没有安装包的 Release。
+          if (@(Get-ChildItem -Path dist -Filter *.exe).Count -eq 0) { throw 'dist/ 下没有 .exe 安装包' }
+          if (@(Get-ChildItem -Path tools -Filter *.mjs).Count -eq 0) { throw 'tools/ 下没有接收端脚本' }
+          foreach ($required in @('dist/SHA256SUMS.txt', 'tools/run.bat', 'tools/README.md')) {
+            if (-not (Test-Path -LiteralPath $required)) { throw "缺少待发布资产：$required" }
+          }
+
+          # 坑（run 39717285491）：不要写成 @(Get-ChildItem ...).FullName + @(...).FullName。
+          # 只有一个 .exe 时 @(...).FullName 会退化成 [string]，后面的 + 就变成字符串拼接，
+          # 于是几个路径被粘成一条不存在的路径（gh 报 no matches found for D:\a\...exeD:\a\...txt）。
+          # 用管道收集，无论几个文件都得到「路径数组」。
+          $files = @(
+            Get-ChildItem -Path dist -Filter *.exe
+            Get-Item -LiteralPath 'dist/SHA256SUMS.txt'
+            Get-ChildItem -Path tools -Filter *.mjs
+            Get-Item -LiteralPath 'tools/run.bat'
+            Get-Item -LiteralPath 'tools/README.md'
+          ) | ForEach-Object { $_.FullName }
+
+          Write-Host '待发布资产：'
+          $files | ForEach-Object { Write-Host "  $_" }
+
+          # 已存在同名 Release（补发 / 重跑）就覆盖上传，否则新建。
+          $null = gh release view $tag 2>$null
+          if ($LASTEXITCODE -eq 0) {
             gh release upload $tag $files --clobber
           } else {
             gh release create $tag $files --title $tag --generate-notes
           }
+          if ($LASTEXITCODE -ne 0) { throw "gh release 失败（exit code $LASTEXITCODE）" }
