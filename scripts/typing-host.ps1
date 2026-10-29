@@ -728,6 +728,175 @@ public static class TyperHostPipe
         catch (InvalidOperationException) { return null; }
     }
 }
+
+/// 目标窗口线程的键盘布局 / 输入法状态。
+///
+/// 注入的是**真实按键**，按键先经过前台窗口所在线程的键盘布局与输入法：目标程序开着
+/// 中文输入法时，字母键会被吃成候选上屏，注入的字符要么丢失、要么变成别的字。
+/// 所以输入前先把布局切到英语(美国)、把输入法关到英数直输。
+public static class TyperIme
+{
+    private const int WM_INPUTLANGCHANGEREQUEST = 0x0050;
+    private const uint KLF_NOTELLSHELL = 0x00000080;
+    private const uint IME_CMODE_NATIVE = 0x0001;
+    private const uint IME_CMODE_ALPHANUMERIC = 0x0000;
+
+    [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint pid);
+    [DllImport("user32.dll")] private static extern IntPtr GetKeyboardLayout(uint threadId);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern IntPtr LoadKeyboardLayoutW(string klid, uint flags);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern bool PostMessageW(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("imm32.dll")] private static extern IntPtr ImmGetContext(IntPtr hwnd);
+    [DllImport("imm32.dll")] private static extern bool ImmReleaseContext(IntPtr hwnd, IntPtr himc);
+    [DllImport("imm32.dll")] private static extern bool ImmGetConversionStatus(IntPtr himc, out uint conversion, out uint sentence);
+    [DllImport("imm32.dll")] private static extern bool ImmSetConversionStatus(IntPtr himc, uint conversion, uint sentence);
+    [DllImport("imm32.dll")] private static extern bool ImmGetOpenStatus(IntPtr himc);
+    [DllImport("imm32.dll")] private static extern bool ImmSetOpenStatus(IntPtr himc, bool open);
+
+    public sealed class State
+    {
+        public uint layoutId { get; set; }
+        public string layoutName { get; set; }
+        public bool english { get; set; }
+        public bool cjk { get; set; }
+        public bool imeOpen { get; set; }
+        public bool nativeMode { get; set; }
+    }
+
+    public sealed class Result
+    {
+        public State before { get; set; }
+        public State after { get; set; }
+        public bool switched { get; set; }
+        public bool ok { get; set; }
+        public string note { get; set; }
+    }
+
+    /// 读取状态；ensure 为 true 时顺带把目标窗口切到英文直输
+    public static Result EnsureEnglish(bool ensure)
+    {
+        Result result = new Result();
+        result.before = Capture();
+        bool switched = false;
+        string note = null;
+
+        if (ensure)
+        {
+            try
+            {
+                IntPtr hwnd = GetForegroundWindow();
+                if (hwnd == IntPtr.Zero)
+                {
+                    note = "拿不到前台窗口";
+                }
+                else
+                {
+                    // 只在“真的会把按键变成候选上屏”时才动布局：
+                    //   · 中日韩布局（带 IME 的体系）
+                    //   · 输入法当前开着 / 处于本地语言模式
+                    // 德语、法语这类非英文拉丁布局不动：用户可能就靠它映射符号
+                    if (!result.before.english &&
+                        (result.before.cjk || result.before.imeOpen || result.before.nativeMode))
+                    {
+                        IntPtr hkl = LoadKeyboardLayoutW("00000409", KLF_NOTELLSHELL);
+                        if (hkl == IntPtr.Zero)
+                        {
+                            note = "加载英文(美国)布局失败";
+                        }
+                        else
+                        {
+                            // 布局是“线程”级的：ActivateKeyboardLayout 只改本进程，
+                            // 必须把切换请求投递给目标窗口，由它自己处理
+                            PostMessageW(hwnd, WM_INPUTLANGCHANGEREQUEST, IntPtr.Zero, hkl);
+                            switched = true;
+                            Thread.Sleep(60);
+                        }
+                    }
+
+                    IntPtr himc = ImmGetContext(hwnd);
+                    if (himc != IntPtr.Zero)
+                    {
+                        try
+                        {
+                            uint conversion;
+                            uint sentence;
+                            if (ImmGetConversionStatus(himc, out conversion, out sentence))
+                            {
+                                if ((conversion & IME_CMODE_NATIVE) != 0)
+                                {
+                                    ImmSetConversionStatus(himc, IME_CMODE_ALPHANUMERIC, sentence);
+                                    switched = true;
+                                }
+                            }
+                            if (ImmGetOpenStatus(himc))
+                            {
+                                ImmSetOpenStatus(himc, false);
+                                switched = true;
+                            }
+                        }
+                        finally
+                        {
+                            ImmReleaseContext(hwnd, himc);
+                        }
+                    }
+                }
+            }
+            catch (Exception error)
+            {
+                note = error.Message;
+            }
+        }
+
+        result.after = Capture();
+        result.switched = switched;
+        // “可以直接注入”的判据是“输入法没在合成”，而不是“布局必须英文”：
+        // 非 IME 的拉丁布局（德语、法语…）只是符号位置不同，由键盘布局设置负责
+        result.ok = !result.after.nativeMode && !result.after.imeOpen;
+        result.note = note;
+        return result;
+    }
+
+    private static State Capture()
+    {
+        State state = new State();
+        IntPtr hwnd = GetForegroundWindow();
+        uint pid;
+        uint thread = GetWindowThreadProcessId(hwnd, out pid);
+        IntPtr hkl = GetKeyboardLayout(thread);
+        state.layoutId = (uint)(hkl.ToInt64() & 0xFFFF);
+        state.layoutName = state.layoutId.ToString("x8");
+        // LANGID 低 10 位是主语言 ID：0x09 = 英语（含英/美/澳等子语言）
+        state.english = (state.layoutId & 0x3FF) == 0x0009;
+        uint primary = state.layoutId & 0x3FF;
+        state.cjk = primary == 0x0004 || primary == 0x0011 || primary == 0x0012;
+        state.imeOpen = false;
+        state.nativeMode = false;
+
+        if (hwnd != IntPtr.Zero)
+        {
+            IntPtr himc = ImmGetContext(hwnd);
+            if (himc != IntPtr.Zero)
+            {
+                try
+                {
+                    state.imeOpen = ImmGetOpenStatus(himc);
+                    uint conversion;
+                    uint sentence;
+                    if (ImmGetConversionStatus(himc, out conversion, out sentence))
+                    {
+                        state.nativeMode = (conversion & IME_CMODE_NATIVE) != 0;
+                    }
+                }
+                finally
+                {
+                    ImmReleaseContext(hwnd, himc);
+                }
+            }
+        }
+        return state;
+    }
+}
 '@
 
 $compileError = $null
@@ -943,6 +1112,13 @@ while ($true) {
             'releaseAll' {
                 $released = Invoke-ReleaseAll -IsDryRun ([bool]$DryRun)
                 Send-Ok -Id $id -Data @{ released = $released }
+            }
+
+            'ime' {
+                # 只在真注入时动输入法状态：dry-run 是自检/测试，不应改变系统
+                $ensure = (-not $DryRun) -and ($request.ensureEnglish -eq $true)
+                $ime = [TyperIme]::EnsureEnglish([bool]$ensure)
+                Send-Ok -Id $id -Data $ime
             }
 
             'foreground' {

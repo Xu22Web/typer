@@ -1,5 +1,12 @@
 import type { KeyboardDriver, SendOptions } from './KeyboardDriver'
-import type { HostForegroundData, HostItem, HostProbeData, HostTypeData } from './protocol'
+import type {
+  HostForegroundData,
+  HostImeData,
+  HostImeSnapshot,
+  HostItem,
+  HostProbeData,
+  HostTypeData
+} from './protocol'
 
 export interface MockDriverOptions {
   /** 反查前台窗口时返回的固定值。 */
@@ -14,6 +21,10 @@ export interface MockDriverOptions {
   stuckKeys?: number[]
   /** 每批动作后的回调（用于在测试里推进时间/状态）。 */
   onSend?: (items: HostItem[], index: number) => void
+  /** ime() 报告的状态（默认：英文布局、输入法关闭，即可以直接注入）。 */
+  imeState?: HostImeSnapshot
+  /** ime() 的完整返回（优先级高于 imeState，用来模拟“切换前后不同”）。 */
+  imeResult?: HostImeData
 }
 
 /**
@@ -34,6 +45,8 @@ export class MockKeyboardDriver implements KeyboardDriver {
   cancelCalls = 0
   /** foreground() 被调用的次数：用于断言"焦点查询已搭车、没有额外往返" */
   foregroundCalls = 0
+  /** ime() 的调用参数：用于断言"输入前确实检查过输入法" */
+  readonly imeCalls: Array<{ ensureEnglish?: boolean }> = []
   disposed = false
   private readonly options: MockDriverOptions
 
@@ -96,6 +109,31 @@ export class MockKeyboardDriver implements KeyboardDriver {
     this.foregroundCalls += 1
     const queued = this.options.foregroundQueue?.shift()
     return queued ?? this.options.foreground ?? { hwnd: 1, pid: 100, title: 'mock-window' }
+  }
+
+  /**
+   * @description 报告输入法状态；默认是“英文布局 + 输入法关闭”的就绪状态
+   * @param options ensureEnglish 表示调用方希望切到英文直输
+   * @returns 切换前后的状态
+   */
+  async ime(options: { ensureEnglish?: boolean } = {}): Promise<HostImeData> {
+    if (this.options.failing) throw new Error('mock driver: ime failed')
+    this.imeCalls.push({ ...options })
+    if (this.options.imeResult) return this.options.imeResult
+    const state: HostImeSnapshot = this.options.imeState ?? {
+      layoutId: 0x0409,
+      layoutName: '00000409',
+      english: true,
+      cjk: false,
+      imeOpen: false,
+      nativeMode: false
+    }
+    return {
+      before: state,
+      after: state,
+      switched: false,
+      ok: !state.nativeMode && !state.imeOpen
+    }
   }
 
   /**

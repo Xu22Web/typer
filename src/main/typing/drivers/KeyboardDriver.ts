@@ -1,4 +1,10 @@
-import type { HostForegroundData, HostItem, HostProbeData, HostTypeData } from './protocol'
+import type {
+  HostForegroundData,
+  HostImeData,
+  HostItem,
+  HostProbeData,
+  HostTypeData
+} from './protocol'
 
 /** 下发动作的可选行为。 */
 export interface SendOptions {
@@ -40,10 +46,17 @@ export interface KeyboardDriver {
   releaseAll(): Promise<void>
   /** 读取当前前台窗口信息（焦点守护用） */
   foreground(): Promise<HostForegroundData>
+  /**
+   * 读取/切换目标窗口的键盘布局与输入法状态（可选能力）。
+   *
+   * 注入的是真实按键，按键先经过目标窗口线程的输入法：开着中文输入法时字母键会被吃成候选上屏。
+   * 不实现这个方法的驱动表示“这条链路没有输入法概念”（例如测试用 Mock）。
+   */
+  ime?(options?: { ensureEnglish?: boolean }): Promise<HostImeData>
   /** 探测是否仍有按键处于按下状态（abort 后自检） */
   probe(): Promise<HostProbeData>
   /** 关闭宿主并释放资源 */
   dispose(): Promise<void>
 }
 
-export type { HostForegroundData, HostItem, HostProbeData, HostTypeData }
+export type { HostForegroundData, HostImeData, HostItem, HostProbeData, HostTypeData }

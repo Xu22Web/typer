@@ -66,6 +66,13 @@ export interface Settings {
   }
   keyboard: {
     layout: LayoutId
+    /**
+     * 输入前把目标窗口切到英文直输（默认开）。
+     *
+     * 注入的是真实按键，按键先经过目标窗口线程的输入法：中文输入法开着时字母键会被
+     * 吃成候选上屏，注入内容会丢失或变形。关掉后需要用户自己先切英文。
+     */
+    ensureEnglish: boolean
   }
   focusGuard: FocusGuardMode
   hotkeys: {

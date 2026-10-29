@@ -655,6 +655,17 @@ async function restoreDefaults(): Promise<void> {
                 <ElOption label="Español" value="es" />
               </ElSelect>
             </div>
+
+            <div class="row">
+              <div class="label">
+                <div>输入前切到英文直输</div>
+                <div class="hint">
+                  目标窗口开着中文输入法时，注入的字母键会被吃成候选上屏。开启后每次开始前会检查
+                  布局与输入法状态，必要时切到英文（US）并关掉输入法。
+                </div>
+              </div>
+              <ElSwitch v-model="draft.keyboard.ensureEnglish" />
+            </div>
           </section>
 
           <section id="g-import" class="card group">

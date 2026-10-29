@@ -70,7 +70,9 @@ export const DEFAULT_SETTINGS: Settings = {
     correction: 'auto'
   },
   keyboard: {
-    layout: 'us'
+    layout: 'us',
+    // 中文输入法会把注入的字母键吃成候选上屏：默认输入前自动切到英文直输
+    ensureEnglish: true
   },
   focusGuard: 'warn',
   hotkeys: {
@@ -380,7 +382,8 @@ export function normalizeSettings(raw: unknown): Settings {
       correction: readEnum(typo, 'correction', TYPO_CORRECTIONS, DEFAULT_SETTINGS.typo.correction)
     },
     keyboard: {
-      layout
+      layout,
+      ensureEnglish: readBool(keyboard, 'ensureEnglish', DEFAULT_SETTINGS.keyboard.ensureEnglish)
     },
     focusGuard: readEnum(root, 'focusGuard', FOCUS_MODES, DEFAULT_SETTINGS.focusGuard),
     hotkeys: {
@@ -497,6 +500,7 @@ export function toEngineSettings(settings: Settings): EngineSettings {
     startDelayMs: settings.startDelayMs,
     chunkSize: settings.chunkSize,
     layout: settings.keyboard.layout,
+    ensureEnglishIme: settings.keyboard.ensureEnglish,
     focusGuard: settings.focusGuard,
     seed: settings.seed,
     verifyStuckKeys: settings.verifyStuckKeys,

@@ -6,6 +6,7 @@ import {
   expectedEventCount,
   ProtocolError,
   type HostForegroundData,
+  type HostImeData,
   type HostItem,
   type HostPingData,
   type HostProbeData,
@@ -120,13 +121,25 @@ export class WindowsSendInputDriver implements KeyboardDriver {
     const totalDelay = batch.delays.reduce((sum, ms) => sum + Math.max(0, ms), 0)
     const events = expectedEventCount(items)
     const base = this.options.requestTimeoutMs ?? 15_000
+    const budget = base + totalDelay + events * PER_EVENT_BUDGET_MS + 5_000
 
-    const data = await this.client.request<unknown>(
-      'type',
-      batch,
-      base + totalDelay + events * PER_EVENT_BUDGET_MS + 5_000
-    )
-    return assertInjectionResult(data, events)
+    try {
+      const data = await this.client.request<unknown>('type', batch, budget)
+      return assertInjectionResult(data, events)
+    } catch (error) {
+      // 超时是唯一“看不出原因”的失败：宿主只有把整批打完才会回话，所以超时只说明
+      // “目标端没把这一批消化完”。把批次体量与等待上限一并抛出来，才能判断到底是
+      // 目标卡住（终端/编辑器忙、弹出模态框、远程桌面断流）还是配置给得太慢。
+      if (error instanceof ProtocolError && error.code === 'E_TIMEOUT') {
+        throw new ProtocolError(
+          'E_TIMEOUT',
+          `${error.message}：本批 ${items.length} 个动作（${events} 个输入事件），` +
+            `计划等待 ${Math.round(totalDelay)}ms，等待上限 ${Math.round(budget)}ms`,
+          '宿主在一批动作全部打完之前不会回话：超时说明目标窗口没有在消化输入'
+        )
+      }
+      throw error
+    }
   }
 
   /** @description 释放所有修饰键并等待宿主确认 */
@@ -149,6 +162,20 @@ export class WindowsSendInputDriver implements KeyboardDriver {
    */
   async foreground(): Promise<HostForegroundData> {
     return this.client.request<HostForegroundData>('foreground')
+  }
+
+  /**
+   * @description 读取/切换目标窗口的键盘布局与输入法状态
+   * @param options ensureEnglish 为 true 时尝试切到英文直输（切 US 布局 + 关掉中文输入法）
+   * @returns 切换前后的状态（及是否已处于英文直输）
+   */
+  async ime(options: { ensureEnglish?: boolean } = {}): Promise<HostImeData> {
+    return this.client.request<HostImeData>(
+      'ime',
+      { ensureEnglish: options.ensureEnglish === true },
+      // 切换包含一次“投递消息 + 等目标线程处理”的短暂等待，5s 足够
+      5_000
+    )
   }
 
   /**

@@ -146,6 +146,39 @@ export interface HostProbeData {
   stuckKeys: number[]
 }
 
+/**
+ * 目标窗口所在线程的键盘布局与输入法状态。
+ *
+ * 为什么要在输入前看这个：注入的是**真实按键**，按键先经过前台窗口线程的键盘布局与输入法。
+ * 目标程序开着中文输入法时，字母键会被吃成候选上屏，注入的字符要么丢失、要么变成别的字。
+ */
+export interface HostImeSnapshot {
+  /** 该线程键盘布局的语言 ID（低 16 位；0x0409 = 英语(美国)） */
+  layoutId: number
+  /** 布局标识（形如 00000409），取不到时为空串 */
+  layoutName: string
+  /** 是否为英语系布局（主语言 ID = 0x09） */
+  english: boolean
+  /** 是否为中日韩布局（这类布局基本都挂着 IME，注入前要切走） */
+  cjk: boolean
+  /** 输入法是否处于开启状态 */
+  imeOpen: boolean
+  /** 输入法是否处于“本地语言”模式（中文/日文等，会把按键变成上屏） */
+  nativeMode: boolean
+}
+
+/** `ime` 指令的结果：切换前后的状态与是否已处于可直接注入的英文直输状态。 */
+export interface HostImeData {
+  before: HostImeSnapshot
+  after: HostImeSnapshot
+  /** 本轮是否真的执行了切换（切布局 / 关输入法 / 改英数模式） */
+  switched: boolean
+  /** 切换后是否已处于英文直输状态（布局英文 + 输入法未开 + 非本地语言模式） */
+  ok: boolean
+  /** 失败原因或补充说明 */
+  note?: string
+}
+
 /** 宿主通信协议错误：`code` 决定面向用户的说明（见 ERROR_MESSAGES）。 */
 export class ProtocolError extends Error {
   readonly code: string
@@ -173,6 +206,7 @@ export const ERROR_MESSAGES: Readonly<Record<string, string>> = {
     '系统拒绝了按键注入：通常是目标窗口以管理员权限运行（UIPI 限制），或被杀毒软件拦截',
   E_NO_FOREGROUND: '无法获取前台窗口信息',
   E_TIMEOUT: '输入宿主响应超时',
+  E_IME_FAILED: '无法切换输入法/键盘布局（可以手动切到英文后再开始）',
   E_HOST_EXIT: '输入宿主进程意外退出',
   E_NOT_STARTED: '输入宿主尚未启动',
   E_UNSUPPORTED_PLATFORM: '当前系统不受支持：本程序仅支持 Windows'

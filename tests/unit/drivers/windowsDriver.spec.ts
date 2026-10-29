@@ -49,6 +49,29 @@ function standardResponder(request: Record<string, unknown>): AutoRespondOutcome
       return { data: { released: 11 } }
     case 'foreground':
       return { data: { hwnd: 55, pid: 77, title: '目标窗口' } }
+    case 'ime':
+      return {
+        data: {
+          before: {
+            layoutId: 0x0804,
+            layoutName: '00000804',
+            english: false,
+            cjk: true,
+            imeOpen: true,
+            nativeMode: true
+          },
+          after: {
+            layoutId: 0x0409,
+            layoutName: '00000409',
+            english: true,
+            cjk: false,
+            imeOpen: false,
+            nativeMode: false
+          },
+          switched: true,
+          ok: true
+        }
+      }
     case 'probe':
       return { data: { stuckKeys: [] } }
     case 'shutdown':
@@ -229,6 +252,55 @@ describe('WindowsSendInputDriver 注入', () => {
     await h.driver.start()
     h.driver.cancel()
     expect(h.requests().some((request) => request.cmd === 'cancel')).toBe(true)
+  })
+
+  it('ime 指令把 ensureEnglish 透传给宿主，并原样交回切换结果', async () => {
+    const h = createHarness()
+    await h.driver.start()
+
+    const result = await h.driver.ime({ ensureEnglish: true })
+    const request = h.requests().find((item) => item.cmd === 'ime')
+    expect(request).toMatchObject({ cmd: 'ime', ensureEnglish: true })
+    expect(result.switched).toBe(true)
+    expect(result.after.english).toBe(true)
+  })
+
+  it('不传 ensureEnglish 时明确发 false（只查询，不动系统输入法）', async () => {
+    const h = createHarness()
+    await h.driver.start()
+    await h.driver.ime()
+    const request = h.requests().find((item) => item.cmd === 'ime')
+    expect(request).toMatchObject({ cmd: 'ime', ensureEnglish: false })
+  })
+
+  it('type 超时把批次体量与等待上限一并报出来（便于判断是不是目标端没消化）', async () => {
+    vi.useFakeTimers()
+    try {
+      const h = createHarness({
+        requestTimeoutMs: 20,
+        // 不回应：让请求一直挂着，直到驱动自己判定超时
+        override: (request) =>
+          request.cmd === 'type'
+            ? { data: { requested: 2, injected: 2 }, delayMs: 60_000 }
+            : undefined
+      })
+      await h.driver.start()
+
+      // 先挂上 catch，避免超时那一刻的拒约被当成未处理异常
+      const pending = h.driver
+        .send([{ t: 'key', vk: 0x41, mods: [], delay: 30 }])
+        .catch((error: unknown) => error)
+      await vi.advanceTimersByTimeAsync(10_000)
+
+      const error = (await pending) as ProtocolError
+      expect(error.code).toBe('E_TIMEOUT')
+      expect(error.message).toContain('本批 1 个动作')
+      expect(error.message).toContain('2 个输入事件')
+      expect(error.message).toContain('计划等待 30ms')
+      expect(error.detail).toContain('目标窗口没有在消化输入')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('被中止打断的批次（cancelled）不算注入不足', async () => {

@@ -195,6 +195,8 @@ describe('toEngineSettings', () => {
       startDelayMs: 1234,
       chunkSize: 5,
       layout: 'de',
+      // 默认开启：输入前由宿主把目标窗口切到英文直输
+      ensureEnglishIme: true,
       focusGuard: 'strict',
       seed: 99,
       verifyStuckKeys: settings.verifyStuckKeys,
@@ -306,5 +308,23 @@ describe('toEngineSettings', () => {
       y: 0,
       finishBehavior: 'manual'
     })
+  })
+
+  it('输入前切英文直输：默认开启、非法值回退默认、并透传给引擎', () => {
+    expect(DEFAULT_SETTINGS.keyboard.ensureEnglish).toBe(true)
+    expect(normalizeSettings({}).keyboard.ensureEnglish).toBe(true)
+    expect(normalizeSettings({ keyboard: { ensureEnglish: false } }).keyboard.ensureEnglish).toBe(
+      false
+    )
+    // 类型不对时回退默认（而不是把字符串当真值）
+    expect(normalizeSettings({ keyboard: { ensureEnglish: 'yes' } }).keyboard.ensureEnglish).toBe(
+      true
+    )
+
+    expect(toEngineSettings(DEFAULT_SETTINGS).ensureEnglishIme).toBe(true)
+    const off = mergeSettings(DEFAULT_SETTINGS, { keyboard: { ensureEnglish: false } })
+    expect(toEngineSettings(off).ensureEnglishIme).toBe(false)
+    // 只改这一项时，布局设置不能被顺手重置
+    expect(off.keyboard.layout).toBe(DEFAULT_SETTINGS.keyboard.layout)
   })
 })

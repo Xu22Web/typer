@@ -215,6 +215,24 @@ describe.skipIf(process.platform !== 'win32')('宿主 dry-run 真实启动', () 
     expect(typeof foreground.title).toBe('string')
   })
 
+  it('ime 返回目标窗口的布局与输入法状态；dry-run 下绝不改动系统输入法', async () => {
+    expect(session).not.toBeNull()
+    const ime = await session!.request<{
+      before: { layoutId: number; layoutName: string; english: boolean; cjk: boolean }
+      after: { layoutId: number; layoutName: string; english: boolean; cjk: boolean }
+      switched: boolean
+      ok: boolean
+    }>('ime', { ensureEnglish: true })
+
+    // 布局标识是 8 位十六进制 KLID（如 00000409 = 英语(美国)）
+    expect(ime.before.layoutName).toMatch(/^[0-9a-f]{8}$/)
+    expect(typeof ime.before.english).toBe('boolean')
+    expect(typeof ime.before.cjk).toBe('boolean')
+    // 自检用 -DryRun 启动：即使请求里要求切英文，也必须原样返回、一次都不切
+    expect(ime.switched).toBe(false)
+    expect(ime.after.layoutId).toBe(ime.before.layoutId)
+  })
+
   it('未知指令返回可读错误而不是崩溃', async () => {
     expect(session).not.toBeNull()
     await expect(session!.request('这不存在')).rejects.toThrow(/E_UNKNOWN_CMD|未知指令/)

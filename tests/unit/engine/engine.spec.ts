@@ -4,7 +4,7 @@ import { LAYOUTS } from '@main/typing/planner/keymap'
 import { TypingEngine, type EngineSettings } from '@main/typing/engine/TypingEngine'
 import type { ProgressSnapshot } from '@main/typing/engine/progress'
 import type { EngineSnapshot, EngineState } from '@main/typing/engine/states'
-import type { HostItem } from '@main/typing/drivers/protocol'
+import { ProtocolError, type HostItem, type HostImeSnapshot } from '@main/typing/drivers/protocol'
 import type { TimingSettings } from '@main/typing/scheduling/timing'
 import { createVirtualClock, type VirtualClock } from '../../helpers/virtualClock'
 
@@ -551,5 +551,99 @@ describe('修饰键时序与最小间隔', () => {
     ])
     // 换行必须是 Shift+Enter（在表单里 Enter 会直接提交）
     expect(h.driver.items[1]).toMatchObject({ t: 'key', vk: 0x0d, mods: ['shift'] })
+  })
+})
+
+describe('输入法检查与超时诊断', () => {
+  it('开始前会要求宿主把输入法切到英文直输', async () => {
+    const h = createHarness()
+    const result = await h.engine.start('a', engineSettings())
+
+    expect(result.state).toBe('completed')
+    expect(h.driver.imeCalls).toEqual([{ ensureEnglish: true }])
+    // 已经是英文直输状态时不该刷警告
+    expect(h.logs.some((line) => line.includes('输入法'))).toBe(false)
+  })
+
+  it('设置里关掉后完全不去碰输入法', async () => {
+    const h = createHarness()
+    await h.engine.start('a', engineSettings({ ensureEnglishIme: false }))
+
+    expect(h.driver.imeCalls).toHaveLength(0)
+  })
+
+  it('真的切换过输入法时，把切换前后的布局写进日志', async () => {
+    const before: HostImeSnapshot = {
+      layoutId: 0x0804,
+      layoutName: '00000804',
+      english: false,
+      cjk: true,
+      imeOpen: false,
+      nativeMode: false
+    }
+    const after: HostImeSnapshot = {
+      layoutId: 0x0409,
+      layoutName: '00000409',
+      english: true,
+      cjk: false,
+      imeOpen: false,
+      nativeMode: false
+    }
+    const driver = new MockKeyboardDriver({
+      imeResult: { before, after, switched: true, ok: true }
+    })
+    const h = createHarness({ driver })
+    await h.engine.start('a', engineSettings())
+
+    const text = h.logs.join('\n')
+    expect(text).toContain('已切到英文直输')
+    expect(text).toContain('00000804')
+    expect(text).toContain('00000409')
+  })
+
+  it('输入法仍在合成状态时提醒用户自己切英文，但不阻断输入', async () => {
+    const state: HostImeSnapshot = {
+      layoutId: 0x0804,
+      layoutName: '00000804',
+      english: false,
+      cjk: true,
+      imeOpen: true,
+      nativeMode: true
+    }
+    const driver = new MockKeyboardDriver({
+      imeResult: { before: state, after: state, switched: false, ok: false }
+    })
+    const h = createHarness({ driver })
+    const result = await h.engine.start('a', engineSettings())
+
+    expect(result.state).toBe('completed')
+    expect(h.logs.join('\n')).toContain('仍在合成状态')
+  })
+
+  it('输入法查询失败只提醒，不影响这次输入', async () => {
+    const driver = new MockKeyboardDriver()
+    driver.ime = async () => {
+      throw new Error('宿主不支持 ime')
+    }
+    const h = createHarness({ driver })
+    const result = await h.engine.start('a', engineSettings())
+
+    expect(result.state).toBe('completed')
+    expect(h.logs.join('\n')).toContain('无法检查/切换输入法')
+  })
+
+  it('宿主回复超时时，日志给出本批体量与可照着做的排查顺序', async () => {
+    const driver = new MockKeyboardDriver()
+    driver.send = async () => {
+      throw new ProtocolError('E_TIMEOUT', '等待宿主响应 type 超时（5000ms）')
+    }
+    const h = createHarness({ driver })
+    const result = await h.engine.start('abc', engineSettings())
+
+    expect(result.state).toBe('failed')
+    const text = h.logs.join('\n')
+    expect(text).toContain('输入超时')
+    expect(text).toContain('排查')
+    expect(text).toContain('输入法')
   })
 })

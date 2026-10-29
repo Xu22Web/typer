@@ -2,7 +2,15 @@ import { buildPlan, countTypedActions, iterateActions, type PlanOptions } from '
 import { describeSkipped } from '../planner/text'
 import type { LineStartMode, NewlineKey } from '../planner/types'
 import type { KeyboardDriver, SendOptions } from '../drivers/KeyboardDriver'
-import type { HostForegroundData, HostTypeData, ScheduledAction } from '../drivers/protocol'
+import { ProtocolError } from '../drivers/protocol'
+import type {
+  HostForegroundData,
+  HostImeData,
+  HostImeSnapshot,
+  HostItem,
+  HostTypeData,
+  ScheduledAction
+} from '../drivers/protocol'
 import { toHostItems } from '../drivers/protocol'
 import { createRng, resolveSeed, type Rng } from '../scheduling/rng'
 import {
@@ -81,6 +89,13 @@ export interface EngineSettings {
   newlineKey?: NewlineKey
   /** 换行后的行首处理（只作用于文本输入） */
   lineStart?: LineStartMode
+  /**
+   * 输入前是否把目标窗口切到英文直输（默认 true）。
+   *
+   * 注入的是真实按键，按键先经过目标窗口线程的输入法：中文输入法开着时字母键会被
+   * 吃成候选上屏，注入的内容要么丢失、要么变成别的字。
+   */
+  ensureEnglishIme?: boolean
   timing: TimingSettings
   typo: {
     rate: number
@@ -119,6 +134,12 @@ const COUNTDOWN_TICK_MS = 100
 /** 宿主因目标端消化不过来而额外等待超过这个时长（毫秒）时提醒一次 */
 const PRESSURE_WARN_MS = 300
 
+/** 单批注入超过这个时长还没回话，先提示用户“还在等”（毫秒） */
+const SEND_STALL_WARN_MS = 4_000
+
+/** 之后每隔多久再提示一次（毫秒） */
+const SEND_STALL_REPEAT_MS = 12_000
+
 /** 单批至少下发多少个动作（极速档按实测速率调整批次大小时的兜底） */
 const MIN_ACTIONS_PER_REQUEST = 32
 
@@ -145,6 +166,20 @@ function modifierSendOptions(settings: EngineSettings): SendOptions {
  */
 function effectiveMinDelayMs(profileFloorMs: number, userFloorMs: number | undefined): number {
   return Math.max(profileFloorMs, Math.max(0, userFloorMs ?? 0))
+}
+
+/**
+ * @description 把键盘布局 / 输入法快照描述成人话（只用于日志）
+ * @param state 目标窗口线程的布局与输入法状态
+ * @returns 形如「布局 00000804 / 中日韩 / 输入法开启」的描述
+ */
+function describeIme(state: HostImeSnapshot): string {
+  const parts = [`布局 ${state.layoutName || '未知'}`]
+  if (state.english) parts.push('英文')
+  else if (state.cjk) parts.push('中日韩')
+  parts.push(state.imeOpen ? '输入法开启' : '输入法关闭')
+  if (state.nativeMode) parts.push('本地语言模式')
+  return parts.join(' / ')
 }
 
 /**
@@ -306,11 +341,15 @@ export class TypingEngine {
     this.startedAt = this.deps.now()
     if (!(await this.runCountdown(settings))) return 'aborted'
 
-    // 2) 记录目标窗口（焦点守护）
+    // 2) 输入法 / 键盘布局：注入前确认目标窗口是英文直输
+    //    （中文输入法会把字母键变成候选上屏，注入内容会丢或变形）
+    await this.ensureEnglishInput(settings)
+
+    // 3) 记录目标窗口（焦点守护）
     const guard = new FocusGuard(settings.focusGuard, this.driver)
     const expectedFocus = await guard.capture()
 
-    // 3) 分派：文件传输（逐帧）与文本输入是两条独立路径，互不影响
+    // 4) 分派：文件传输（逐帧）与文本输入是两条独立路径，互不影响
     if (task.kind === 'frames') {
       return this.runFrameJob(task, settings, seed, rngFactory, guard, expectedFocus)
     }
@@ -442,7 +481,7 @@ export class TypingEngine {
         batchWindow > 0
           ? coalesceDelays(pending, batchWindow, profile === 'turbo' ? TURBO_MIN_GROUP : 1)
           : pending
-      const result = await this.driver.send(toHostItems(outgoing), sendOptions)
+      const result = await this.sendBatch(toHostItems(outgoing), sendOptions)
       this.lastForeground = result.foreground ?? null
       // 被中止打断的批次只注入了一部分，别把它算进进度
       if (result.cancelled) return false
@@ -560,7 +599,7 @@ export class TypingEngine {
         // 中止只在下发之间生效：子批大小决定了"紧急停止"的延迟上限
         if (this.aborted) return false
         const batch = items.slice(offset, offset + pace.batchActions)
-        const result = await this.driver.send(batch, { perItem: pace.perItem, ...sendOptions })
+        const result = await this.sendBatch(batch, { perItem: pace.perItem, ...sendOptions })
         this.lastForeground = result.foreground ?? null
         this.noteHostPressure(result)
         if (result.cancelled) return false
@@ -692,6 +731,111 @@ export class TypingEngine {
     }
     this.deps.onLog?.('error', `第 ${index} 片发送失败：${message}`)
     this.emitProgress(false)
+  }
+
+  /**
+   * @description 输入前确认目标窗口是"英文直输"状态。
+   *
+   * 真实按键先经过目标窗口线程的输入法：中文输入法开着时字母键会被吃成候选上屏，
+   * 注入的内容要么丢失、要么变成别的字。这里是尽力而为——取不到就只提示，不阻断输入。
+   * @param settings 引擎设置（`ensureEnglishIme` 为 false 时跳过）
+   */
+  private async ensureEnglishInput(settings: EngineSettings): Promise<void> {
+    if (settings.ensureEnglishIme === false) return
+    const ime = this.driver.ime
+    if (!ime) return
+
+    let result: HostImeData
+    try {
+      result = await ime.call(this.driver, { ensureEnglish: true })
+    } catch (error) {
+      this.deps.onLog?.(
+        'warn',
+        `无法检查/切换输入法：${error instanceof Error ? error.message : String(error)}。` +
+          '若目标程序开着中文输入法，建议先手动切到英文'
+      )
+      return
+    }
+
+    if (result.switched) {
+      this.deps.onLog?.(
+        'info',
+        `输入前已切到英文直输：${describeIme(result.before)} → ${describeIme(result.after)}`
+      )
+    }
+    if (!result.ok) {
+      this.deps.onLog?.(
+        'warn',
+        `目标窗口的输入法仍在合成状态（${describeIme(result.after)}）：` +
+          '注入的按键可能被吃成候选上屏，建议手动切到英文后再开始'
+      )
+    }
+    if (result.note) this.deps.onLog?.('warn', `输入法切换提示：${result.note}`)
+  }
+
+  /**
+   * @description 下发一批动作，并在"迟迟没有回话"时先把情况报出来（不要静默傻等）。
+   *
+   * 宿主在一批动作全部打完之前不会回话，所以"没有响应"既可能是目标窗口没在消化输入
+   * （终端/编辑器卡住、弹了模态框、远程桌面断流），也可能只是这一批本身就很大。
+   * 这里把已用时、批次体量与最近已知的前台窗口说出来，让人能自己判断；
+   * 真正的超时判定仍由驱动按"计划等待 + 事件数预算"负责。
+   * @param items 待下发的动作
+   * @param options 下发选项
+   * @returns 宿主报告的注入统计
+   */
+  private async sendBatch(items: HostItem[], options: SendOptions): Promise<HostTypeData> {
+    const startedAt = this.deps.now()
+    let lastWarnAt = 0
+    // 诊断用定时器：只负责"报平安"，不参与节奏计算，因此直接用真实计时器
+    const timer = setInterval(() => {
+      const elapsed = this.deps.now() - startedAt
+      if (elapsed < SEND_STALL_WARN_MS) return
+      if (lastWarnAt > 0 && elapsed - lastWarnAt < SEND_STALL_REPEAT_MS) return
+      lastWarnAt = elapsed
+      const foreground = this.lastForeground
+      this.deps.onLog?.(
+        'warn',
+        `已等待宿主 ${(elapsed / 1000).toFixed(1)} 秒没有回应（本批 ${items.length} 个动作，` +
+          `进度 ${this.typedCount}/${this.totalCount}）` +
+          (foreground ? `，最后一次已知前台窗口是「${foreground.title}」` : '') +
+          '：目标窗口可能没在消化输入（卡住 / 弹窗 / 远程桌面断开），也可能只是这一批特别大'
+      )
+    }, 500)
+    timer.unref?.()
+
+    try {
+      return await this.driver.send(items, options)
+    } catch (error) {
+      throw this.explainSendFailure(error, items.length, this.deps.now() - startedAt)
+    } finally {
+      clearInterval(timer)
+    }
+  }
+
+  /**
+   * @description 超时是最"看不出原因"的失败：把已知信息与排查顺序一并写进日志
+   * @param error 驱动抛出的错误
+   * @param itemCount 本批动作数
+   * @param elapsedMs 本批已等待的时长
+   * @returns 原错误（非超时也会原样返回）
+   */
+  private explainSendFailure(error: unknown, itemCount: number, elapsedMs: number): Error {
+    if (!(error instanceof ProtocolError) || error.code !== 'E_TIMEOUT') {
+      return error instanceof Error ? error : new Error(String(error))
+    }
+    const foreground = this.lastForeground
+    this.deps.onLog?.(
+      'error',
+      `输入超时：宿主在 ${(elapsedMs / 1000).toFixed(1)} 秒内没有回应本批 ${itemCount} 个动作` +
+        (foreground ? `（最后一次已知前台窗口「${foreground.title}」）` : '') +
+        '。按以下顺序排查：\n' +
+        '1) 目标窗口是否还在消化输入：终端/编辑器忙、弹出模态框、界面白屏都会让输入队列停止排空\n' +
+        '2) 目标窗口是否还在前台：锁屏、UAC 安全桌面、切换用户这些界面不接收注入\n' +
+        '3) 远程桌面/云桌面链路是否卡顿：可把节奏调成「稳健」并把最小间隔调大\n' +
+        '4) 输入法是否把按键变成了候选上屏：本程序会在开始时尝试切到英文直输'
+    )
+    return error
   }
 
   /**
