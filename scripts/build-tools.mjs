@@ -117,6 +117,25 @@ function locate(text, needle) {
 }
 
 /**
+ * @description 把产物里残留的控制字符改写成 `\uXXXX` 转义。
+ *
+ * esbuild 的 minifySyntax 会把源码里的 `"\u0003"` 折叠成真正的 0x03 字节（体积更小）：
+ * 运行上等价，但产物是要被**逐字符打进目标机**的——控制字符没有物理键位，
+ * 引擎会在开始前整份拒绝（也会被当成长度固定的一条错误刷屏）。
+ * 单行化之后产物里不该再有裸换行，剩下的控制字符只可能落在字符串 / 模板 / 正则字面量里，
+ * 因此全局改写成语义相同的转义文本是安全的。
+ * @param code 单行产物
+ * @returns 控制字符已被转义的产物
+ */
+function escapeControlChars(code) {
+  // eslint-disable-next-line no-control-regex -- 目标就是匹配控制字符本身，不是写错的正则
+  return code.replace(/[\x00-\x1f\x7f]/g, (char) => {
+    const hex = (char.codePointAt(0) ?? 0).toString(16).padStart(4, '0')
+    return `${BACKSLASH}u${hex}`
+  })
+}
+
+/**
  * @description 把 esbuild 的产物压成一行。
  *
  * esbuild 即使开了 minify 也会在**模板字面量内部**保留裸换行：它按字节数挑最省的写法，
@@ -212,14 +231,14 @@ async function bundle() {
   const raw = built.outputFiles[0].text
 
   try {
-    const candidate = toSingleLine(raw)
+    const candidate = escapeControlChars(toSingleLine(raw))
     if ((await canonical(candidate)) !== (await canonical(raw))) {
       throw new Error('压行后的规范化代码与压行前不一致')
     }
     return { code: candidate, style: '紧凑压行' }
   } catch (error) {
     // 兜底：关掉模板字面量重印一遍，产物一定是单行，代价是字符串拼接写法多占约 4% 体积
-    const fallback = await safeSingleLine(raw)
+    const fallback = escapeControlChars(await safeSingleLine(raw))
     console.warn(
       `！压行的一致性校验没通过（${error instanceof Error ? error.message : String(error)}），` +
         '改用它更保守的写法：模板字面量降级为字符串拼接（体积略大，仍然单行）'
@@ -251,6 +270,28 @@ async function main() {
     if (output.includes(api)) {
       problems.push([`产物里出现了 Node 14 不兼容的 API / 语法：${api}`, locate(output, api)])
     }
+  }
+
+  // 逐字符输入门禁：产物会被整份打进目标机的编辑器（文件页「插入接收脚本到文本输入」），
+  // 而远程桌面只转发真实键盘事件——非 ASCII 字符没有物理键位，引擎会在开始前整份报错。
+  // 中文只能出现在注释/字符串里，而那两处 minify 后要么被删、要么要写成 \uXXXX 转义。
+  const nonAscii = [
+    ...new Set(
+      [...output].filter((char) => {
+        const code = char.codePointAt(0) ?? 0
+        return code < 0x20 || code > 0x7e
+      })
+    )
+  ]
+  if (nonAscii.length > 0) {
+    const sample = nonAscii
+      .slice(0, 8)
+      .map((char) => JSON.stringify(char))
+      .join(' ')
+    problems.push([
+      `产物里含 ${nonAscii.length} 个非 ASCII 字符（逐字符注入时没有物理键位）：${sample}`,
+      locate(output, nonAscii[0])
+    ])
   }
 
   // 自包含校验：除 Node 内置模块外不应引用任何外部模块（产物要能整份拷到目标机直接跑）。

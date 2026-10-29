@@ -414,4 +414,129 @@ describe.skipIf(process.platform !== 'win32')('端到端（真实应用 + dry-ru
     },
     RUN_TIMEOUT_MS + 60_000
   )
+
+  it(
+    '开启脚本：点「插入接收脚本到文本输入」→ 点开始 → 打出去的文本与脚本逐字符一致且能直接跑',
+    async () => {
+      // 目标机第一次传输时还没有接收端，唯一的送法是**把脚本本身逐字符打进去**。
+      // 这一步的验收标准不是"任务跑完了"，而是"打出去的每个字符都必须是脚本里的那个字符"：
+      // 产物里只要有一个字符没有物理键位（中文标点之类），引擎就会在开始前整份拒绝，
+      // 用户看到的就是"脚本发不过去"。
+      const toolScript = await app.cdp.evaluate<{ path: string; text: string }>(
+        '(async () => await window.api.transfer.toolScript())()'
+      )
+      expect(toolScript.text.length).toBeGreaterThan(0)
+
+      // 先回到文本模式并清空内容区：本用例只验证"脚本能不能原样打进目标机"，
+      // 不把「覆盖内容区」确认框拉进来（那是另一条界面路径）
+      await app.cdp.evaluate(`(() => {
+        const group = document.querySelector('#tour-mode-switch')
+        if (!group) throw new Error('找不到模式切换')
+        const button = [...group.querySelectorAll('button')].find((item) =>
+          item.textContent.includes('文本')
+        )
+        if (!button) throw new Error('找不到「文本」模式')
+        button.click()
+        return true
+      })()`)
+      await waitFor(
+        () => app.cdp.evaluate<boolean>("Boolean(document.querySelector('#tour-text-input'))"),
+        { timeoutMs: 30_000, intervalMs: 200, label: '回到文本模式' }
+      )
+      await app.cdp.evaluate(`(() => {
+        const field = document.querySelector('#tour-text-input')
+        const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set
+        setter.call(field, '')
+        field.dispatchEvent(new Event('input', { bubbles: true }))
+        return field.value.length
+      })()`)
+
+      // 走产品给出的入口：文件面板上的「插入接收脚本到文本输入」
+      await app.cdp.evaluate(`(() => {
+        const group = document.querySelector('#tour-mode-switch')
+        const button = [...group.querySelectorAll('button')].find((item) =>
+          item.textContent.includes('文件')
+        )
+        button.click()
+        return true
+      })()`)
+      await waitFor(
+        () =>
+          app.cdp.evaluate<boolean>(`(() => {
+              const panel = document.querySelector('.file-panel')
+              if (!panel) return false
+              return [...panel.querySelectorAll('button')].some((item) =>
+                item.textContent.includes('插入接收脚本')
+              )
+            })()`),
+        { timeoutMs: 30_000, intervalMs: 200, label: '文件面板出现「插入接收脚本」按钮' }
+      )
+      await app.cdp.evaluate(`(() => {
+        const panel = document.querySelector('.file-panel')
+        const button = [...panel.querySelectorAll('button')].find((item) =>
+          item.textContent.includes('插入接收脚本')
+        )
+        button.click()
+        return true
+      })()`)
+
+      // 内容区长度等于脚本长度：界面这一环拿到的确实是完整脚本（被截断的话这里就红了）
+      await waitFor(
+        async () => {
+          const length = await app.cdp.evaluate<number>(`(() => {
+              const field = document.querySelector('#tour-text-input')
+              return field ? field.value.length : -1
+            })()`)
+          return length === toolScript.text.length ? length : null
+        },
+        { timeoutMs: 30_000, intervalMs: 200, label: '内容区填入了完整脚本' }
+      )
+
+      resetRecording(app.recordPath)
+      await waitFor(
+        () =>
+          app.cdp.evaluate<boolean>(`(() => {
+              const button = document.querySelector('#tour-start button')
+              return Boolean(button) && !button.disabled
+            })()`),
+        { timeoutMs: 30_000, intervalMs: 200, label: '「开始输入」按钮可用' }
+      )
+      await app.cdp.evaluate(`(() => {
+        document.querySelector('#tour-start button').click()
+        return true
+      })()`)
+
+      const run = await waitFor(
+        async () => {
+          const status = await app.cdp.evaluate<{
+            state: string
+            typed: number
+            total: number
+            error?: string
+          }>('(async () => await window.api.typing.status())()')
+          return ['completed', 'aborted', 'failed'].includes(status.state) ? status : null
+        },
+        { timeoutMs: RUN_TIMEOUT_MS, intervalMs: 300, label: '脚本输入跑到终态' }
+      )
+      // 脚本里每个字符都必须有物理键位，否则引擎会在开始前抛出"没有对应的物理键位"
+      expect(run.state).toBe('completed')
+      expect(run.typed).toBe(run.total)
+
+      // 硬断言：宿主实际发出的按键流重放后，必须与界面里那份脚本逐字符相同
+      const typed = replayAsText(parseRecordedEvents(readRecordedLines(app.recordPath)))
+      expect(typed.length).toBe(toolScript.text.length)
+      expect(typed).toBe(toolScript.text)
+
+      // 最后一环：把"打出去的"那份文本落到干净目录，它必须能直接跑起来
+      const typedDir = join(sample.dir, 'typed-script')
+      mkdirSync(typedDir, { recursive: true })
+      const typedScript = join(typedDir, 'typer-recv.mjs')
+      writeFileSync(typedScript, typed, 'utf8')
+      const selftest = await runReceiver(['--selftest'], typedDir, typedScript)
+      expect(selftest.stderr).toBe('')
+      expect(selftest.code).toBe(0)
+      expect(selftest.stdout).toContain('自检通过')
+    },
+    RUN_TIMEOUT_MS + 60_000
+  )
 })

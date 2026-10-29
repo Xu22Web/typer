@@ -243,6 +243,13 @@ describe('片号集合', () => {
     expect(() => parseIndexList('abc')).toThrow(/无法解析/)
   })
 
+  it('顿号也当分隔符（但要写成 \\u3001 转义：接收端产物必须纯 ASCII）', () => {
+    // 产物 tools/typer-recv.mjs 会被逐字符打进目标机，里面有一个非 ASCII 字符，
+    // 引擎就会在开始前整份报错——所以这个"便利分隔符"只能以转义形式出现在源码里
+    expect(parseIndexList('3、5、12-14', 20)).toEqual([3, 5, 12, 13, 14])
+    expect(parseIndexList('3; 5\t12', 20)).toEqual([3, 5, 12])
+  })
+
   it('缺失片与 from/only 归一化', () => {
     expect(missingIndexes(5, [0, 2, 4])).toEqual([1, 3])
     expect(resolveIndexes(4)).toEqual([0, 1, 2, 3])

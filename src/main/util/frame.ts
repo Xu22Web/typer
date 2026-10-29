@@ -740,8 +740,10 @@ export function estimateDataFrameChars(meta: {
  */
 export function parseIndexList(text: string | number[], total?: number): number[] {
   const indexes = new Set<number>()
+  // 顿号写成 \u3001 转义：这个函数会被打进接收端产物（tools/typer-recv.mjs），
+  // 而产物要整份逐字符打进目标机终端——里面有一个非 ASCII 字符，引擎就会在开始前报错
   const parts = String(text)
-    .split(/[,;、\s]+/)
+    .split(/[,;\u3001\s]+/)
     .filter((part) => part.length > 0)
 
   for (const part of parts) {
