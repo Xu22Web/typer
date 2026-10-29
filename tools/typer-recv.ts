@@ -73,6 +73,7 @@ const HELP = `Typer 文件接收端 v2（逐片校验 + 断点续传 + 整文件
       --token             缺失时始终打印续传令牌（默认同样打印）
       --probe             只统计收到了什么，不落盘（确认链路能过非 ASCII 字符）
       --stats             结束时打印字符数/字节数与耗时
+      --progress <mode>   进度回显：auto（终端下自动，默认）/ on / off
   -q, --quiet             不打印提示（仅保留 #FAIL / #MISS / #DONE / #BAD）
   -v, --verbose           打印逐片处理信息（很吵，仅排障用）
       --selftest          自检编解码、CRC、帧解析
@@ -92,6 +93,8 @@ interface Options {
   keepParts: boolean
   probe: boolean
   stats: boolean
+  /** 进度回显：auto = 只有“人坐在终端前面”时开；on / off 强制 */
+  progress: 'auto' | 'on' | 'off'
   quiet: boolean
   verbose: boolean
 }
@@ -113,6 +116,7 @@ function parseArgs(argv: string[]): Options {
     keepParts: false,
     probe: false,
     stats: false,
+    progress: 'auto',
     quiet: false,
     verbose: false
   }
@@ -135,7 +139,13 @@ function parseArgs(argv: string[]): Options {
     else if (arg === '--keep-parts') options.keepParts = true
     else if (arg === '--probe') options.probe = true
     else if (arg === '--stats') options.stats = true
-    else if (arg === '-q' || arg === '--quiet') options.quiet = true
+    else if (arg === '--progress') {
+      const value = next()
+      if (value !== 'auto' && value !== 'on' && value !== 'off') {
+        throw new Error(`--progress 只接受 auto / on / off（收到 ${value}）`)
+      }
+      options.progress = value
+    } else if (arg === '-q' || arg === '--quiet') options.quiet = true
     else if (arg === '-v' || arg === '--verbose') options.verbose = true
     else if (arg === '-h' || arg === '--help') {
       process.stdout.write(HELP)
@@ -164,14 +174,205 @@ const quiet = options.quiet
 const verbose = options.verbose
 const startedAt = Date.now()
 
+// ---------------------------------------------------------------------------
+// 进度回显
+// ---------------------------------------------------------------------------
+
+/**
+ * @description 是否需要回显进度。
+ *
+ * 默认 `auto`：只在“人坐在接收端终端前面”（没给 `--in`）时回显；`--in` 是离线校验/回归测试，
+ * 刷进度既没人看也会污染 stdout。`--quiet` 优先级最高。
+ * @returns 是否回显
+ */
+function progressEnabled(): boolean {
+  if (quiet) return false
+  if (options.progress === 'off') return false
+  if (options.progress === 'on') return true
+  return options.input === null
+}
+
+/** 终端里能不能用 `\r` 原地重绘；不能就只能一行一行打（重定向到日志时） */
+const progressInPlace = Boolean(process.stdout.isTTY)
+
+/** 原地重绘的最小间隔（毫秒）：刷得再快也看不见，反而抢终端带宽 */
+const PROGRESS_TTY_INTERVAL_MS = 500
+
+/** 非终端（重定向到日志 / 管道）时每行之间的最小间隔（毫秒） */
+const PROGRESS_LINE_INTERVAL_MS = 5_000
+
+/** 超过多久没收到新片就提醒一次（毫秒）：大文件里“卡住了”和“在慢慢收”必须能区分 */
+const PROGRESS_STALL_MS = 10_000
+
+/** 进度行是否还停在终端最后一行（后续输出前要先换行） */
+let progressDrawn = false
+/** 上一次画出的文本：原地重绘时用来盖掉短行残留 */
+let progressLastText = ''
+let lastProgressAt = 0
+/** 最近一次收到有效数据帧的时刻（毫秒） */
+let lastFrameAt = 0
+/** 最近一次“停帧”提醒的时刻 */
+let lastStallAt = 0
+/** 合并阶段进度：合并时不再收片，单独计数（-1 表示不在合并） */
+let mergeDone = -1
+let mergeTotal = 0
+
+/**
+ * @description 把字节数格式化成人读的大小
+ * @param bytes 字节数
+ * @returns 形如 `12.3 MB`
+ */
+function formatSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  const units = ['KB', 'MB', 'GB', 'TB']
+  let value = bytes / 1024
+  let unit = 0
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024
+    unit += 1
+  }
+  return `${value >= 10 ? Math.round(value) : value.toFixed(1)} ${units[unit]}`
+}
+
+/**
+ * @description 把毫秒格式化成人读的时长
+ * @param ms 时长（毫秒）
+ * @returns 形如 `3 分 20 秒`
+ */
+function formatSpan(ms: number): string {
+  const seconds = Math.max(0, Math.round(ms / 1000))
+  if (seconds < 60) return `${seconds} 秒`
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return `${minutes} 分 ${seconds % 60} 秒`
+  return `${Math.floor(minutes / 60)} 时 ${minutes % 60} 分`
+}
+
+/**
+ * @description 当前进度文本：收片阶段按片数折算文件字节，合并阶段改用合并计数
+ * @returns 一行进度文本
+ */
+function progressText(): string {
+  const task = meta
+  if (!task) return `等待开始帧…（已 ${formatSpan(Date.now() - startedAt)}）`
+
+  if (mergeDone >= 0) {
+    const ratio = mergeTotal === 0 ? 1 : mergeDone / mergeTotal
+    return `合并 ${mergeDone}/${mergeTotal} 片 · ${(ratio * 100).toFixed(1)}% · ${formatSize(
+      task.size
+    )}`
+  }
+
+  const count = done.size
+  const ratio = task.total === 0 ? 1 : count / task.total
+  const fileBytes = Math.round(task.size * ratio)
+  const perSecond = (fileBytes / Math.max(1, Date.now() - startedAt)) * 1000
+  const tail =
+    ratio >= 1
+      ? '已收齐，等待合并'
+      : fileBytes === 0
+        ? '等待首片…'
+        : `${formatSize(perSecond)}/s · 剩余 ${
+            perSecond > 0 ? formatSpan(((task.size - fileBytes) / perSecond) * 1000) : '?'
+          }`
+  return (
+    `接收 ${count}/${task.total} 片 · ${(ratio * 100).toFixed(1)}% · ` +
+    `${formatSize(fileBytes)}/${formatSize(task.size)} · ${tail}`
+  )
+}
+
+/**
+ * @description 画一行进度：终端里原地重绘，管道/日志里按间隔逐行打
+ * @param text 进度文本
+ * @param force 是否忽略节流立即重画
+ */
+function drawProgress(text: string, force = false): void {
+  if (!progressEnabled()) return
+  const now = Date.now()
+  const interval = progressInPlace ? PROGRESS_TTY_INTERVAL_MS : PROGRESS_LINE_INTERVAL_MS
+  if (!force && now - lastProgressAt < interval) return
+  lastProgressAt = now
+
+  if (!progressInPlace) {
+    process.stdout.write(`${text}\n`)
+    return
+  }
+  // 原地重绘：行尾补空格，把上一次更长的内容盖掉
+  const padded =
+    text.length >= progressLastText.length
+      ? text
+      : text + ' '.repeat(progressLastText.length - text.length)
+  process.stdout.write(`\r${padded}`)
+  progressLastText = text
+  progressDrawn = true
+}
+
+/** @description 结束进度行（后面要打别的输出时先调用，否则会接在进度行尾巴上） */
+function clearProgressLine(): void {
+  if (!progressDrawn) return
+  process.stdout.write('\n')
+  progressDrawn = false
+  progressLastText = ''
+}
+
+/**
+ * @description 收到一帧有效数据：刷新“最后动静时间”并重画进度
+ * @param force 是否忽略节流（开始帧 / 收齐时用）
+ */
+function noteProgress(force = false): void {
+  lastFrameAt = Date.now()
+  drawProgress(progressText(), force)
+}
+
+/**
+ * @description 启动停帧提醒：大文件传输时“卡住了”与“在慢慢收”表面上很像，
+ * 超过 {@link PROGRESS_STALL_MS} 没有新片就明确说一句，不让人干等
+ */
+function startProgressLoop(): void {
+  if (!progressEnabled()) return
+
+  const timer = setInterval(() => {
+    const now = Date.now()
+    const reference = lastFrameAt > 0 ? lastFrameAt : startedAt
+    const idleMs = now - reference
+    const finished = meta !== null && done.size >= meta.total
+    if (idleMs >= PROGRESS_STALL_MS && !finished) {
+      if (now - lastStallAt < PROGRESS_STALL_MS) return
+      lastStallAt = now
+      const hint =
+        `已 ${formatSpan(idleMs)}没有收到新片（${meta ? `${done.size}/${meta.total} 片` : '还没收到开始帧'}）：` +
+        '上游可能停了、链路卡住，或目标窗口里弹出的模态框挡住了输入'
+      if (progressInPlace) drawProgress(`${progressText()} · ${hint}`, true)
+      else process.stdout.write(`! ${hint}\n`)
+      return
+    }
+    drawProgress(progressText())
+  }, 1000)
+  // 显示用途的定时器不能拖住进程退出
+  timer.unref?.()
+}
+
+/**
+ * @description 合并阶段进度：读盘 + 解压 + 哈希是一趟流水线，按片数报最直观
+ * @param count 已合并片数
+ * @param total 总片数
+ */
+function reportMergeProgress(count: number, total: number): void {
+  mergeTotal = total
+  mergeDone = count
+  // 最后一片必须画出来（否则节流会让界面停在 99%）
+  drawProgress(progressText(), count >= total)
+}
+
 /** 打印普通信息（quiet 时静默）。 */
 function info(line: string): void {
   if (quiet) return
+  clearProgressLine()
   process.stdout.write(`${line}\n`)
 }
 
 /** 打印回执行（`#` 前缀，Typer 与操作者约定的输出格式）。 */
 function ack(line: string): void {
+  clearProgressLine()
   process.stdout.write(`${line}\n`)
 }
 
@@ -478,13 +679,13 @@ function handleBegin(frame: ParsedBeginFrame): void {
     name: frame.name
   })
   const found = scanExistingParts()
-  if (verbose) {
-    info(
-      `任务 ${frame.job}：${frame.total} 片，${frame.size} 字节，` +
-        `${frame.alphabet}/${frame.compression}/${frame.mode}` +
-        (found > 0 ? `，续传已有 ${found} 片` : '')
-    )
-  }
+  info(
+    `接收开始：${frame.total} 片 · 文件 ${formatSize(frame.size)}` +
+      `（线上 ${formatSize(frame.wire)}）· ${frame.alphabet}/${frame.compression}/${frame.mode}` +
+      (found > 0 ? ` · 续传已有 ${found} 片` : '')
+  )
+  if (verbose) info(`任务 ${frame.job}：分片目录 ${dir}`)
+  noteProgress(true)
 }
 
 /**
@@ -517,11 +718,17 @@ function handleData(frame: ParsedDataFrame): void {
   done.add(frame.seq)
   missing.delete(frame.seq)
 
-  if (options.probe) return
+  if (options.probe) {
+    noteProgress()
+    return
+  }
 
   const target = partPath(frame.seq, frame.crc32)
   // 同名分片已存在（同片同 CRC）→ 跳过，整批重放也不会重复写盘
-  if (existsSync(target)) return
+  if (existsSync(target)) {
+    noteProgress()
+    return
+  }
 
   // 同片不同 CRC（上次那版是坏的）：先删掉旧文件，避免续传时被误认为已完成
   for (const entry of readdirSync(dir)) {
@@ -535,6 +742,7 @@ function handleData(frame: ParsedDataFrame): void {
   }
   writeFileSync(target, wire)
   if (verbose && receivedChunks % 32 === 0) info(`已收 ${receivedChunks}/${task.total} 片`)
+  noteProgress()
 }
 
 /**
@@ -547,6 +755,7 @@ function partStream(total: number, crcs: Map<number, string>): Readable {
   function* generate(): Generator<Buffer> {
     for (let seq = 0; seq < total; seq++) {
       yield readFileSync(partPath(seq, crcs.get(seq) as string))
+      reportMergeProgress(seq + 1, total)
     }
   }
   return Readable.from(generate())
@@ -608,6 +817,9 @@ async function mergeAndVerify(): Promise<number> {
   }
 
   const crcs = collectPartCrcs()
+  mergeTotal = task.total
+  mergeDone = 0
+  drawProgress(progressText(), true)
   const source = task.total === 0 ? Readable.from([]) : partStream(task.total, crcs)
   const outputPath = resolveOutputPath()
   if (outputPath === null) return EXIT.USAGE
@@ -832,6 +1044,7 @@ async function run(): Promise<number> {
 
   source.on('data', onData)
   source.resume()
+  startProgressLoop()
 
   await new Promise<void>((resolvePromise) => {
     const finish = (): void => resolvePromise()

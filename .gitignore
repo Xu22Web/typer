@@ -12,5 +12,8 @@ tools/run.bat
 # tools/ 接收端脚本的构建产物（由 pnpm build:tools 生成，随安装包分发但不入库）
 tools/*.mjs
 
+# 接收端的默认分片工作目录（`-d` 里没给路径时是 ./.typer-<job>）
+.typer-*
+
 # codegraph 的本地索引（可随时重建，不入库）
 .codegraph

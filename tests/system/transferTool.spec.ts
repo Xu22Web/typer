@@ -166,6 +166,42 @@ describe('typer-recv.mjs：端到端接收与完整性校验', () => {
     expect(result.code).toBe(0)
   })
 
+  it('进度回显：--progress on 报规模与片数百分比，--in 默认不刷', async () => {
+    const source = makeSource(70_000)
+    writeFileSync(join(work, 'src.bin'), source)
+    const all = await appFrames('src.bin')
+    writeFrames('frames.txt', all.lines)
+
+    const shown = await runTool(
+      ['--in', 'frames.txt', '-o', 'prog.bin', '-d', 'parts-prog', '--progress', 'on'],
+      work
+    )
+    expect(shown.stderr).toBe('')
+    expect(shown.code).toBe(0)
+    // 规模一行 + 至少一行"接收 x/y 片 · p%"
+    expect(shown.stdout).toContain('接收开始')
+    expect(shown.stdout).toMatch(/接收 \d+\/\d+ 片 · \d+\.\d%/)
+
+    // --in 是离线校验：默认 auto 模式下只打一行规模摘要，不刷进度行
+    const silent = await runTool(['--in', 'frames.txt', '-o', 'auto.bin', '-d', 'parts-auto'], work)
+    expect(silent.code).toBe(0)
+    expect(silent.stdout).toContain('接收开始')
+    expect(silent.stdout).not.toMatch(/\/s · 剩余/)
+    // --quiet 时即使显式 --progress on 也不刷
+    const quietOn = await runTool(
+      ['--in', 'frames.txt', '-o', 'quiet.bin', '-d', 'parts-quiet', '--quiet', '--progress', 'on'],
+      work
+    )
+    expect(quietOn.code).toBe(0)
+    expect(quietOn.stdout).not.toContain('接收开始')
+  }, 60_000)
+
+  it('--progress 只接受 auto / on / off', async () => {
+    const result = await runTool(['--progress', 'loud'], work)
+    expect(result.code).toBe(4)
+    expect(result.stderr).toContain('--progress 只接受')
+  })
+
   it('默认 ascii32（5 位、零 Shift）档的二进制文件逐字节还原，退出码 0', async () => {
     const source = makeSource(70_000)
     writeFileSync(join(work, 'src.bin'), source)
