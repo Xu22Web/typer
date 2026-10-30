@@ -178,9 +178,14 @@ describe('typer-recv.mjs：端到端接收与完整性校验', () => {
     )
     expect(shown.stderr).toBe('')
     expect(shown.code).toBe(0)
-    // 规模一行 + 至少一行"接收 x/y 片 · p%"
+    // 规模一行 + 至少一行进度（进度条 + 百分比 + 片数）
     expect(shown.stdout).toContain('接收开始')
-    expect(shown.stdout).toMatch(/接收 \d+\/\d+ 片 · \d+\.\d%/)
+    expect(shown.stdout).toMatch(/接收\s+\S+\s+\d+\.\d%\s+\d+\/\d+ 片/)
+    // 非 TTY 不该出现颜色转义（否则重定向到日志会一团污）
+    // eslint-disable-next-line no-control-regex -- 就是要断言输出里没有 ESC 序列
+    expect(shown.stdout).not.toMatch(/\u001b\[/)
+    // 结束摘要：大小 / 片数 / 用时 / 平均速率 / 校验结果
+    expect(shown.stdout).toMatch(/完成 .* · \d+ 片 · 用时 .+ · 平均 .+?\/s · SHA-256 已校验/)
 
     // --in 是离线校验：默认 auto 模式下只打一行规模摘要，不刷进度行
     const silent = await runTool(['--in', 'frames.txt', '-o', 'auto.bin', '-d', 'parts-auto'], work)

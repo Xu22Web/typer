@@ -49,6 +49,7 @@ import {
   missingIndexes,
   parseFrame,
   sanitizeLine,
+  symbolCount,
   verifyDataFrame,
   type ParsedBeginFrame,
   type ParsedDataFrame,
@@ -201,21 +202,166 @@ const PROGRESS_TTY_INTERVAL_MS = 500
 /** 非终端（重定向到日志 / 管道）时每行之间的最小间隔（毫秒） */
 const PROGRESS_LINE_INTERVAL_MS = 5_000
 
-/** 超过多久没收到新片就提醒一次（毫秒）：大文件里“卡住了”和“在慢慢收”必须能区分 */
-const PROGRESS_STALL_MS = 10_000
+/**
+ * 多久**没有任何输入**才提醒（毫秒）。
+ *
+ * 参照物是“最后一次收到字节”，不是“最后一次收下一整片”：一个 16 KB 的片在 400 字/秒下
+ * 要打三四十秒，用“片”当参照会在这期间反复报“没收到新片”，纯属噪音。
+ */
+const IDLE_WARN_MS = 10_000
+
+/** 已经提醒过之后，隔多久才允许再提一次（毫秒） */
+const IDLE_WARN_REPEAT_MS = 20_000
+
+/** 当前这一帧收了这么久还没收完时，在进度里补一句耗时（毫秒）：让人看出“在收、只是慢” */
+const FRAME_SLOW_HINT_MS = 20_000
+
+/** 速率按最近这段时间的增量算（毫秒）：用“从开始到现在的平均值”会把卡顿与恢复都抹平 */
+const RATE_WINDOW_MS = 8_000
+
+/** 进度条宽度：终端下宽一些，写进日志时窄一些 */
+const BAR_WIDTH_TTY = 20
+const BAR_WIDTH_PLAIN = 16
+
+/** ANSI 颜色：只在终端且支持颜色时用（`NO_COLOR` 可关，日志里永远不留转义序列） */
+const ANSI = {
+  reset: '\u001b[0m',
+  bold: '\u001b[1m',
+  dim: '\u001b[2m',
+  green: '\u001b[32m',
+  cyan: '\u001b[36m',
+  yellow: '\u001b[33m',
+  magenta: '\u001b[35m',
+  red: '\u001b[31m'
+}
+
+/** 终端是否上色：非 TTY（管道 / 重定向到日志）一律不上色，避免日志里混转义序列 */
+const colorEnabled =
+  Boolean(process.stdout.isTTY) && process.stdout.hasColors?.(16) === true && !process.env.NO_COLOR
+
+/** 匹配 ANSI 颜色序列（算可见宽度、补空格前要剥掉） */
+// eslint-disable-next-line no-control-regex -- 要匹配的就是 ESC 序列本身
+const ANSI_SEQUENCE = /\u001b\[[0-9;]*m/g
 
 /** 进度行是否还停在终端最后一行（后续输出前要先换行） */
 let progressDrawn = false
-/** 上一次画出的文本：原地重绘时用来盖掉短行残留 */
-let progressLastText = ''
+/** 上一次画出的**可见宽度**：原地重绘时用来盖掉短行残留 */
+let progressLastWidth = 0
 let lastProgressAt = 0
-/** 最近一次收到有效数据帧的时刻（毫秒） */
-let lastFrameAt = 0
-/** 最近一次“停帧”提醒的时刻 */
-let lastStallAt = 0
-/** 合并阶段进度：合并时不再收片，单独计数（-1 表示不在合并） */
+/** 最近一次收到任何输入的时刻（毫秒）：判断“上游还在打字吗” */
+let lastInputAt = 0
+/** 最近一次收下一整片的时刻（毫秒）：算“这一片收了多久” */
+let lastShardAt = 0
+/** 最近一次“没有任何输入”提醒的时刻 */
+let lastIdleWarnAt = 0
+/** 合并阶段进度（-1 表示不在合并） */
 let mergeDone = -1
 let mergeTotal = 0
+let mergeStartedAt = 0
+/** 速率采样：`{ 时刻, 已收文件字节 }`，只保留最近 RATE_WINDOW_MS */
+const rateSamples: Array<{ at: number; bytes: number }> = []
+/** 切分器里还没成帧的半行：用来显示“当前这一片收到哪了” */
+let pendingFrameText = ''
+
+/** @description 给文本套上颜色（不上色时原样返回） */
+function paint(text: string, color: string): string {
+  return colorEnabled ? `${color}${text}${ANSI.reset}` : text
+}
+
+/** @description 可见宽度：剥掉颜色序列后的字符数 */
+function visibleWidth(text: string): number {
+  return text.replace(ANSI_SEQUENCE, '').length
+}
+
+/**
+ * @description 进度条：终端里用实心方块，写进日志时退回 ASCII（不挑字体）
+ * @param ratio 0~1
+ * @param width 宽度（字符数）
+ * @returns 形如 `████████░░░░░░░░░░░░`
+ */
+function renderBar(ratio: number, width: number): string {
+  const clamped = Math.max(0, Math.min(1, ratio))
+  const filled = Math.round(clamped * width)
+  const full = progressInPlace ? '\u2588' : '#'
+  const empty = progressInPlace ? '\u2591' : '-'
+  return full.repeat(filled) + empty.repeat(width - filled)
+}
+
+/** @description 进度条宽度：有列宽信息时按剩余空间收缩，避免一行折行把界面打乱 */
+function barWidth(): number {
+  if (!progressInPlace) return BAR_WIDTH_PLAIN
+  const columns = process.stdout.columns ?? 0
+  if (columns <= 0) return BAR_WIDTH_TTY
+  return Math.max(10, Math.min(BAR_WIDTH_TTY, columns - 70))
+}
+
+/**
+ * @description 记一次速率采样，只保留最近 RATE_WINDOW_MS 内的样本
+ * @param fileBytes 已收文件字节数
+ */
+function recordRateSample(fileBytes: number): void {
+  const now = Date.now()
+  rateSamples.push({ at: now, bytes: fileBytes })
+  while (rateSamples.length > 2) {
+    const oldest = rateSamples[0]
+    if (!oldest || now - oldest.at <= RATE_WINDOW_MS) break
+    rateSamples.shift()
+  }
+}
+
+/**
+ * @description 最近一段时间的收片速率（字节/秒）
+ * @returns 字节/秒；样本不足时返回 0（此时不显示“剩余”）
+ */
+function currentRate(): number {
+  if (rateSamples.length < 2) return 0
+  const first = rateSamples[0]
+  const last = rateSamples[rateSamples.length - 1]
+  if (!first || !last) return 0
+  const span = last.at - first.at
+  if (span < 500) return 0
+  return Math.max(0, ((last.bytes - first.bytes) / span) * 1000)
+}
+
+/**
+ * @description 当前正在收的那一帧收到哪了。
+ *
+ * 依据是切分器里的半行缓冲：帧要“整行到齐”才算收到，但字节是连续到的，
+ * 所以大文件里这一句能让人看出“正在收第 42 片、已经 63%”，而不是盯着一个不动的百分比。
+ * @returns 形如 `第 42 片 63%`；没有半帧或无法判断时返回空串
+ */
+function frameInFlightText(): string {
+  const task = meta
+  if (!task || mergeDone >= 0) return ''
+  // `--in` 是把整份文件一次读完的，半行缓冲里可能已经排了好几帧，显示“当前这一片”只会误导
+  if (options.input !== null) return ''
+  const partial = pendingFrameText
+  if (partial.length === 0 || !partial.startsWith('@T2')) return ''
+
+  if (partial.startsWith(MARKERS.begin)) {
+    return `正在收开始帧（${partial.length} 字符）`
+  }
+
+  const match = /^@T2D (\S+) (\d+) (\S+) ([0-9a-f]{8})/.exec(partial)
+  if (!match) return '正在收数据帧…'
+  const job = match[1] as string
+  const seq = match[2] as string
+  const bytesText = match[3] as string
+  const crc = match[4] as string
+  const bytes = Number(bytesText)
+  // 片号在协议里从 0 开始，给人看的“第几片”从 1 开始
+  const order = Number(seq)
+  const label = Number.isInteger(order) ? String(order + 1) : seq
+  if (!Number.isInteger(bytes) || bytes < 0) return `正在收第 ${label} 片…`
+
+  // 帧长 = 帧头（@T2D job seq bytes crc32）+ 空格 + 头 CRC（8）+ 空格 + 载荷字符数
+  const head = `${MARKERS.data} ${job} ${seq} ${bytesText} ${crc}`
+  const total = head.length + 1 + 8 + 1 + symbolCount(bytes, task.alphabet)
+  const ratio = total === 0 ? 0 : Math.min(1, partial.length / total)
+  const elapsed = lastShardAt > 0 ? Date.now() - lastShardAt : 0
+  const slow = elapsed >= FRAME_SLOW_HINT_MS ? `（已收 ${formatSpan(elapsed)}）` : ''
+  return `第 ${label} 片 ${(ratio * 100).toFixed(0)}%${slow}`
+}
 
 /**
  * @description 把字节数格式化成人读的大小
@@ -223,7 +369,8 @@ let mergeTotal = 0
  * @returns 形如 `12.3 MB`
  */
 function formatSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`
+  if (!Number.isFinite(bytes)) return '?'
+  if (bytes < 1024) return `${Math.round(bytes)} B`
   const units = ['KB', 'MB', 'GB', 'TB']
   let value = bytes / 1024
   let unit = 0
@@ -248,36 +395,68 @@ function formatSpan(ms: number): string {
 }
 
 /**
- * @description 当前进度文本：收片阶段按片数折算文件字节，合并阶段改用合并计数
- * @returns 一行进度文本
+ * @description 生成一行进度文本：等待 / 收片 / 合并三个阶段各显示各自有用的字段
+ * @returns 一行进度文本（终端下带颜色与进度条）
  */
 function progressText(): string {
   const task = meta
-  if (!task) return `等待开始帧…（已 ${formatSpan(Date.now() - startedAt)}）`
+  if (!task) {
+    return paint(
+      `等待开始帧 · 已 ${formatSpan(Date.now() - startedAt)}（在目标机按「开始发送」）`,
+      ANSI.yellow
+    )
+  }
 
   if (mergeDone >= 0) {
     const ratio = mergeTotal === 0 ? 1 : mergeDone / mergeTotal
-    return `合并 ${mergeDone}/${mergeTotal} 片 · ${(ratio * 100).toFixed(1)}% · ${formatSize(
-      task.size
-    )}`
+    const elapsed = Math.max(1, Date.now() - mergeStartedAt)
+    const perSecond = (task.size * ratio * 1000) / elapsed
+    const tail =
+      ratio >= 1
+        ? '校验通过后写出文件'
+        : perSecond > 0
+          ? `${formatSize(perSecond)}/s · 剩余 ${formatSpan(
+              ((task.size * (1 - ratio)) / perSecond) * 1000
+            )}`
+          : '解压 / 校验中…'
+    return [
+      paint('合并', ANSI.magenta),
+      renderBar(ratio, barWidth()),
+      paint(`${(ratio * 100).toFixed(1)}%`, ANSI.bold),
+      `${mergeDone}/${mergeTotal} 片`,
+      tail
+    ].join('  ')
   }
 
   const count = done.size
   const ratio = task.total === 0 ? 1 : count / task.total
   const fileBytes = Math.round(task.size * ratio)
-  const perSecond = (fileBytes / Math.max(1, Date.now() - startedAt)) * 1000
-  const tail =
-    ratio >= 1
-      ? '已收齐，等待合并'
-      : fileBytes === 0
-        ? '等待首片…'
-        : `${formatSize(perSecond)}/s · 剩余 ${
-            perSecond > 0 ? formatSpan(((task.size - fileBytes) / perSecond) * 1000) : '?'
-          }`
-  return (
-    `接收 ${count}/${task.total} 片 · ${(ratio * 100).toFixed(1)}% · ` +
-    `${formatSize(fileBytes)}/${formatSize(task.size)} · ${tail}`
-  )
+  const rate = currentRate()
+  const parts = [
+    paint('接收', ANSI.cyan),
+    renderBar(ratio, barWidth()),
+    paint(`${(ratio * 100).toFixed(1)}%`, ANSI.bold),
+    `${count}/${task.total} 片`
+  ]
+
+  // 正在收的那一片：字节连续到，帧要整行才算收到，这里把“半帧”的进展也报出来
+  const inFlight = ratio < 1 ? frameInFlightText() : ''
+  if (inFlight.length > 0) parts.push(paint(inFlight, ANSI.dim))
+
+  parts.push(`${formatSize(fileBytes)}/${formatSize(task.size)}`)
+
+  if (ratio >= 1) parts.push('已收齐，等待合并')
+  else if (rate > 0) {
+    parts.push(
+      `${formatSize(rate)}/s · 剩余 ${formatSpan(((task.size - fileBytes) / rate) * 1000)}`
+    )
+  } else if (inFlight.length === 0) {
+    // 已经有半片在收了就别再喊“等待首片”，否则自相矛盾
+    parts.push(fileBytes > 0 ? '测速中…' : '等待首片…')
+  }
+
+  if (failures.size > 0) parts.push(paint(`失败 ${failures.size} 片`, ANSI.red))
+  return parts.join('  ')
 }
 
 /**
@@ -296,13 +475,11 @@ function drawProgress(text: string, force = false): void {
     process.stdout.write(`${text}\n`)
     return
   }
-  // 原地重绘：行尾补空格，把上一次更长的内容盖掉
-  const padded =
-    text.length >= progressLastText.length
-      ? text
-      : text + ' '.repeat(progressLastText.length - text.length)
-  process.stdout.write(`\r${padded}`)
-  progressLastText = text
+  // 原地重绘：按**可见宽度**补空格（颜色序列不占宽度）
+  const width = visibleWidth(text)
+  const pad = width >= progressLastWidth ? '' : ' '.repeat(progressLastWidth - width)
+  process.stdout.write(`\r${text}${pad}`)
+  progressLastWidth = width
   progressDrawn = true
 }
 
@@ -311,38 +488,57 @@ function clearProgressLine(): void {
   if (!progressDrawn) return
   process.stdout.write('\n')
   progressDrawn = false
-  progressLastText = ''
+  progressLastWidth = 0
+}
+
+/** @description 收到任何输入（哪怕只是半帧）：记下“上游还活着”，用于区分卡住与正在收 */
+function noteInput(): void {
+  lastInputAt = Date.now()
 }
 
 /**
- * @description 收到一帧有效数据：刷新“最后动静时间”并重画进度
+ * @description 收下一整片：更新速率采样并重画进度
  * @param force 是否忽略节流（开始帧 / 收齐时用）
  */
 function noteProgress(force = false): void {
-  lastFrameAt = Date.now()
+  const now = Date.now()
+  lastInputAt = now
+  lastShardAt = now
+  const task = meta
+  if (task) {
+    const ratio = task.total === 0 ? 1 : done.size / task.total
+    recordRateSample(Math.round(task.size * ratio))
+  }
   drawProgress(progressText(), force)
 }
 
 /**
- * @description 启动停帧提醒：大文件传输时“卡住了”与“在慢慢收”表面上很像，
- * 超过 {@link PROGRESS_STALL_MS} 没有新片就明确说一句，不让人干等
+ * @description 启动进度刷新与“没有任何输入”提醒。
+ *
+ * 判据是**最后一次收到字节**的时刻：一个 16 KB 的片要打几十秒，用“最后一次收下整片”当判据
+ * 会在每片期间反复误报“没收到新片”。现在只要上游还在打字就一直不报，只有真的断了输入才提醒，
+ * 且两次提醒之间留 20 秒间隔。
  */
 function startProgressLoop(): void {
   if (!progressEnabled()) return
 
   const timer = setInterval(() => {
     const now = Date.now()
-    const reference = lastFrameAt > 0 ? lastFrameAt : startedAt
-    const idleMs = now - reference
-    const finished = meta !== null && done.size >= meta.total
-    if (idleMs >= PROGRESS_STALL_MS && !finished) {
-      if (now - lastStallAt < PROGRESS_STALL_MS) return
-      lastStallAt = now
-      const hint =
-        `已 ${formatSpan(idleMs)}没有收到新片（${meta ? `${done.size}/${meta.total} 片` : '还没收到开始帧'}）：` +
-        '上游可能停了、链路卡住，或目标窗口里弹出的模态框挡住了输入'
-      if (progressInPlace) drawProgress(`${progressText()} · ${hint}`, true)
-      else process.stdout.write(`! ${hint}\n`)
+    const merging = mergeDone >= 0
+    const finished = merging || (meta !== null && done.size >= meta.total)
+    const idleMs = now - Math.max(lastInputAt, startedAt)
+
+    if (!finished && idleMs >= IDLE_WARN_MS) {
+      if (now - lastIdleWarnAt < IDLE_WARN_REPEAT_MS) return
+      lastIdleWarnAt = now
+      const where = meta ? `（${done.size}/${meta.total} 片已完成）` : '（还没收到开始帧）'
+      const hint = paint(
+        `! 已 ${formatSpan(idleMs)}没有任何输入${where}：` +
+          '上游可能停了、链路卡住，或目标窗口里弹出的模态框挡住了输入',
+        ANSI.yellow
+      )
+      if (progressInPlace) drawProgress(`${progressText()}  ${hint}`, true)
+      else process.stdout.write(`${hint}\n`)
       return
     }
     drawProgress(progressText())
@@ -357,10 +553,16 @@ function startProgressLoop(): void {
  * @param total 总片数
  */
 function reportMergeProgress(count: number, total: number): void {
+  if (mergeStartedAt === 0) mergeStartedAt = Date.now()
   mergeTotal = total
   mergeDone = count
   // 最后一片必须画出来（否则节流会让界面停在 99%）
   drawProgress(progressText(), count >= total)
+}
+
+/** @description 一段片号文本太长时截断显示（完整列表仍然打在 #MISS 行里） */
+function compactIndexList(text: string, limit = 160): string {
+  return text.length > limit ? `${text.slice(0, limit)}…` : text
 }
 
 /** 打印普通信息（quiet 时静默）。 */
@@ -680,11 +882,15 @@ function handleBegin(frame: ParsedBeginFrame): void {
   })
   const found = scanExistingParts()
   info(
-    `接收开始：${frame.total} 片 · 文件 ${formatSize(frame.size)}` +
-      `（线上 ${formatSize(frame.wire)}）· ${frame.alphabet}/${frame.compression}/${frame.mode}` +
-      (found > 0 ? ` · 续传已有 ${found} 片` : '')
+    `${paint('接收开始', ANSI.cyan)}  ${frame.total} 片 · 文件 ${formatSize(frame.size)}` +
+      `（线上 ${formatSize(frame.wire)}，每片 ${formatSize(frame.chunk)}）· ` +
+      `${frame.alphabet} / ${frame.compression} / ${frame.mode}` +
+      (found > 0 ? ` · ${paint(`续传已有 ${found} 片`, ANSI.yellow)}` : '')
   )
-  if (verbose) info(`任务 ${frame.job}：分片目录 ${dir}`)
+  info(
+    `${paint('  输出', ANSI.dim)} ${options.out ?? frame.name ?? `job-${frame.job}.bin`}` +
+      `   ${paint('分片', ANSI.dim)} ${dir}`
+  )
   noteProgress(true)
 }
 
@@ -808,9 +1014,8 @@ async function mergeAndVerify(): Promise<number> {
     ack(buildResumeToken({ job: task.job, total: task.total, missing: missingList }))
     writeReport(true)
     info(
-      `数据不全：还缺 ${missingList.length}/${task.total} 片（${formatIndexList(
-        missingList,
-        task.total
+      `数据不全：还缺 ${missingList.length}/${task.total} 片（${compactIndexList(
+        formatIndexList(missingList, task.total)
       )}）。\n  → 在 Typer 里粘贴上面的 @T2R 令牌，只补这些片即可；已收到的分片全部保留。`
     )
     return EXIT.INCOMPLETE
@@ -819,6 +1024,7 @@ async function mergeAndVerify(): Promise<number> {
   const crcs = collectPartCrcs()
   mergeTotal = task.total
   mergeDone = 0
+  mergeStartedAt = Date.now()
   drawProgress(progressText(), true)
   const source = task.total === 0 ? Readable.from([]) : partStream(task.total, crcs)
   const outputPath = resolveOutputPath()
@@ -890,7 +1096,15 @@ async function mergeAndVerify(): Promise<number> {
         `ms=${ms} cps=${Math.round(chars / (ms / 1000))}`
     )
   }
-  if (!quiet) info(`完成：${outputPath}（${task.size} 字节，SHA-256 已校验）`)
+  if (!quiet) {
+    const elapsedMs = Math.max(1, Date.now() - startedAt)
+    const average = (task.size / elapsedMs) * 1000
+    info(
+      `${paint('✔ 完成', ANSI.green)}  ${formatSize(task.size)} · ${task.total} 片 · ` +
+        `用时 ${formatSpan(elapsedMs)} · 平均 ${formatSize(average)}/s · SHA-256 已校验`
+    )
+    info(`  ${paint('输出', ANSI.dim)} ${outputPath}`)
+  }
   return EXIT.OK
 }
 
@@ -947,6 +1161,7 @@ function createStreamSplitter(): { push(text: string): string[]; flush(): string
       }
     }
     buffer = buffer.slice(start)
+    pendingFrameText = buffer
     if (buffer.length > MAX_LINE_CHARS) {
       throw new FrameError('overlong', `单帧超过 ${MAX_LINE_CHARS} 字符上限`)
     }
@@ -960,6 +1175,7 @@ function createStreamSplitter(): { push(text: string): string[]; flush(): string
   function flush(): string[] {
     const rest = buffer
     buffer = ''
+    pendingFrameText = ''
     return rest.length > 0 ? [rest] : []
   }
 
@@ -1025,6 +1241,8 @@ async function run(): Promise<number> {
    */
   const onData = (chunk: string | Buffer): void => {
     const text = typeof chunk === 'string' ? chunk : chunk.toString('utf8')
+    // 任何字节都算“上游还活着”：帧要整行才算收到，但靠这个才不会把“正在收长片”误报成断流
+    noteInput()
     if (text.includes('\u0003')) {
       ended = true
       source.destroy()
