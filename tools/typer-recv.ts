@@ -1107,7 +1107,9 @@ function handleLine(rawLine: string): void {
     if (verbose) {
       info(`忽略无法解析的行（${code}）：${(error instanceof Error && error.message) || ''}`)
     } else if (noiseLines <= 3) {
-      info(`忽略无法解析的行（${code}）。若持续出现，请检查是否混入了终端回显或提示符。`)
+      // 带上具体原因：像"片号分隔符只接受英文字符"这种提示，比"混入了回显"有用得多
+      const detail = error instanceof Error && error.message ? `：${error.message}` : ''
+      info(`忽略无法解析的行（${code}）${detail}。若持续出现，请检查是否混入了终端回显或提示符。`)
     }
     return
   }

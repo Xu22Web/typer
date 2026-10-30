@@ -733,18 +733,49 @@ export function estimateDataFrameChars(meta: {
 // ---------------------------------------------------------------------------
 
 /**
+ * 片号列表的分隔符集合：**只接受英文字符**（逗号 / 分号 / ASCII 空白）。
+ *
+ * 为什么不再容忍中文标点：线路上的片号列表永远由 `formatIndexList()` 产出（`3,5,12-20`），
+ * 续传令牌同理；中文标点只可能来自"输入法没切英文"的手误。把这种手误当场报出来，
+ * 比静默接受更好——否则同一处输入法问题会以"片号不对"的形式在别的输入框里再犯一次。
+ *
+ * 空白按 ASCII 展开写：`\s` 会把全角空格（U+3000）、NBSP 也算成空白，那就不是"英文字符"了。
+ */
+const INDEX_SEPARATORS = /[,; \t\r\n\f\v]+/
+
+/**
+ * @description 找出文本里的第一个非 ASCII 字符（用于把"分隔符只能英文"说清楚）
+ * @param text 待检查文本
+ * @returns 命中的字符与码点；全是 ASCII 时返回 null
+ */
+function findNonAscii(text: string): { char: string; code: number } | null {
+  for (const char of text) {
+    const code = char.codePointAt(0) ?? 0
+    if (code > 0x7e) return { char, code }
+  }
+  return null
+}
+
+/**
  * @description 把片号集合文本解析成升序去重的数组
  * @param text 形如 `3,5,12-20` 的文本（片号数组会被转成同形文本）
  * @param total 片总数（给出时校验越界）
  * @returns 升序去重的片号数组
  */
 export function parseIndexList(text: string | number[], total?: number): number[] {
+  const source = String(text)
+  const foreign = findNonAscii(source)
+  if (foreign) {
+    const code = `U+${foreign.code.toString(16).toUpperCase().padStart(4, '0')}`
+    throw new FrameError(
+      'range',
+      `片号分隔符只接受英文字符（逗号 , / 分号 ; / 空格），` +
+        `但遇到了中文符号「${foreign.char}」(${code})：请把输入法切到英文后重新输入`
+    )
+  }
+
   const indexes = new Set<number>()
-  // 顿号写成 \u3001 转义：这个函数会被打进接收端产物（tools/typer-recv.mjs），
-  // 而产物要整份逐字符打进目标机终端——里面有一个非 ASCII 字符，引擎就会在开始前报错
-  const parts = String(text)
-    .split(/[,;\u3001\s]+/)
-    .filter((part) => part.length > 0)
+  const parts = source.split(INDEX_SEPARATORS).filter((part) => part.length > 0)
 
   for (const part of parts) {
     const match = /^(\d+)(?:-(\d+))?$/.exec(part)

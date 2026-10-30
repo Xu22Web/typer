@@ -202,6 +202,18 @@ describe('typer-recv.mjs：端到端接收与完整性校验', () => {
     expect(result.stderr).toContain('--progress 只接受')
   })
 
+  it('片号分隔符只接受英文字符：中文标点被拒并指出是哪个字符', async () => {
+    writeFileSync(join(work, 'dunhao.txt'), '@T2R a1b2c3d4 10 3、5\n')
+    const bad = await runTool(['--in', 'dunhao.txt', '-d', 'parts-dunhao'], work)
+    expect(bad.stdout).toContain('只接受英文字符')
+    expect(bad.stdout).toContain('U+3001')
+
+    writeFileSync(join(work, 'ascii.txt'), '@T2R a1b2c3d4 10 3,5\n')
+    const ok = await runTool(['--in', 'ascii.txt', '-d', 'parts-ascii'], work)
+    expect(ok.stdout).toContain('续传令')
+    expect(ok.stdout).not.toContain('只接受英文字符')
+  })
+
   it('默认 ascii32（5 位、零 Shift）档的二进制文件逐字节还原，退出码 0', async () => {
     const source = makeSource(70_000)
     writeFileSync(join(work, 'src.bin'), source)

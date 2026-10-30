@@ -459,7 +459,7 @@ const previewRows = computed(() => summary.value?.preview ?? [])
                 <ElInput
                   v-model="transfer.onlyText.value"
                   size="small"
-                  placeholder="如 3,5,12-20；留空表示从「起始片号」开始全发"
+                  placeholder="如 3,5,12-20；分隔符用英文逗号 / 分号 / 空格"
                   @change="transfer.refreshPlan()"
                 />
               </label>

@@ -243,11 +243,18 @@ describe('片号集合', () => {
     expect(() => parseIndexList('abc')).toThrow(/无法解析/)
   })
 
-  it('顿号也当分隔符（但要写成 \\u3001 转义：接收端产物必须纯 ASCII）', () => {
-    // 产物 tools/typer-recv.mjs 会被逐字符打进目标机，里面有一个非 ASCII 字符，
-    // 引擎就会在开始前整份报错——所以这个"便利分隔符"只能以转义形式出现在源码里
-    expect(parseIndexList('3、5、12-14', 20)).toEqual([3, 5, 12, 13, 14])
+  it('分隔符只接受英文字符：中文标点当场报错并指出是哪个字符', () => {
+    // 线路上的片号列表永远由 formatIndexList 产出，所以只有 ASCII 分隔符是合法输入
     expect(parseIndexList('3; 5\t12', 20)).toEqual([3, 5, 12])
+    expect(parseIndexList('3\r\n5', 20)).toEqual([3, 5])
+    expect(parseIndexList('3  5', 20)).toEqual([3, 5])
+
+    for (const bad of ['3、5', '3，5', '3；5', '3　5']) {
+      expect(() => parseIndexList(bad, 20)).toThrow(/只接受英文字符/)
+    }
+    // 全角空格（U+3000）也不再算空白，报错要把"是哪个字符"说清楚
+    expect(() => parseIndexList('3、5', 20)).toThrow(/U\+3001/)
+    expect(() => parseIndexList('3　5', 20)).toThrow(/U\+3000/)
   })
 
   it('缺失片与 from/only 归一化', () => {
