@@ -134,17 +134,42 @@ function dockToEdge(): void {
   void window.api.float.dock()
 }
 
-let dragStart: { x: number; y: number; moved: boolean } | null = null
+interface DragState {
+  x: number
+  y: number
+  moved: boolean
+  pointerId: number
+  /** 指针按下时的标题栏元素：指针捕获只能落在它上面 */
+  target: HTMLElement
+}
+
+let dragStart: DragState | null = null
 
 /**
  * @description 开始拖动卡片：按住标题栏移动窗口
+ *
+ * 两个要点：
+ * 1. 标题栏里包着「吸附到边缘 / 回到主窗口」两个按钮，指针的起点落在按钮上时必须让给按钮：
+ *    一旦在 pointerdown 阶段把指针捕获到标题栏，pointerup 与随之产生的 click 都会落到标题栏上
+ *    （click 的目标是 pointerdown 与 pointerup 目标的最近公共祖先），按钮就永远点不动；
+ * 2. 其余位置要**立刻**捕获指针，否则快速拖动时指针一离开标题栏，pointermove 就不再送来，
+ *    窗口会拖到一半卡住。
  * @param event 指针事件
  */
 function onPointerDown(event: PointerEvent): void {
   if (event.button !== 0) return
+  const origin = event.target
+  if (origin instanceof Element && origin.closest('button')) return
+
   const target = event.currentTarget as HTMLElement
-  target.setPointerCapture(event.pointerId)
-  dragStart = { x: event.screenX, y: event.screenY, moved: false }
+  target.setPointerCapture?.(event.pointerId)
+  dragStart = {
+    x: event.screenX,
+    y: event.screenY,
+    moved: false,
+    pointerId: event.pointerId,
+    target
+  }
 }
 
 /**
@@ -152,25 +177,25 @@ function onPointerDown(event: PointerEvent): void {
  * @param event 指针事件
  */
 function onPointerMove(event: PointerEvent): void {
-  if (!dragStart) return
-  const dx = event.screenX - dragStart.x
-  const dy = event.screenY - dragStart.y
-  if (!dragStart.moved && Math.abs(dx) + Math.abs(dy) < 4) return
+  const start = dragStart
+  if (!start) return
+  const dx = event.screenX - start.x
+  const dy = event.screenY - start.y
+  if (!start.moved && Math.abs(dx) + Math.abs(dy) < 4) return
 
-  dragStart.moved = true
-  dragStart.x = event.screenX
-  dragStart.y = event.screenY
+  start.moved = true
+  start.x = event.screenX
+  start.y = event.screenY
   void window.api.float.drag(dx, dy)
 }
 
 /** @description 结束拖动：靠近边缘会被吸成细条，否则自由停在那里 */
-function onPointerUp(event: PointerEvent): void {
+function onPointerUp(): void {
   const start = dragStart
   dragStart = null
-  if (event.currentTarget instanceof HTMLElement) {
-    event.currentTarget.releasePointerCapture?.(event.pointerId)
-  }
-  if (!start?.moved) return
+  if (!start) return
+  start.target.releasePointerCapture?.(start.pointerId)
+  if (!start.moved) return
   void window.api.float.drop()
 }
 
