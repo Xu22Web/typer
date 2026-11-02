@@ -224,7 +224,7 @@ describe.skipIf(process.platform !== 'win32')('宿主 dry-run 真实启动', () 
       ok: boolean
     }>('ime', { ensureEnglish: true })
 
-    // 布局标识是 8 位十六进制 KLID（如 00000409 = 英语(美国)）
+    // 布局标识是 8 位 hex KLID（如 00000409 = 英语(美国)）
     expect(ime.before.layoutName).toMatch(/^[0-9a-f]{8}$/)
     expect(typeof ime.before.english).toBe('boolean')
     expect(typeof ime.before.cjk).toBe('boolean')

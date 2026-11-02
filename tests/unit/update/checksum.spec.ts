@@ -30,14 +30,14 @@ describe('sha256File', () => {
 })
 
 describe('normalizeDigest', () => {
-  it('接受裸十六进制与 sha256: 前缀', () => {
+  it('接受裸 hex 与 sha256: 前缀', () => {
     const hex = 'a'.repeat(64)
     expect(normalizeDigest(hex)).toBe(hex)
     expect(normalizeDigest(`sha256:${hex}`)).toBe(hex)
     expect(normalizeDigest(`SHA256:${hex.toUpperCase()}`)).toBe(hex)
   })
 
-  it('长度不对或非十六进制时返回 null', () => {
+  it('长度不对或非 hex 时返回 null', () => {
     expect(normalizeDigest('abc')).toBeNull()
     expect(normalizeDigest(undefined)).toBeNull()
     expect(normalizeDigest('z'.repeat(64))).toBeNull()

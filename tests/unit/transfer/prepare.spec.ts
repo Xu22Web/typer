@@ -121,7 +121,7 @@ describe('prepareTransfer · 不压缩（原字节）', () => {
     expect(job.summary.peakFrameChars).toBeLessThanOrEqual(job.summary.maxFrameChars)
   })
 
-  it('5 位档：字符串长度约为字节数的 1.6 倍（比十六进制少 20%）', async () => {
+  it('5 位档：字符串长度约为字节数的 1.6 倍（比 Hex 少 20%）', async () => {
     const source = binary(20_000)
     const job = await prepare(writeSource('src.bin', source), {
       alphabet: 'ascii32',
@@ -287,7 +287,7 @@ describe('prepareTransfer · 整文件压缩', () => {
   }, 60_000)
 
   it('可压缩的大文件压缩后远超高水位时同样完成', async () => {
-    // 随机十六进制：Brotli 能压掉一半左右，压缩产物远大于 16 KiB
+    // 随机 hex：Brotli 能压掉一半左右，压缩产物远大于 16 KiB
     const source = Buffer.from(randomBytes(512 * 1024).toString('hex'), 'utf8')
     const startedAt = Date.now()
     const job = await prepare(writeSource('big-text.txt', source), {
@@ -367,18 +367,18 @@ describe('prepareTransfer · 校验与取消', () => {
   })
 })
 
-describe('prepareTransfer · 47 进制与质量自动升级', () => {
-  it('47 进制只能在终端：编辑器模式直接拒绝并说明原因', async () => {
+describe('prepareTransfer · Base47 与质量自动升级', () => {
+  it('Base47 只能在终端：编辑器模式直接拒绝并说明原因', async () => {
     const path = writeSource('src.bin', binary(300))
     await expect(prepare(path, { alphabet: 'b47', mode: 'line' })).rejects.toMatchObject({
       code: 'alphabet',
-      message: expect.stringMatching(/47 进制档只能用于「终端/)
+      message: expect.stringMatching(/Base47 档只能用于「终端/)
     })
     // 终端模式下同一个文件正常准备
     await expect(prepare(path, { alphabet: 'b47', mode: 'term' })).resolves.toBeTruthy()
   })
 
-  it('47 进制：字符数比 5 位档再少约 8%，且能逐字节还原', async () => {
+  it('Base47：字符数比 5 位档再少约 8%，且能逐字节还原', async () => {
     const source = binary(8192, 11)
     const wide = await prepare(writeSource('a.bin', source), {
       alphabet: 'b47',

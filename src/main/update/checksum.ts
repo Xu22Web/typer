@@ -6,7 +6,7 @@ import { createHash } from 'node:crypto'
 import { createReadStream } from 'node:fs'
 
 /**
- * @description 流式计算文件的 SHA-256（十六进制小写）
+ * @description 流式计算文件的 SHA-256（hex 小写）
  * @param filePath 文件路径
  * @returns 摘要
  */
@@ -23,16 +23,16 @@ export async function sha256File(filePath: string): Promise<string> {
 /**
  * @description 计算一段内存数据的 SHA-256（便于测试与小块校验）
  * @param text 文本内容
- * @returns 十六进制摘要
+ * @returns hex 摘要
  */
 export function sha256Text(text: string): string {
   return createHash('sha256').update(text, 'utf8').digest('hex')
 }
 
 /**
- * @description 把 `sha256:abcd…` 形式的摘要规范成裸十六进制
+ * @description 把 `sha256:abcd…` 形式的摘要规范成裸 hex
  * @param digest 原始摘要（可缺省）
- * @returns 64 位十六进制小写摘要；不合法时返回 null
+ * @returns 64 位 hex 小写摘要；不合法时返回 null
  */
 export function normalizeDigest(digest: string | undefined): string | null {
   if (!digest) return null
@@ -47,7 +47,7 @@ export function normalizeDigest(digest: string | undefined): string | null {
  * @description 从校验和清单里取出指定文件名的摘要；支持 `<hash>  <file>`、`<hash> *<file>` 与 `SHA256 (<file>) = <hash>` 三种写法
  * @param text 清单全文
  * @param fileName 目标文件名（不区分大小写）
- * @returns 十六进制小写摘要，未找到时返回 null
+ * @returns hex 小写摘要，未找到时返回 null
  */
 export function parseChecksumManifest(text: string, fileName: string): string | null {
   const target = fileName.toLowerCase()

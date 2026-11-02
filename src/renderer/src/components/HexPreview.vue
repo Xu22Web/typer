@@ -2,7 +2,7 @@
 import type { HexPreviewRow } from '@shared/transfer/transfer'
 
 /**
- * 十六进制预览：偏移 + hex + ASCII，只展示主进程截取的文件开头若干行，
+ * Hex 预览：偏移 + hex + ASCII，只展示主进程截取的文件开头若干行，
  * 用于确认"选对文件了"，不做大文件查看器。
  */
 defineProps<{ rows: HexPreviewRow[] }>()

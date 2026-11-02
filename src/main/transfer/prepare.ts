@@ -145,7 +145,7 @@ async function readHead(path: string, length: number): Promise<Buffer> {
 }
 
 /**
- * @description 生成前若干行的十六进制预览（偏移 + hex + ASCII）
+ * @description 生成前若干行的 Hex 预览（偏移 + hex + ASCII）
  * @param bytes 文件头部字节
  * @returns 预览行（最多 HEX_PREVIEW_ROWS 行）
  */
@@ -333,12 +333,12 @@ export async function prepareTransfer(input: PrepareTransferInput): Promise<Prep
   const maxFrameChars = clamp(Math.floor(options.maxFrameChars), TRANSFER_LIMITS.maxFrameChars)
   const quality = clamp(Math.floor(options.quality), TRANSFER_LIMITS.quality)
 
-  // 47 进制用到了 `- . / ' [ ] \` 这些键：编辑器会把 `--` / `1/2` / `...` 自动更正、
+  // Base47 用到了 `- . / ' [ ] \` 这些键：编辑器会把 `--` / `1/2` / `...` 自动更正、
   // 把引号括号自动闭合，载荷当场就被改写。这里直接拒绝，而不是等整文件哈希对不上才发现。
   if (options.alphabet === 'b47' && options.mode !== 'term') {
     throw new TransferError(
       'alphabet',
-      '47 进制档只能用于「终端 / 命令行」目标端：编辑器会自动更正 -- 、1/2 、... 并自动闭合引号括号。请改用 ASCII 5 位档'
+      'Base47 档只能用于「终端 / 命令行」目标端：编辑器会自动更正 -- 、1/2 、... 并自动闭合引号括号。请改用 ASCII 5 位档'
     )
   }
 

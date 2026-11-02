@@ -66,7 +66,7 @@ const ASCII32_CHARS = '0123456789abcdefghijklmnopqrstuv'
 /** 6 bit 符号表：数字 + 大小写字母 + `-` `_`，共 64 个；不含引号/括号，编辑器不会自动闭合。 */
 const ASCII64_CHARS = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz-_'
 
-/** 4 bit 符号表：十六进制（诊断兜底，最抗干扰）。 */
+/** 4 bit 符号表：Hex（诊断兜底，最抗干扰）。 */
 const HEX_CHARS = '0123456789ABCDEF'
 
 /**

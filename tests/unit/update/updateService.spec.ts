@@ -21,9 +21,9 @@ function makeInstallerBytes(seed = 'typer'): Buffer {
 }
 
 /**
- * @description 计算字节内容的 SHA-256 十六进制摘要
+ * @description 计算字节内容的 SHA-256 hex 摘要
  * @param buffer 待计算内容
- * @returns 十六进制摘要
+ * @returns hex 摘要
  */
 function sha256(buffer: Buffer): string {
   return createHash('sha256').update(buffer).digest('hex')

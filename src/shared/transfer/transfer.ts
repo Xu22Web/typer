@@ -38,7 +38,7 @@ export const TRANSFER_BITS: Readonly<Record<TransferAlphabet, number>> = {
 export const TRANSFER_ALPHABET_OPTIONS: readonly TransferAlphabetOption[] = [
   {
     value: 'b47',
-    label: '47 进制（终端最快）',
+    label: 'Base47（终端最快）',
     bits: Math.log2(47),
     charsPerByte: 8 / Math.log2(47),
     terminalsOnly: true,
@@ -63,7 +63,7 @@ export const TRANSFER_ALPHABET_OPTIONS: readonly TransferAlphabetOption[] = [
   },
   {
     value: 'hex',
-    label: '十六进制 4 位（最稳）',
+    label: 'Hex 4 位（最稳）',
     bits: 4,
     charsPerByte: 2,
     description: '只有 0-9 与 A-F，最抗终端与远控干扰；字符数最多，仅在排查链路问题时使用'
@@ -96,7 +96,7 @@ export const TRANSFER_MODE_OPTIONS: ReadonlyArray<{
   {
     value: 'line',
     label: '单行输入框',
-    description: '没有换行的输入框：帧之间用标记分隔，只能配 ASCII/十六进制档'
+    description: '没有换行的输入框：帧之间用标记分隔，只能配 ASCII / Hex 档'
   }
 ]
 
@@ -146,7 +146,7 @@ export const TRANSFER_LIMITS = {
   quality: [1, 11]
 } as const satisfies Record<string, readonly [number, number]>
 
-/** 十六进制预览的行数（每行 16 字节）。 */
+/** Hex 预览的行数（每行 16 字节）。 */
 export const HEX_PREVIEW_ROWS = 16
 
 /**
@@ -294,10 +294,10 @@ export function symbolsForBytes(bytes: number, alphabet: TransferAlphabet): numb
 /** 分块基数编码的块大小（字节，与 codec.ts 一致） */
 export const RADIX_BLOCK_BYTES = 32
 
-/** 47 进制下一个满块（32 字节）需要的字符数：ceil(256 / log2(47))，已按整数幂校验 */
+/** Base47 下一个满块（32 字节）需要的字符数：ceil(256 / log2(47))，已按整数幂校验 */
 export const B47_BLOCK_DIGITS = 47
 
-/** 47 进制下 1..31 字节的末块字符数（用整数幂校验，避免浮点少算一位） */
+/** Base47 下 1..31 字节的末块字符数（用整数幂校验，避免浮点少算一位） */
 const B47_REST_DIGITS: ReadonlyArray<number> = (() => {
   const table: number[] = [0]
   for (let length = 1; length < RADIX_BLOCK_BYTES; length++) {

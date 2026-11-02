@@ -17,7 +17,7 @@ import { effectiveFrameGapMs, type TransferPace } from '@main/typing/scheduling/
 
 /**
  * 文件输入面板：把选中的文件切成"每片一行"的帧并按需补发/续传。
- * 面板只负责文件摘要、十六进制预览与续传重传，节奏与其它参数都在「设置」页。
+ * 面板只负责文件摘要、Hex 预览与续传重传，节奏与其它参数都在「设置」页。
  */
 const transfer = useTransfer()
 const typing = useTyping()
@@ -169,7 +169,7 @@ const alphabetOption = computed(() =>
 )
 
 /**
- * 可选符号表：47 进制用到 `- . / ' [ ] \`` 这些键，编辑器会把它们自动更正或自动闭合，
+ * 可选符号表：Base47 用到 `- . / ' [ ] \`` 这些键，编辑器会把它们自动更正或自动闭合，
  * 所以只在终端模式下才给选。
  */
 const alphabetChoices = computed(() =>
@@ -199,7 +199,7 @@ const compressionHint = computed(() => {
 /** 片数过多时的提示阈值：片越多，接收端建目录、合并与续传报告越慢 */
 const manyParts = computed(() => (summary.value?.total ?? 0) > 5000)
 
-/** 是否展开十六进制预览（默认折叠） */
+/** 是否展开 Hex 预览（默认折叠） */
 const showPreview = ref(false)
 /** 是否展开续传/重传区（默认折叠） */
 const showResume = ref(false)
@@ -226,7 +226,7 @@ async function changeAlphabet(alphabet: TransferAlphabet): Promise<void> {
 async function changeMode(mode: TransferTargetMode): Promise<void> {
   const fallback = mode !== 'term' && Boolean(alphabetOption.value.terminalsOnly)
   if (fallback) {
-    ElMessage.info('47 进制档只能在终端使用：编辑器会自动更正符号，已切回 ASCII 5 位档')
+    ElMessage.info('Base47 档只能在终端使用：编辑器会自动更正符号，已切回 ASCII 5 位档')
   }
   const alphabet: TransferAlphabet = fallback ? 'ascii32' : options.value.alphabet
   await settingsStore.update({ transfer: fallback ? { mode, alphabet } : { mode } })
@@ -365,7 +365,7 @@ async function sendScriptAsFile(): Promise<void> {
   ElMessage.success('已按「ASCII 6 位 + 压缩」准备接收脚本：点「开始输入」即可打进目标机')
 }
 
-/** 十六进制预览行（由主进程截取） */
+/** Hex 预览行（由主进程截取） */
 const previewRows = computed(() => summary.value?.preview ?? [])
 </script>
 
@@ -664,7 +664,7 @@ const previewRows = computed(() => summary.value?.preview ?? [])
           </ElButton>
           <ElButton class="control-btn" size="small" text @click="showPreview = !showPreview">
             <span :class="showPreview ? 'i-mdi-chevron-up' : 'i-mdi-chevron-down'" />
-            {{ showPreview ? '收起预览' : '查看十六进制' }}
+            {{ showPreview ? '收起预览' : '查看 Hex' }}
           </ElButton>
         </div>
 
