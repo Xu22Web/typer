@@ -12,11 +12,14 @@
  * 用法：
  *   node scripts/bench-throughput.mjs
  *   node scripts/bench-throughput.mjs --real "无标题 - 记事本" --chars 1000
+ *
+ * 文件传输的字符数 / 各档位耗时不在这个脚本里：用 `scripts/bench-transfer.mjs`，
+ * 它直接复用主进程的准备实现，并与界面上的字符档口径一致。
  */
 import { spawn } from 'node:child_process'
 import { createInterface } from 'node:readline'
 import { dirname, join } from 'node:path'
-import { fileURLToPath, pathToFileURL } from 'node:url'
+import { fileURLToPath } from 'node:url'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const hostScript = join(root, 'scripts', 'typing-host.ps1')
@@ -26,101 +29,7 @@ const realIndex = args.indexOf('--real')
 const targetTitle = realIndex >= 0 ? args[realIndex + 1] : ''
 const charsArg = args.indexOf('--chars')
 const totalChars = charsArg >= 0 ? Number(args[charsArg + 1]) : 2000
-const fileIndex = args.indexOf('--file')
-const targetFile = fileIndex >= 0 ? args[fileIndex + 1] : null
 const dryRun = !targetTitle
-
-/**
- * @description 按 370 字符/秒（实测目标端上限）折算耗时
- * @param chars 字符数
- * @returns 人类可读的时长
- */
-function humanTime(chars) {
-  const seconds = Math.round(chars / 370)
-  if (seconds < 60) return `${seconds} 秒`
-  const minutes = Math.floor(seconds / 60)
-  return `${minutes} 分 ${seconds % 60} 秒`
-}
-
-/**
- * @description 文件模式：对同一个文件比较各编码的线上字符数与预计耗时
- *
- * 这里直接复用主进程的准备实现（用 esbuild 就地打包），而不是另写一份估算，
- * 免得基准结果与真实发送的口径出现漂移。
- * @param path 源文件路径
- */
-async function fileReport(path) {
-  const esbuild = await import('esbuild')
-  const outdir = join(root, 'out', 'bench')
-  await esbuild.build({
-    entryPoints: {
-      prepare: join(root, 'src', 'main', 'transfer', 'prepare.ts'),
-      shared: join(root, 'src', 'shared', 'transfer', 'transfer.ts')
-    },
-    bundle: true,
-    platform: 'node',
-    format: 'esm',
-    packages: 'external',
-    outdir,
-    outExtension: { '.js': '.mjs' },
-    logLevel: 'error',
-    alias: {
-      '@main': join(root, 'src', 'main'),
-      '@shared': join(root, 'src', 'shared')
-    }
-  })
-  const { prepareTransfer } = await import(pathToFileURL(join(outdir, 'prepare.mjs')).href)
-  const { CHUNK_PRESETS } = await import(pathToFileURL(join(outdir, 'shared.mjs')).href)
-  // 与界面上的「默认」预设保持同一口径
-  const preset = CHUNK_PRESETS.find((item) => item.id === 'default') ?? CHUNK_PRESETS[0]
-
-  const encodings = ['hex', 'b64', 'txt', 'gzb64']
-  const rows = []
-  for (const encoding of encodings) {
-    try {
-      const job = await prepareTransfer({
-        path,
-        options: {
-          encoding,
-          chunkBytes: preset.chunkBytes,
-          maxFrameChars: preset.maxFrameChars
-        }
-      })
-      rows.push({
-        encoding,
-        total: job.summary.total,
-        chars: job.summary.frameChars,
-        wire: job.summary.wireBytes,
-        peak: job.summary.peakFrameChars
-      })
-      await job.dispose()
-    } catch (error) {
-      rows.push({ encoding, error: error instanceof Error ? error.message : String(error) })
-    }
-  }
-
-  const base = rows.find((row) => row.encoding === 'hex' && row.chars)
-  console.log(
-    `文件：${path}\n分片：${preset.chunkBytes} 字节（帧长上限 ${preset.maxFrameChars}，${preset.label}预设）\n`
-  )
-  console.log('编码      帧字符数      线上字节   相对十六进制   预计耗时（370 字符/秒）')
-  for (const row of rows) {
-    if (row.error) {
-      console.log(`${row.encoding.padEnd(8)}  不适用（${row.error.slice(0, 44)}…）`)
-      continue
-    }
-    const speedup = base ? `${(base.chars / row.chars).toFixed(2)}×` : '—'
-    console.log(
-      `${row.encoding.padEnd(8)}  ${String(row.chars).padStart(10)}  ${String(row.wire).padStart(10)}  ` +
-        `${speedup.padStart(12)}   ${humanTime(row.chars).padStart(12)}`
-    )
-  }
-}
-
-if (targetFile) {
-  await fileReport(targetFile)
-  process.exit(0)
-}
 
 /** @description 把目标窗口切到前台（只给 --real 用） */
 function focusWindow(title) {
