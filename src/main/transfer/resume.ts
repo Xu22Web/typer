@@ -180,7 +180,7 @@ function parseRanges(text: string): ResumeState {
     throw new TransferError(
       'resume-format',
       `无法识别续传状态（${error instanceof Error ? error.message : String(error)}）。` +
-        '把接收端那一段整段粘进来就行：@T2R 令牌、#MISS 行、resume.json 都认'
+        '可粘贴接收端输出的任一形式：@T2R 令牌、#MISS 行、resume.json，或直接给片号'
     )
   }
 }

@@ -338,7 +338,7 @@ export async function prepareTransfer(input: PrepareTransferInput): Promise<Prep
   if (options.alphabet === 'b47' && options.mode !== 'term') {
     throw new TransferError(
       'alphabet',
-      'Base47 档只能用于「终端 / 命令行」目标端：编辑器会自动更正 -- 、1/2 、... 并自动闭合引号括号。请改用 ASCII 5 位档'
+      'Base47 档只能用于「终端 / 命令行」目标端：编辑器会自动更正 -- 、1/2 、... 并自动闭合引号与括号。请改用 ASCII 5 位档'
     )
   }
 

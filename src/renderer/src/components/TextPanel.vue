@@ -130,8 +130,8 @@ function clear(): void {
     <div v-if="looksLikeFrames" class="frame-hint">
       <div class="i-mdi-information-outline text-icon" />
       <div>
-        看起来是 Typer 帧文本：逐字符输入完全可行（接收端会逐片校验）， 但请把「错字概率」设为
-        0，否则错字会破坏该帧、需要重传那一片。
+        看起来是 Typer 帧文本：逐字符输入可行（接收端逐片校验），但需将「错字概率」设为
+        0，否则错字会使该片 CRC 校验失败并触发重传。
       </div>
     </div>
   </section>

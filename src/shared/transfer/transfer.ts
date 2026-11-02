@@ -43,7 +43,7 @@ export const TRANSFER_ALPHABET_OPTIONS: readonly TransferAlphabetOption[] = [
     charsPerByte: 8 / Math.log2(47),
     terminalsOnly: true,
     description:
-      "用满美式布局上零 Shift 的 47 个可打印键（字母数字 + ` - = [ ] \\ ; ' , . /）：字符数比 5 位档再少约 8%，不需要任何 Shift。仅限终端：编辑器会把 -- 、1/2 、... 自动更正，还会自动闭合引号与括号"
+      "用满美式布局上 47 个无需 Shift 的可打印键（字母数字 + ` - = [ ] \\ ; ' , . /）：字符数比 ASCII 5 位档少 8.2%。仅限终端：编辑器会把 -- 、1/2 、... 自动更正，并自动闭合引号与括号"
   },
   {
     value: 'ascii32',
@@ -51,7 +51,7 @@ export const TRANSFER_ALPHABET_OPTIONS: readonly TransferAlphabetOption[] = [
     bits: 5,
     charsPerByte: 8 / 5,
     description:
-      '只用数字与小写字母：完全不发 Shift，远程桌面下不会被输入法中英文切换干扰；字符数比 6 位档多 20%，但实际更快'
+      '只用数字与小写字母：不触发任何修饰键，每个字符都是一次独立注入；字符数比 ASCII 6 位档多 20%，但后者的 Shift 切换开销更大，实际耗时反而更短'
   },
   {
     value: 'ascii64',
@@ -59,14 +59,15 @@ export const TRANSFER_ALPHABET_OPTIONS: readonly TransferAlphabetOption[] = [
     bits: 6,
     charsPerByte: 8 / 6,
     description:
-      '数字 / 大小写字母 / `-` / `_`：字符数最少，但大写字母需要 Shift；远程桌面下每个修饰键切换要多花约 25ms'
+      '数字 / 大小写字母 / `-` / `_`：字符数最少，但约 42% 的字符需要 Shift，一次切换约 25ms；实测总耗时约为 ASCII 5 位档的 5 倍'
   },
   {
     value: 'hex',
-    label: 'Hex 4 位（最稳）',
+    label: 'Hex 4 位（诊断用）',
     bits: 4,
     charsPerByte: 2,
-    description: '只有 0-9 与 A-F，最抗终端与远控干扰；字符数最多，仅在排查链路问题时使用'
+    description:
+      '只有 0-9 与 A-F：字符数是字节数的 2 倍，且 A-F 需 Shift；仅在排查“链路是否改写字符”时使用'
   }
 ]
 
@@ -86,17 +87,17 @@ export const TRANSFER_MODE_OPTIONS: ReadonlyArray<{
   {
     value: 'term',
     label: '终端 / 命令行',
-    description: '接收端跑在终端：每帧用真回车提交，关回显，最快'
+    description: '接收端运行在终端：每帧用 CR 提交，可关闭回显，固定开销最小'
   },
   {
     value: 'editor',
     label: '记事本 / VS Code',
-    description: '接收端离线解码：用真回车换行；请配合 ASCII 6 位档，避免自动闭合与缩进'
+    description: '接收端离线解码：用真回车换行；配 ASCII 6 位档可避免自动闭合与自动缩进'
   },
   {
     value: 'line',
     label: '单行输入框',
-    description: '没有换行的输入框：帧之间用标记分隔，只能配 ASCII / Hex 档'
+    description: '没有换行的输入框：帧之间用 @T2 标记分隔，只能配 ASCII / Hex 档'
   }
 ]
 
@@ -111,8 +112,8 @@ export interface ChunkPreset {
 /**
  * 片大小预设（线上字节数）。
  *
- * 帧是逐字符打出去的：片越大，单帧越长、重传成本越高；片太小则帧头与序号开销变多。
- * 16 KiB 在 15 位档下约 8.7 K 字符/帧，帧头占比 <0.4%。
+ * 帧逐字符打出：片越大，单帧越长、重传成本越高；片太小则帧头与片号开销占比上升。
+ * 16 KiB 在 ASCII 5 位档下约 2.6 万字符/帧，帧头（约 30 字符）占比 <0.2%。
  */
 export const CHUNK_PRESETS: readonly ChunkPreset[] = [
   {
@@ -120,21 +121,21 @@ export const CHUNK_PRESETS: readonly ChunkPreset[] = [
     label: '小片',
     chunkBytes: 2048,
     maxFrameChars: 8192,
-    description: '链路不稳、需要频繁重传时用（单帧约 1.1 K 字符）'
+    description: '链路不稳定、需要频繁重传时使用（单帧约 3.3 K 字符）'
   },
   {
     id: 'default',
     label: '默认',
     chunkBytes: 16384,
     maxFrameChars: 65536,
-    description: '帧头占比 <0.4%，重传成本也还可以接受（单帧约 8.7 K 字符）'
+    description: '帧头占比 <0.2%，重传成本适中（单帧约 2.6 万字符）'
   },
   {
     id: 'large',
     label: '大片',
     chunkBytes: 65536,
     maxFrameChars: 262144,
-    description: '链路可靠时用于大文件（单帧约 105 K 字符，失败要重打这么多）'
+    description: '链路可靠时用于大文件（单帧约 10.5 万字符，重传成本高）'
   }
 ]
 

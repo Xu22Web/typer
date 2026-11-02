@@ -385,7 +385,7 @@ const previewRows = computed(() => summary.value?.preview ?? [])
     <div class="panel-body">
       <!-- 未选择文件：只给一个明确的入口与必要的解释 -->
       <div v-if="!summary" class="empty">
-        <p class="empty-title">选择一个文件，Typer 会把它逐片"打"到目标窗口</p>
+        <p class="empty-title">选择一个文件，Typer 将其按帧逐片输入到目标窗口</p>
         <p class="empty-desc">
           文件会被切成每片一行的纯文本帧，逐片校验、支持断点续传，接收端合并后再校验整文件哈希。
         </p>
@@ -495,9 +495,9 @@ const previewRows = computed(() => summary.value?.preview ?? [])
 
           <div v-if="showResume" class="resume-body">
             <p class="hint muted">
-              把接收端打印的那一段整段粘进来就行（<code class="mono">@T2R …</code> /
+              粘贴接收端输出的任一形式（<code class="mono">@T2R …</code> /
               <code class="mono">#MISS …</code> / <code class="mono">resume.json</code>
-              都认），粘上即生效，不再需要点按钮。
+              / 片号列表），粘贴后自动解析，无需额外确认。
             </p>
 
             <ElInput
@@ -505,7 +505,7 @@ const previewRows = computed(() => summary.value?.preview ?? [])
               type="textarea"
               :rows="2"
               resize="none"
-              placeholder="粘贴接收端输出（整段也行）"
+              placeholder="粘贴接收端输出（可整段粘贴）"
               @input="onResumeInput"
             />
 
@@ -595,8 +595,8 @@ const previewRows = computed(() => summary.value?.preview ?? [])
         <div v-if="manyParts" class="notice-line tone-warn">
           <div class="i-mdi-alert-outline text-icon" />
           <div class="notice-text">
-            共 {{ summary?.total }} 片：片越碎，接收端分片落盘、合并与续传报告都越慢。
-            把「片大小」换成「大文件」预设可以显著减少片数。
+            共 {{ summary?.total }} 片：片数越多，接收端分片落盘、合并与生成续传报告的开销越大。
+            将「片大小」改为「大片」预设可减少片数。
           </div>
         </div>
 
@@ -724,7 +724,7 @@ const previewRows = computed(() => summary.value?.preview ?? [])
           size="small"
           text
           :disabled="typing.isRunning.value || preparing"
-          title="目标机已有接收端时，用文件传输更新脚本（ASCII 6 位 + 压缩，几十秒）；首次仍须先把脚本打进终端"
+          title="目标机已有接收端时，可用文件传输更新脚本（ASCII 6 位 + 压缩，数十秒）；首次仍需先把脚本打进终端"
           @click="sendScriptAsFile"
         >
           <span class="i-mdi-rocket-launch-outline" /><span>以文件方式发送脚本</span>

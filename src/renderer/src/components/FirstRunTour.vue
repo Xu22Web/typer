@@ -89,7 +89,7 @@ watch(
   >
     <ElTourStep
       title="欢迎使用 Typer"
-      description="Typer 把文本与文件模拟成真实键盘输入，落到任意窗口里。花一分钟认识几个关键位置，随时按 Esc 退出。"
+      description="Typer 将文本与文件作为键盘事件输入到任意窗口。以下依次说明各关键位置；按 Esc 可随时退出。"
       :next-button-props="nextText"
     />
 
@@ -97,7 +97,7 @@ watch(
       target="#tour-mode-switch"
       placement="bottom-start"
       title="两种输入模式"
-      description="「文本」把内容逐字符模拟打字；「文件」把文件切成帧逐片发送到目标机，支持断点续传。"
+      description="「文本」按字符输入内容；「文件」把文件切成帧逐片发送到目标机，支持断点续传。"
       :prev-button-props="prevText"
       :next-button-props="nextText"
     />
@@ -106,7 +106,7 @@ watch(
       :target="visibleTarget('#tour-text-input')"
       placement="bottom-start"
       title="内容区"
-      description="把要打的字粘贴到这里（Ctrl+V），或用「导入文本」读文件；下方实时显示字符数与预计耗时。"
+      description="在此粘贴待输入内容（Ctrl+V），或用「导入文本」读取文件；下方显示字符数与预计耗时。"
       :prev-button-props="prevText"
       :next-button-props="nextText"
     />
@@ -115,7 +115,7 @@ watch(
       :target="visibleTarget('#tour-target-refresh-wide', '#tour-target-refresh-chip')"
       placement="bottom-end"
       title="目标窗口"
-      description="窗口指示显示当前前台窗口名，点这里可以重新检测。开始前先点一下目标程序的输入位置，输入就会落在它上面。"
+      description="此处显示当前前台窗口名，点击可重新检测。开始前先在目标程序中点击输入位置，按键将发送到该窗口。"
       :prev-button-props="prevText"
       :next-button-props="nextText"
     />
@@ -124,7 +124,7 @@ watch(
       target="#tour-start"
       placement="top-end"
       title="开始输入"
-      description="点开始后有默认 3 秒倒计时，趁现在切到目标窗口。输入时主窗口会最小化，屏幕边缘留一条进度细条，鼠标靠近可展开成控制卡片。"
+      description="点击开始后有默认 3 秒倒计时，用于切换到目标窗口。输入时主窗口最小化，屏幕边缘保留进度细条，鼠标靠近时展开为控制卡片。"
       :prev-button-props="prevText"
       :next-button-props="nextText"
     />
@@ -133,7 +133,7 @@ watch(
       target="#tour-stop"
       placement="top"
       title="随时能停"
-      description="点「停止」中止输入，当前这个字符打完后生效；焦点不在 Typer 上也能用 Ctrl+Alt+X 紧急停止、Ctrl+Alt+P 暂停/继续。热键可以在设置里改。"
+      description="点「停止」中止输入，在当前字符输入完成后生效；焦点不在 Typer 上时也可用 Ctrl+Alt+X 紧急停止、Ctrl+Alt+P 暂停/继续。热键可在设置中修改。"
       :prev-button-props="prevText"
       :next-button-props="nextText"
     />
@@ -142,14 +142,14 @@ watch(
       target="#tour-sidenav-settings"
       placement="right"
       title="按需调整"
-      description="节奏、错字、热键、文件传输参数都在「设置」；运行记录在「日志」。设置页右侧有目录锚点，长页面也能一键跳转。"
+      description="节奏、错字、热键与文件传输参数在「设置」中配置；运行记录在「日志」。设置页右侧提供目录锚点。"
       :prev-button-props="prevText"
       :next-button-props="nextText"
     />
 
     <ElTourStep
       title="准备好了"
-      description="现在就去粘贴点什么试试。想再看一遍引导，随时到「关于」页点「重新查看新手引导」。"
+      description="可在「关于」页点「重新查看新手引导」再次打开本引导。"
       :prev-button-props="prevText"
       :next-button-props="doneText"
     />

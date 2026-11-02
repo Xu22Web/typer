@@ -85,6 +85,26 @@ const presetId = computed(() => {
   return CHUNK_PRESETS.find((preset) => preset.chunkBytes === bytes)?.id ?? ''
 })
 
+/**
+ * 传输节奏的三档说明。
+ *
+ * 三档只差两个旋钮："字符之间等不等"（1ms / 0ms）与"片之间等不等"（听不听「片间停顿」）。
+ * 快速档与稳健档的字符间隔完全一样，区别只是它强制片间不停——所以片间停顿为 0 时两者
+ * 完全等价。这一点必须写破，否则没人能分清"快速"和"稳健"。
+ */
+const transferPaceHint = computed(() => {
+  const gap = draft.value?.transfer.interFrameDelayMs ?? 0
+  const fastLine =
+    gap === 0
+      ? '快速：与稳健目前完全一样（片间停顿是 0）；把下面的「片间停顿」调大之后，它才会变成「片与片之间不停」'
+      : `快速：字符之间同样等 1ms，但片与片之间不停（忽略当前的 ${gap}ms 片间停顿）`
+  return [
+    '稳健：字符之间等 1ms，并按「片间停顿」在片与片之间留时间',
+    fastLine,
+    '极速：字符之间也不等（0ms），速度由目标端的输入处理能力决定；真丢了字符由该片 CRC 发现并单独重传'
+  ].join('\n')
+})
+
 /** 当前符号表的说明文案 */
 const alphabetHint = computed(() => {
   const value = draft.value?.transfer.alphabet ?? 'ascii32'
@@ -302,8 +322,8 @@ async function restoreDefaults(): Promise<void> {
               <div class="label">
                 <div>注入档位</div>
                 <small>
-                  标准：逐字下发，节奏与停止最灵敏；极速：攒批下发并放开每字符 1ms 下限，
-                  实际速度由目标窗口的消化能力决定
+                  标准：逐动作下发，暂停与停止在动作组边界生效；极速：攒批下发并取消每字符 1ms
+                  下限，实际速度由目标窗口的输入队列决定
                 </small>
               </div>
               <ElSegmented
@@ -402,7 +422,7 @@ async function restoreDefaults(): Promise<void> {
               <span class="icon i-mdi-target-account" /><span>焦点与热键</span>
             </h2>
             <p class="group-desc">
-              输入过程中若前台窗口变了，可能把字打到别的程序上；焦点守护用来兜底。
+              输入过程中若前台窗口发生变化，按键可能进入其他程序；焦点守护用于检测并处置。
             </p>
 
             <div class="row">
@@ -517,7 +537,7 @@ async function restoreDefaults(): Promise<void> {
             <h2 class="group-title">
               <span class="icon i-mdi-speedometer" /><span>节奏与随机性</span>
             </h2>
-            <p class="group-desc">控制逐字输入的节奏与自然感，让输出不像机器。</p>
+            <p class="group-desc">控制逐字符的间隔、抖动与分布参数。</p>
 
             <div class="row">
               <div class="label">
@@ -568,7 +588,7 @@ async function restoreDefaults(): Promise<void> {
             <div class="row">
               <div class="label">
                 <div>抖动幅度</div>
-                <small>在基础间隔上附加的随机浮动，让节奏不像机器</small>
+                <small>在基础间隔上附加的随机浮动范围（±N 毫秒）</small>
               </div>
               <ElSlider v-model="draft.timing.jitterMs" :min="0" :max="500" class="control" />
               <div class="value mono">±{{ draft.timing.jitterMs }}ms</div>
@@ -579,7 +599,7 @@ async function restoreDefaults(): Promise<void> {
               <ElSegmented
                 v-model="draft.timing.distribution"
                 :options="[
-                  { label: '正态（更自然）', value: 'gaussian' },
+                  { label: '正态', value: 'gaussian' },
                   { label: '均匀', value: 'uniform' }
                 ]"
               />
@@ -588,7 +608,7 @@ async function restoreDefaults(): Promise<void> {
 
           <section id="g-pause" class="card group">
             <h2 class="group-title"><span class="icon i-mdi-timer-sand" /><span>停顿节奏</span></h2>
-            <p class="group-desc">让输入在标点、换行处自然停顿，避免"一口气打完"的机械感。</p>
+            <p class="group-desc">在标点、空格、换行、空行位置插入额外停顿。</p>
 
             <div class="row">
               <div class="label"><div>标点后</div></div>
@@ -631,7 +651,9 @@ async function restoreDefaults(): Promise<void> {
             <h2 class="group-title">
               <span class="icon i-mdi-backspace-outline" /><span>错字与纠正</span>
             </h2>
-            <p class="group-desc">按概率打错再退格纠正，让输入过程更像真人；设为 0 即完全无误。</p>
+            <p class="group-desc">
+              按设置的概率插入错字，并可自动退格纠正；概率为 0 时不产生错字。
+            </p>
 
             <div class="row">
               <div class="label"><div>错字概率</div></div>
@@ -797,10 +819,7 @@ async function restoreDefaults(): Promise<void> {
             <div class="row">
               <div class="label">
                 <div>传输节奏</div>
-                <small>
-                  稳健：逐字符 + 1ms 间隔（最不容易丢）；快速：逐字符无停顿；极速：零间隔，
-                  由压力阀按目标端消化能力自适应。三档都逐动作投递，极速只是不再等那 1ms
-                </small>
+                <small class="pace-hint">{{ transferPaceHint }}</small>
               </div>
               <ElSegmented
                 v-model="draft.transfer.paceMode"
@@ -846,8 +865,10 @@ async function restoreDefaults(): Promise<void> {
 
             <div class="row">
               <div class="label">
-                <div>片间断顿</div>
-                <small>给接收端落盘与回显留时间；极速节奏档下固定为 0，这里只对稳健档生效</small>
+                <div>片间停顿</div>
+                <small
+                  >用于留出接收端写盘与回显的时间。仅「稳健」档使用；快速与极速档固定为 0</small
+                >
               </div>
               <ElInputNumber
                 v-model="draft.transfer.interFrameDelayMs"
@@ -943,6 +964,11 @@ async function restoreDefaults(): Promise<void> {
 </template>
 
 <style scoped lang="scss">
+/* 传输节奏的三档说明：逐档一行，纵向对齐才好对比 */
+.pace-hint {
+  white-space: pre-line;
+}
+
 .tools-actions {
   display: flex;
   align-items: center;

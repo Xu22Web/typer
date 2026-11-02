@@ -234,7 +234,7 @@ export async function analyzeFile(path: string, size: number): Promise<FileProfi
     brotliRatio,
     deflateRatio,
     compressible: true,
-    reason: `样本可压缩到 ${percent(brotliRatio)}（Brotli）：值得压缩，线上字节约 ${Math.round(
+    reason: `样本可压缩到 ${percent(brotliRatio)}（Brotli）：启用整文件压缩，线上字节约 ${Math.round(
       size * brotliRatio
     )}`
   }

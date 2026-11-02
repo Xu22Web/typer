@@ -117,7 +117,7 @@ async function open(url: string): Promise<void> {
       </div>
       <div class="quickstart">
         <p class="desc">
-          首次启动的漫游式引导可以随时重看：回到输入页，逐步认识内容区、目标窗口与开始流程。
+          首次启动的引导可随时重看：回到输入页后逐项说明内容区、目标窗口与开始流程。
         </p>
         <ElButton size="small" @click="replayTour()">
           <span class="i-mdi-replay" /><span>重新查看新手引导</span>

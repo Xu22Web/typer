@@ -28,8 +28,8 @@ const latestLog = computed(() => typing.logs.value.at(-1) ?? null)
 /** 页头说明：两种模式各一句话（窄窗口会被省略号截断，鼠标悬停看全文） */
 const pageDesc = computed(() =>
   mode.value === 'text'
-    ? '把要输入的内容粘贴到内容区，点开始，然后在倒计时内切换到目标窗口。可打印 ASCII 与需要 Shift 组合的符号都能正确输入。'
-    : '选择一个文件，Typer 会把它切成"每片一行"的帧逐片输入；接收端逐片校验、支持断点续传，合并后再校验整文件哈希。'
+    ? '将待输入内容粘贴到内容区，点开始后在倒计时内切换到目标窗口。可打印 ASCII 与需要 Shift 的符号均可输入。'
+    : '选择一个文件，按“每片一行”的帧逐片输入；接收端逐片校验、支持断点续传，合并后再校验整文件哈希。'
 )
 
 /** 开始按钮文案：文件模式显示要发多少片，倒计时非 0 时补上"几秒后" */
@@ -148,7 +148,7 @@ async function insertToolScriptFromFile(): Promise<void> {
               {{ typing.targetWindow.value }}
             </div>
           </div>
-          <p class="card-desc">开始前先点一下目标程序的输入位置，输入就会落在这里。</p>
+          <p class="card-desc">开始前先在目标程序中点击输入位置；按键发送到该窗口。</p>
         </section>
 
         <RunStatusPanel />
@@ -161,8 +161,9 @@ async function insertToolScriptFromFile(): Promise<void> {
           <p class="card-desc">
             <span
               >随时可按
-              <code>{{ settings?.hotkeys.stop ?? 'Ctrl+Alt+X' }}</code> 紧急停止，内容区里按
-              <code>Ctrl+Enter</code> 也能开始。目标程序若开着中文输入法，建议先切到英文。</span
+              <code>{{ settings?.hotkeys.stop ?? 'Ctrl+Alt+X' }}</code> 紧急停止；内容区里按
+              <code>Ctrl+Enter</code>
+              也可开始。目标窗口若启用了中文输入法，请先切到英文，否则按键会被输入法截获。</span
             >
           </p>
           <div v-if="latestLog" class="latest-log mono">
