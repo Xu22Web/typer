@@ -271,6 +271,31 @@ describe('toEngineSettings', () => {
     expect(fallback.transfer.compression).toBe(DEFAULT_SETTINGS.transfer.compression)
   })
 
+  it('基数 47 与目标端联动：编辑器 / 单行框下自动退回 5 位档，终端下保留', () => {
+    // 终端：基数 47 是合法档位，必须原样保留（否则 UI 选了也存不住）
+    expect(
+      normalizeSettings({ transfer: { alphabet: 'b47', mode: 'term' } }).transfer.alphabet
+    ).toBe('b47')
+    // 编辑器 / 单行框：编辑器会自动更正 -- 、引号与括号，就地纠正而不是等准备阶段报错
+    for (const mode of ['editor', 'line'] as const) {
+      const fixed = normalizeSettings({ transfer: { alphabet: 'b47', mode } })
+      expect(fixed.transfer.alphabet).toBe('ascii32')
+      expect(fixed.transfer.mode).toBe(mode)
+    }
+    // 局部补丁走 mergeSettings 时同样生效
+    const merged = mergeSettings(DEFAULT_SETTINGS, {
+      transfer: { alphabet: 'b47', mode: 'editor' }
+    })
+    expect(merged.transfer.alphabet).toBe('ascii32')
+  })
+
+  it('压缩质量 11 是合法值（小文件自动升级会写进摘要，设置也要能存回）', () => {
+    expect(normalizeSettings({ transfer: { quality: 11 } }).transfer.quality).toBe(11)
+    expect(normalizeSettings({ transfer: { quality: 99 } }).transfer.quality).toBe(
+      TRANSFER_LIMITS.quality[1]
+    )
+  })
+
   it('浮窗摆放设置：默认值、非法枚举回退与坐标夹取', () => {
     expect(DEFAULT_SETTINGS.floating).toEqual({
       mode: 'docked',

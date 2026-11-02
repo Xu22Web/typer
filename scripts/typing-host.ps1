@@ -753,6 +753,15 @@ public static class TyperIme
     [DllImport("imm32.dll")] private static extern bool ImmSetConversionStatus(IntPtr himc, uint conversion, uint sentence);
     [DllImport("imm32.dll")] private static extern bool ImmGetOpenStatus(IntPtr himc);
     [DllImport("imm32.dll")] private static extern bool ImmSetOpenStatus(IntPtr himc, bool open);
+    [DllImport("user32.dll")] private static extern bool IsWindow(IntPtr hwnd);
+
+    // 切走之前的状态：本轮输入结束后按它还原，不把用户的输入法留在英文上
+    private static IntPtr savedHwnd = IntPtr.Zero;
+    private static IntPtr savedHkl = IntPtr.Zero;
+    private static bool savedOpen;
+    private static uint savedConversion;
+    private static uint savedSentence;
+    private static bool hasSaved;
 
     public sealed class State
     {
@@ -769,6 +778,7 @@ public static class TyperIme
         public State before { get; set; }
         public State after { get; set; }
         public bool switched { get; set; }
+        public bool restored { get; set; }
         public bool ok { get; set; }
         public string note { get; set; }
     }
@@ -792,6 +802,8 @@ public static class TyperIme
                 }
                 else
                 {
+                    // 先记下切换前的状态：结束时（完成 / 中止 / 失败）都要还原回去
+                    Save();
                     // 只在“真的会把按键变成候选上屏”时才动布局：
                     //   · 中日韩布局（带 IME 的体系）
                     //   · 输入法当前开着 / 处于本地语言模式
@@ -848,12 +860,109 @@ public static class TyperIme
             }
         }
 
+        // 这一轮什么都没改：把“待还原”标记清掉，否则退出时会把用户后来手动改的状态又改回去
+        if (!switched) hasSaved = false;
         result.after = Capture();
         result.switched = switched;
         // “可以直接注入”的判据是“输入法没在合成”，而不是“布局必须英文”：
         // 非 IME 的拉丁布局（德语、法语…）只是符号位置不同，由键盘布局设置负责
         result.ok = !result.after.nativeMode && !result.after.imeOpen;
         result.note = note;
+        return result;
+    }
+
+    /// 把“切换之前”的目标窗口状态记下来（布局句柄 + 输入法开关 + 转换/句子模式）。
+    /// 只记一次：同一轮里多次 EnsureEnglish 不能把第二遍的状态当成原状态。
+    private static void Save()
+    {
+        if (hasSaved) return;
+        IntPtr hwnd = GetForegroundWindow();
+        if (hwnd == IntPtr.Zero) return;
+        uint pid;
+        uint thread = GetWindowThreadProcessId(hwnd, out pid);
+        savedHwnd = hwnd;
+        savedHkl = GetKeyboardLayout(thread);
+        savedOpen = false;
+        savedConversion = 0;
+        savedSentence = 0;
+        IntPtr himc = ImmGetContext(hwnd);
+        if (himc != IntPtr.Zero)
+        {
+            try
+            {
+                uint conversion;
+                uint sentence;
+                if (ImmGetConversionStatus(himc, out conversion, out sentence))
+                {
+                    savedConversion = conversion;
+                    savedSentence = sentence;
+                }
+                savedOpen = ImmGetOpenStatus(himc);
+            }
+            finally
+            {
+                ImmReleaseContext(hwnd, himc);
+            }
+        }
+        hasSaved = true;
+    }
+
+    /// 把输入法/键盘布局还原成 Save() 记下的样子。
+    ///
+    /// 只在“本来真的改过”时才还原；原窗口已经关掉就跳过（把布局投给别的窗口只会捣乱）。
+    public static Result Restore()
+    {
+        Result result = new Result();
+        result.before = Capture();
+        result.restored = false;
+
+        if (!hasSaved)
+        {
+            result.note = "没有需要还原的输入法状态";
+        }
+        else if (!IsWindow(savedHwnd))
+        {
+            result.note = "原窗口已关闭，跳过还原";
+            hasSaved = false;
+        }
+        else
+        {
+            try
+            {
+                if (savedHkl != IntPtr.Zero)
+                {
+                    // 布局是线程级的：同样只能把“换回原布局”的请求投递给当初那个窗口
+                    PostMessageW(savedHwnd, WM_INPUTLANGCHANGEREQUEST, IntPtr.Zero, savedHkl);
+                    Thread.Sleep(60);
+                }
+                IntPtr himc = ImmGetContext(savedHwnd);
+                if (himc != IntPtr.Zero)
+                {
+                    try
+                    {
+                        ImmSetConversionStatus(himc, savedConversion, savedSentence);
+                        ImmSetOpenStatus(himc, savedOpen);
+                    }
+                    finally
+                    {
+                        ImmReleaseContext(savedHwnd, himc);
+                    }
+                }
+                result.restored = true;
+            }
+            catch (Exception error)
+            {
+                result.note = error.Message;
+            }
+            finally
+            {
+                hasSaved = false;
+            }
+        }
+
+        result.after = Capture();
+        result.switched = false;
+        result.ok = !result.after.nativeMode && !result.after.imeOpen;
         return result;
     }
 
@@ -1117,7 +1226,13 @@ while ($true) {
             'ime' {
                 # 只在真注入时动输入法状态：dry-run 是自检/测试，不应改变系统
                 $ensure = (-not $DryRun) -and ($request.ensureEnglish -eq $true)
-                $ime = [TyperIme]::EnsureEnglish([bool]$ensure)
+                $restore = (-not $DryRun) -and ($request.restore -eq $true)
+                if ($restore) {
+                    # 输入结束：把开始时切走的布局 / 输入法还原，别让用户下次打字发现中文被关了
+                    $ime = [TyperIme]::Restore()
+                } else {
+                    $ime = [TyperIme]::EnsureEnglish([bool]$ensure)
+                }
                 Send-Ok -Id $id -Data $ime
             }
 

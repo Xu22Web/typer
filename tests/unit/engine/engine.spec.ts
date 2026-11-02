@@ -555,14 +555,32 @@ describe('修饰键时序与最小间隔', () => {
 })
 
 describe('输入法检查与超时诊断', () => {
-  it('开始前会要求宿主把输入法切到英文直输', async () => {
+  it('开始前要求宿主切英文直输，结束后再还原回来', async () => {
     const h = createHarness()
     const result = await h.engine.start('a', engineSettings())
 
     expect(result.state).toBe('completed')
-    expect(h.driver.imeCalls).toEqual([{ ensureEnglish: true }])
-    // 已经是英文直输状态时不该刷警告
+    // 一次“切走”、一次“还原”：不还原的话用户下次打中文会发现输入法被关成了英文
+    expect(h.driver.imeCalls).toEqual([{ ensureEnglish: true }, { restore: true }])
+    // 已经是英文直输状态、且宿主报“没有需要还原的东西”时不该刷警告
     expect(h.logs.some((line) => line.includes('输入法'))).toBe(false)
+  })
+
+  it('中止也要还原输入法', async () => {
+    let sent = 0
+    let harness: ReturnType<typeof createHarness> | null = null
+    const driver = new MockKeyboardDriver({
+      onSend: () => {
+        sent += 1
+        if (sent === 2) harness?.engine.abort('测试中止')
+      }
+    })
+    harness = createHarness({ driver })
+
+    const result = await harness.engine.start('abcdefghij', engineSettings({ chunkSize: 2 }))
+
+    expect(result.state).toBe('aborted')
+    expect(driver.imeCalls).toEqual([{ ensureEnglish: true }, { restore: true }])
   })
 
   it('设置里关掉后完全不去碰输入法', async () => {

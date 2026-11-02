@@ -99,6 +99,38 @@ describe('parseResumeState', () => {
     expect(() => parseResumeState('abc-def')).toThrow(/无法识别/)
     expect(() => parseResumeState(buildResumeToken({ job: 'a', total: 1, missing: [] }))).toThrow()
   })
+
+  it('接收端的整段输出直接粘进来也能用（令牌优先）', () => {
+    const token = buildResumeToken({ job: 'a1b2c3d4', total: 8, missing: [5] })
+    const pasted = [
+      '片 5 失败（crc）：载荷被链路上的输入法改写了',
+      '  → 请重传该片',
+      '#FAIL 5 crc',
+      '#MISS 5',
+      token,
+      '  → 在 Typer 里粘贴上面的 @T2R 令牌，只补这些片即可；已收到的分片全部保留。'
+    ].join('\n')
+
+    const state = parseResumeState(pasted)
+    expect(state.source).toBe('token')
+    expect(state.job).toBe('a1b2c3d4')
+    expect(state.total).toBe(8)
+    expect(state.missing).toEqual([5])
+  })
+
+  it('只有 #MISS 行时按片号续传（没有任务身份也不报错）', () => {
+    const pasted = ['数据不全：还缺 2/8 片', '#MISS 3,7-8', '  → ...'].join('\r\n')
+    const state = parseResumeState(pasted)
+    expect(state.source).toBe('ranges')
+    expect(state.missing).toEqual([3, 7, 8])
+  })
+
+  it('报告 JSON 夹在说明文字里也能认出来', () => {
+    const pasted = `收尾日志如下：\n${report({ missing: '2' })}\n（以上为 resume.json）`
+    const state = parseResumeState(pasted)
+    expect(state.source).toBe('report')
+    expect(state.missing).toEqual([2])
+  })
 })
 
 describe('matchResume', () => {

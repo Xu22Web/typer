@@ -35,6 +35,8 @@ const onlyText = ref('')
 const fromIndex = ref(0)
 /** 最近一次失败原因，空串表示无错误 */
 const error = ref('')
+/** 续传信息解析失败的原因（与全局 error 分开：粘错一段文字不该弹"准备失败"红条） */
+const resumeError = ref('')
 
 /** 是否已订阅主进程的准备进度推送 */
 let wired = false
@@ -141,6 +143,7 @@ async function applyResume(text: string): Promise<void> {
   try {
     const matched = await window.api.transfer.resumeState(text)
     resume.value = matched
+    resumeError.value = ''
     // 续传的默认行为：只补缺失的片
     onlyText.value = matched.missing.length > 0 ? compressRanges(matched.missing) : ''
     fromIndex.value = 0
@@ -154,14 +157,16 @@ async function applyResume(text: string): Promise<void> {
     )
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
-    error.value = message
-    useTyping().log('error', message)
+    // 只落到续传区自己的状态行：粘错一段文字时，全局错误红条会让人以为文件都准备失败了
+    resumeError.value = message
+    useTyping().log('warn', message)
   }
 }
 
 /** @description 清空续传状态与 only/from，回到"全新传输" */
 function clearResume(): void {
   resume.value = null
+  resumeError.value = ''
   onlyText.value = ''
   fromIndex.value = 0
   void refreshPlan()
@@ -282,6 +287,7 @@ export function useTransfer(): {
   onlyText: Ref<string>
   fromIndex: Ref<number>
   error: Ref<string>
+  resumeError: Ref<string>
   hasJob: ComputedRef<boolean>
   ready: ComputedRef<boolean>
   sendingCount: ComputedRef<number>
@@ -308,6 +314,7 @@ export function useTransfer(): {
     onlyText,
     fromIndex,
     error,
+    resumeError,
     hasJob,
     ready,
     sendingCount,

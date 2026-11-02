@@ -173,6 +173,8 @@ export interface HostImeData {
   after: HostImeSnapshot
   /** 本轮是否真的执行了切换（切布局 / 关输入法 / 改英数模式） */
   switched: boolean
+  /** 本轮是否执行了还原（输入结束时把布局 / 输入法改回开始前的样子） */
+  restored?: boolean
   /** 切换后是否已处于英文直输状态（布局英文 + 输入法未开 + 非本地语言模式） */
   ok: boolean
   /** 失败原因或补充说明 */

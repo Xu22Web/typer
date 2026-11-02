@@ -11,8 +11,9 @@ import {
   type TransferTargetMode
 } from '@shared/transfer/transfer'
 import { formatDuration } from '@shared/format/duration'
-import { PACE_CHARS_PER_SECOND, estimateTransferMs, meetsBudget } from '@shared/transfer/estimate'
-import { effectiveFrameGapMs } from '@main/typing/scheduling/profile'
+import { PACE_CHARS_PER_SECOND, estimateTransferMs } from '@shared/transfer/estimate'
+import { PACE_LABELS, finishClock, suggestSpeedUp } from '@shared/transfer/speedup'
+import { effectiveFrameGapMs, type TransferPace } from '@main/typing/scheduling/profile'
 
 /**
  * 文件输入面板：把选中的文件切成"每片一行"的帧并按需补发/续传。
@@ -86,11 +87,76 @@ const estimatedMs = computed(() => estimate.value?.ms ?? 0)
 /** 耗时长短对应的提示色 */
 const tone = computed(() => durationTone(estimatedMs.value))
 
-/** 与 1 小时 / 2 小时预算的对比：把"能不能达标"直接说清楚 */
-const budgets = computed(() => [
-  { minutes: 60, label: '1 小时', ...meetsBudget(estimatedMs.value, 60) },
-  { minutes: 120, label: '2 小时', ...meetsBudget(estimatedMs.value, 120) }
-])
+/**
+ * 某个节奏档在"当前链路"上的表现：有实测速率时所有档位都用实测值（链路快慢与档位无关），
+ * 片间停顿仍按档位算——那才是换档真正要省下的时间。
+ * @param pace 节奏档
+ * @returns 每秒字符数与片间停顿
+ */
+function paceProfile(pace: TransferPace): { charsPerSecond: number; gapMs: number } {
+  const current = settings.value
+  return {
+    charsPerSecond: measuredCps.value ?? PACE_CHARS_PER_SECOND[pace] ?? PACE_CHARS_PER_SECOND.safe,
+    gapMs: effectiveFrameGapMs(pace, current?.transfer.interFrameDelayMs ?? 0)
+  }
+}
+
+/**
+ * 还能省多少：枚举“换节奏档 / 换片大小”后的耗时，只在确实省得多时才给建议。
+ * 比原来的“1 小时 / 2 小时预算”有用：预算只回答能不能达标，这个直接给出下一步动作。
+ */
+const speedUp = computed(() => {
+  const job = summary.value
+  const current = settings.value
+  if (!job || !current) return null
+  return suggestSpeedUp(job, {
+    current: {
+      paceMode: current.transfer.paceMode,
+      chunkBytes: job.chunkBytes,
+      maxFrameChars: job.maxFrameChars
+    },
+    profileFor: paceProfile
+  })
+})
+
+/** 当前节奏档与片大小的中文名（“已是推荐配置”时直接显示） */
+const paceLabel = computed(() => PACE_LABELS[settings.value?.transfer.paceMode ?? 'safe'])
+const chunkLabel = computed(
+  () =>
+    CHUNK_PRESETS.find((preset) => preset.chunkBytes === summary.value?.chunkBytes)?.label ??
+    '自定义'
+)
+
+/** 20 秒一跳的时钟：把“预计耗时”算成真实时刻，不要每次重算都读 Date.now() */
+const nowTick = ref(Date.now())
+const clockTimer = window.setInterval(() => {
+  nowTick.value = Date.now()
+}, 20_000)
+onBeforeUnmount(() => window.clearInterval(clockTimer))
+
+/** 预计打完的时刻；超过一天就不说“几点”了 */
+const finishAt = computed(() => finishClock(estimatedMs.value, nowTick.value))
+
+/** @description 一键采用提速建议：写回设置，并按新参数重新准备 */
+async function applySpeedUp(): Promise<void> {
+  const suggestion = speedUp.value
+  const job = summary.value
+  if (!suggestion || !job) return
+  const next = suggestion.next
+  await settingsStore.update({
+    transfer: {
+      paceMode: next.paceMode,
+      chunkBytes: next.chunkBytes,
+      maxFrameChars: next.maxFrameChars
+    }
+  })
+  await transfer.prepare(
+    job.path,
+    { ...options.value, chunkBytes: next.chunkBytes, maxFrameChars: next.maxFrameChars },
+    true
+  )
+  ElMessage.success(`已按建议调整：${suggestion.title}`)
+}
 
 /** 大数字加千分位，读数更快（27,657 比 27657 好认） */
 function formatCount(value: number): string {
@@ -100,6 +166,16 @@ function formatCount(value: number): string {
 /** 当前符号表的完整选项（用于标签与提示文案） */
 const alphabetOption = computed(() =>
   TRANSFER_ALPHABET_OPTIONS.find((option) => option.value === options.value.alphabet)!
+)
+
+/**
+ * 可选符号表：基数 47 用到 `- . / ' [ ] \`` 这些键，编辑器会把它们自动更正或自动闭合，
+ * 所以只在终端模式下才给选。
+ */
+const alphabetChoices = computed(() =>
+  TRANSFER_ALPHABET_OPTIONS.filter(
+    (option) => !option.terminalsOnly || options.value.mode === 'term'
+  )
 )
 
 /** 当前片大小对应的预设 id */
@@ -148,8 +224,14 @@ async function changeAlphabet(alphabet: TransferAlphabet): Promise<void> {
  * @param mode 目标端模式
  */
 async function changeMode(mode: TransferTargetMode): Promise<void> {
-  await settingsStore.update({ transfer: { mode } })
-  if (summary.value) await transfer.prepare(summary.value.path, { ...options.value, mode }, true)
+  const fallback = mode !== 'term' && Boolean(alphabetOption.value.terminalsOnly)
+  if (fallback) {
+    ElMessage.info('基数 47 只能在终端使用：编辑器会自动更正符号，已切回 ASCII 5 位档')
+  }
+  const alphabet: TransferAlphabet = fallback ? 'ascii32' : options.value.alphabet
+  await settingsStore.update({ transfer: fallback ? { mode, alphabet } : { mode } })
+  if (summary.value)
+    await transfer.prepare(summary.value.path, { ...options.value, mode, alphabet }, true)
 }
 
 /**
@@ -167,10 +249,90 @@ async function changePreset(id: string): Promise<void> {
 /** 用户粘贴进来的续传状态文本 */
 const resumeInput = ref('')
 
-/** @description 用输入框里的续传文本载入接收端状态 */
-async function loadResume(): Promise<void> {
-  if (resumeInput.value.trim().length === 0) return
-  await transfer.applyResume(resumeInput.value)
+/** 解析结果 / 错误那一行：解析成功后要把它滚进视野（小窗口里它常在折叠线以下） */
+const resumeStatusEl = ref<HTMLElement | null>(null)
+
+/** 续传输入框的防抖句柄：粘上就自动解析，不必再点按钮 */
+let resumeTimer: number | undefined
+
+/**
+ * @description 输入框变化：空则回到“全新传输”，否则防抖后自动解析。
+ *
+ * 接收端出错时打印的是一整段（`#FAIL` / `#MISS` / `@T2R …` / 说明），所以不做“只能粘令牌”的限制，
+ * 整段粘进来交给主进程去认。
+ */
+function onResumeInput(): void {
+  window.clearTimeout(resumeTimer)
+  const text = resumeInput.value
+  if (text.trim().length === 0) {
+    transfer.clearResume()
+    return
+  }
+  resumeTimer = window.setTimeout(async () => {
+    await transfer.applyResume(text)
+    // 粘完就应该能直接看到结果：状态行在输入框下面，小窗口里很容易落在折叠线以外
+    await nextTick()
+    resumeStatusEl.value?.scrollIntoView({ block: 'nearest' })
+  }, 350)
+}
+
+/** @description 清空输入框与已载入的续传状态 */
+function clearResumeAll(): void {
+  window.clearTimeout(resumeTimer)
+  resumeInput.value = ''
+  transfer.clearResume()
+}
+
+/** 已载入的续传信息（拼成一行人话） */
+const resumeInfo = computed(() => {
+  const matched = transfer.resume.value
+  if (!matched) return null
+  const state = matched.state
+  const sourceLabel =
+    state.source === 'token' ? '续传令牌' : state.source === 'report' ? '续传报告' : '#MISS 片号'
+  return {
+    sourceLabel,
+    job: state.job.length > 0 ? state.job : '未标注任务',
+    total: state.total >= 0 ? state.total : null,
+    missingCount: matched.missing.length,
+    missingText: rangeText(matched.missing)
+  }
+})
+
+/** 折叠头右侧的徽标：有缺片 / 已收全 / 解析失败 / 无（无则只显示弱化的提示文字） */
+const resumeBadge = computed<{ tone: string; text: string } | null>(() => {
+  const matched = transfer.resume.value
+  if (matched) {
+    return matched.missing.length > 0
+      ? { tone: 'warn', text: `缺 ${matched.missing.length} 片` }
+      : { tone: 'accent', text: '已收全' }
+  }
+  if (transfer.resumeError.value) return { tone: 'bad', text: '未识别' }
+  return null
+})
+
+/**
+ * @description 把片号压成紧凑区间文本（仅用于展示）
+ * @param indexes 已排序片号
+ * @returns 形如 `3,5,7-9`
+ */
+function rangeText(indexes: readonly number[]): string {
+  if (indexes.length === 0) return '无'
+  const parts: string[] = []
+  let start = indexes[0] as number
+  let prev = start
+  for (let index = 1; index < indexes.length; index++) {
+    const value = indexes[index] as number
+    if (value === prev + 1) {
+      prev = value
+      continue
+    }
+    parts.push(start === prev ? String(start) : `${start}-${prev}`)
+    start = value
+    prev = value
+  }
+  parts.push(start === prev ? String(start) : `${start}-${prev}`)
+  return parts.join(',')
 }
 
 /** @description 只发当前缺失的片（续传最常见的一步） */
@@ -283,32 +445,135 @@ const previewRows = computed(() => summary.value?.preview ?? [])
               <div class="detail">{{ formatCount(estimate?.charsPerSecond ?? 0) }} 字符/秒</div>
             </div>
           </dl>
-          <div class="budget-row">
-            <span class="budget-caption">耗时预算</span>
-            <div class="budget-list">
-              <span
-                v-for="budget in budgets"
-                :key="budget.minutes"
-                class="chip budget-chip"
-                :class="budget.ok ? 'accent' : 'warn'"
-                :title="
-                  budget.ok
-                    ? `预计可以在 ${budget.label}内打完`
-                    : `预计超出 ${budget.label}预算 ${budget.ratio.toFixed(1)} 倍`
-                "
-              >
-                <span class="dot" :class="budget.ok ? 'ok' : 'warn'" />
-                <span class="budget-name">{{ budget.label }}</span>
-                <strong>{{ budget.ok ? '可达' : `超 ${budget.ratio.toFixed(1)} 倍` }}</strong>
+          <div class="speed-row">
+            <div v-if="speedUp" class="speed-advice">
+              <span class="icon i-mdi-lightning-bolt text-icon warn-icon" />
+              <span class="speed-text">
+                {{ speedUp.title }}：约少 {{ formatDuration(speedUp.savedMs) }}
+                <span class="muted">（-{{ Math.round(speedUp.savedRatio * 100) }}%）</span>
               </span>
+              <ElButton size="small" type="primary" link @click="applySpeedUp">一键采用</ElButton>
             </div>
-            <span class="budget-note" :title="`${summary.kindLabel} · ${summary.compressionNote}`">
-              {{ summary.kindLabel }} · {{ summary.compressionNote }}
+            <div v-else class="speed-advice">
+              <span class="icon i-mdi-check-circle-outline text-icon ok-icon" />
+              <span class="speed-text muted"
+                >已是推荐配置（{{ paceLabel }} · {{ chunkLabel }}）</span
+              >
+            </div>
+            <span
+              v-if="finishAt"
+              class="speed-eta"
+              :title="`${summary.kindLabel} · ${summary.compressionNote}`"
+            >
+              预计 {{ finishAt }} 打完
+            </span>
+            <span v-else class="speed-eta" :title="summary.compressionNote">
+              {{ summary.kindLabel }}
             </span>
           </div>
           <div class="summary-sha" :title="summary.sha256">
             <span class="sha-label">SHA-256</span>
             <span class="mono ellipsis">{{ summary.sha256 }}</span>
+          </div>
+        </div>
+
+        <!--
+          续传与重传：出错后唯一要做的事。放在摘要下面（不再压在滚动区末尾），
+          默认折叠但标题常驻，需要时展开。
+        -->
+        <div class="resume">
+          <button class="resume-head" type="button" @click="showResume = !showResume">
+            <span class="i-mdi-history" />
+            <span>续传与重传</span>
+            <span v-if="resumeBadge" class="chip compact" :class="resumeBadge.tone">
+              {{ resumeBadge.text }}
+            </span>
+            <span v-else class="resume-state">断点续传（可选）</span>
+            <span class="spacer" />
+            <span :class="showResume ? 'i-mdi-chevron-up' : 'i-mdi-chevron-down'" />
+          </button>
+
+          <div v-if="showResume" class="resume-body">
+            <p class="hint muted">
+              把接收端打印的那一段整段粘进来就行（<code class="mono">@T2R …</code> /
+              <code class="mono">#MISS …</code> / <code class="mono">resume.json</code>
+              都认），粘上即生效，不再需要点按钮。
+            </p>
+
+            <ElInput
+              v-model="resumeInput"
+              type="textarea"
+              :rows="2"
+              resize="none"
+              placeholder="粘贴接收端输出（整段也行）"
+              @input="onResumeInput"
+            />
+
+            <div v-if="resumeInfo" ref="resumeStatusEl" class="notice-line resume-status">
+              <span class="i-mdi-check-circle-outline text-icon ok-icon" />
+              <span class="resume-status-text">
+                任务 <code class="mono">{{ resumeInfo.job }}</code> · 共
+                {{ resumeInfo.total ?? '?' }} 片 · 缺 {{ resumeInfo.missingCount }} 片（{{
+                  resumeInfo.missingText
+                }}）· 来自{{ resumeInfo.sourceLabel }}
+              </span>
+            </div>
+            <div v-else-if="transfer.resumeError.value" class="notice-line tone-warn">
+              <span class="i-mdi-alert-circle-outline text-icon" />
+              <span class="resume-status-text">{{ transfer.resumeError.value }}</span>
+            </div>
+
+            <div class="resume-actions">
+              <ElButton
+                size="small"
+                :disabled="!transfer.resumeMissing.value?.length"
+                @click="sendMissingOnly"
+              >
+                <span class="i-mdi-playlist-check" /><span>填入缺失片号</span>
+              </ElButton>
+              <ElButton
+                size="small"
+                text
+                :disabled="!transfer.resume.value && resumeInput.length === 0"
+                @click="clearResumeAll"
+              >
+                <span>清除续传状态</span>
+              </ElButton>
+            </div>
+
+            <div class="resume-plan">
+              <label class="control">
+                <span class="control-label">只发指定片</span>
+                <ElInput
+                  v-model="transfer.onlyText.value"
+                  size="small"
+                  placeholder="如 3,5,12-20；分隔符用英文逗号 / 分号 / 空格"
+                  @change="transfer.refreshPlan()"
+                />
+              </label>
+              <label class="control narrow">
+                <span class="control-label">起始片号</span>
+                <ElInputNumber
+                  v-model="transfer.fromIndex.value"
+                  size="small"
+                  :min="0"
+                  :max="Math.max(0, summary.total)"
+                  controls-position="right"
+                  @change="transfer.refreshPlan()"
+                />
+              </label>
+            </div>
+
+            <div class="plan-line">
+              <div class="i-mdi-information-outline text-icon" />
+              <div class="plan-text">
+                本次将发送 <strong>{{ transfer.plan.value?.ranges ?? '全部' }}</strong> 共
+                {{ transfer.sendingCount.value }} 片<template v-if="transfer.plan.value?.sendBegin"
+                  >，先发开始帧</template
+                ><template v-if="transfer.plan.value?.sendEnd">，发完通知接收端合并校验</template
+                ><template v-else>，不发结束帧（接收端仍缺片）</template>。
+              </div>
+            </div>
           </div>
         </div>
 
@@ -346,7 +611,7 @@ const previewRows = computed(() => summary.value?.preview ?? [])
               @change="changeAlphabet($event as TransferAlphabet)"
             >
               <ElOption
-                v-for="option in TRANSFER_ALPHABET_OPTIONS"
+                v-for="option in alphabetChoices"
                 :key="option.value"
                 :label="option.label"
                 :value="option.value"
@@ -408,93 +673,6 @@ const previewRows = computed(() => summary.value?.preview ?? [])
         </p>
 
         <HexPreview v-if="showPreview" :rows="previewRows" />
-
-        <!-- 续传与重传：出错之后唯一需要做的事 -->
-        <div class="resume">
-          <button class="resume-head" type="button" @click="showResume = !showResume">
-            <span class="i-mdi-history" />
-            <span>续传与重传</span>
-            <span class="spacer" />
-            <span v-if="transfer.resume.value" class="chip warn">
-              缺 {{ transfer.resume.value.missing.length }} 片
-            </span>
-            <span :class="showResume ? 'i-mdi-chevron-up' : 'i-mdi-chevron-down'" />
-          </button>
-
-          <div v-if="showResume" class="resume-body">
-            <p class="hint muted">
-              把接收端打印的续传令牌（<code class="mono">@T2R …</code>）粘进来，Typer
-              就只补缺失的片。
-            </p>
-
-            <ElInput
-              v-model="resumeInput"
-              type="textarea"
-              :rows="3"
-              resize="none"
-              placeholder="粘贴续传令牌（@T2R …）"
-            />
-
-            <div class="resume-actions">
-              <ElButton
-                size="small"
-                :disabled="resumeInput.trim().length === 0"
-                @click="loadResume"
-              >
-                <span class="i-mdi-content-paste" /><span>载入续传状态</span>
-              </ElButton>
-              <ElButton
-                size="small"
-                text
-                :disabled="!transfer.resume.value"
-                @click="transfer.clearResume()"
-              >
-                <span>清除</span>
-              </ElButton>
-            </div>
-
-            <div class="resume-plan">
-              <label class="control">
-                <span class="control-label">只发指定片</span>
-                <ElInput
-                  v-model="transfer.onlyText.value"
-                  size="small"
-                  placeholder="如 3,5,12-20；分隔符用英文逗号 / 分号 / 空格"
-                  @change="transfer.refreshPlan()"
-                />
-              </label>
-              <label class="control narrow">
-                <span class="control-label">起始片号</span>
-                <ElInputNumber
-                  v-model="transfer.fromIndex.value"
-                  size="small"
-                  :min="0"
-                  :max="Math.max(0, summary.total)"
-                  controls-position="right"
-                  @change="transfer.refreshPlan()"
-                />
-              </label>
-              <ElButton
-                size="small"
-                :disabled="!transfer.resumeMissing.value?.length"
-                @click="sendMissingOnly"
-              >
-                <span class="i-mdi-playlist-check" /><span>填入缺失片</span>
-              </ElButton>
-            </div>
-
-            <div class="plan-line">
-              <div class="i-mdi-information-outline text-icon" />
-              <div class="plan-text">
-                本次将发送 <strong>{{ transfer.plan.value?.ranges ?? '全部' }}</strong> 共
-                {{ transfer.sendingCount.value }} 片<template v-if="transfer.plan.value?.sendBegin"
-                  >，先发开始帧</template
-                ><template v-if="transfer.plan.value?.sendEnd">，发完通知接收端合并校验</template
-                ><template v-else>，不发结束帧（接收端仍缺片）</template>。
-              </div>
-            </div>
-          </div>
-        </div>
       </template>
 
       <ElProgress
@@ -577,6 +755,13 @@ const previewRows = computed(() => summary.value?.preview ?? [])
   flex-direction: column;
   gap: 10px;
   overflow-y: auto;
+  /*
+   * 这一栏全是纵向信息，不需要横向滚动：一旦有东西越界（负边距、长串不可断词）
+   * 浏览器就会生出横向滚动条，既难看又会把内容挤窄。这里直接封死这个方向。
+   */
+  overflow-x: hidden;
+  /* 预留滚动条位置：内容变高/变矮时列宽不会跳 10px（Fluent 的“不跳动”） */
+  scrollbar-gutter: stable;
   /* 给滚动条留出位置，避免内容贴边 */
   padding-right: 4px;
 
@@ -696,57 +881,44 @@ const previewRows = computed(() => summary.value?.preview ?? [])
 }
 
 /*
- * 预算行：左侧小标题 + 状态徽章 + 右侧压缩摘要。
- * 窄窗口先压缩摘要（省略号 + title 兜底），再整体换行，避免把面板撑出横向滚动条。
+ * 提速行：左侧“还能省多少（或已是推荐配置）”，右侧“预计几点打完”。
+ * 窄窗口先压缩右侧时刻，再整体换行，避免把面板撑出横向滚动条。
  */
-.budget-row {
+.speed-row {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 6px 10px;
   min-width: 0;
+  font-size: 12px;
 }
 
-.budget-caption {
-  flex: none;
-  font-size: 11px;
-  font-weight: 500;
-  color: var(--text-3);
-  letter-spacing: 0.02em;
-}
-
-.budget-list {
+.speed-advice {
   display: flex;
-  flex-wrap: wrap;
+  align-items: center;
   gap: 6px;
   min-width: 0;
 }
 
-/* 徽章比普通 chip 更紧凑：状态点负责颜色，文字保持 11px */
-.budget-chip {
-  gap: 6px;
-  min-height: 24px;
-  padding: 0 9px;
-  font-size: 11px;
-
-  .budget-name {
-    color: inherit;
-    opacity: 0.86;
-  }
-
-  strong {
-    font-variant-numeric: tabular-nums;
-  }
+.speed-text {
+  min-width: 0;
+  line-height: 1.6;
 }
 
-.budget-note {
-  min-width: 0;
+.speed-eta {
   margin-left: auto;
   font-size: 11px;
   color: var(--text-3);
+  font-variant-numeric: tabular-nums;
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+}
+
+.ok-icon {
+  color: var(--accent);
+}
+
+.warn-icon {
+  color: var(--warning);
 }
 
 .tone-ok {
@@ -825,20 +997,50 @@ const previewRows = computed(() => summary.value?.preview ?? [])
   display: flex;
   flex-direction: column;
   gap: 8px;
-  margin-top: auto;
 }
 
 .resume-head {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 4px 0;
+  /* 不要再往外“借”负边距：溢出的 6px 会直接在滚动容器里长出一条横向滚动条 */
+  margin: 0;
+  padding: 6px 0;
   border: none;
+  border-radius: var(--radius-sm);
   background: transparent;
   color: var(--text-1);
   font-size: 13px;
   font-weight: 600;
+  text-align: left;
   cursor: pointer;
+  transition: background-color var(--dur-fast) var(--ease-standard);
+
+  &:hover {
+    background: var(--ctrl-fill);
+  }
+
+  &:active {
+    background: var(--ctrl-fill-pressed);
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: 1px;
+  }
+}
+
+/* 没有状态时只放一行弱化提示：不抢眼，但能看出这里有东西可展开 */
+.resume-state {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--text-3);
+}
+
+/* 解析结果 / 解析失败都复用全局的 .notice-line（同一边距与描边，不再自带一套盒子） */
+.resume-status-text {
+  min-width: 0;
+  word-break: break-word;
 }
 
 .resume-body {

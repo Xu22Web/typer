@@ -37,6 +37,17 @@ import {
 
 import { analyzeFile, KIND_LABELS } from './analyze'
 
+/** 设置里 `transfer.quality` 的默认值：等于它才视为"自动"，小文件会升级到 q11 */
+const DEFAULT_TRANSFER_QUALITY = 9
+
+/**
+ * 小文件用 q11 的阈值。
+ *
+ * q11 在 8 MB 以内通常只要几秒，而它比 q9 少 3%~7% 的线上字节——放到几分钟的键入过程里是净赚；
+ * 再大就可能让准备阶段变成新瓶颈（q11 在几十 MB 上会跑几十秒到几分钟）。
+ */
+const Q11_MAX_BYTES = 8 * 1024 * 1024
+
 /** 准备阶段失败：消息直接展示给用户，因此用中文把"为什么不行 + 怎么办"讲清楚。 */
 export class TransferError extends Error {
   readonly code: string
@@ -322,6 +333,15 @@ export async function prepareTransfer(input: PrepareTransferInput): Promise<Prep
   const maxFrameChars = clamp(Math.floor(options.maxFrameChars), TRANSFER_LIMITS.maxFrameChars)
   const quality = clamp(Math.floor(options.quality), TRANSFER_LIMITS.quality)
 
+  // 基数 47 用到了 `- . / ' [ ] \` 这些键：编辑器会把 `--` / `1/2` / `...` 自动更正、
+  // 把引号括号自动闭合，载荷当场就被改写。这里直接拒绝，而不是等整文件哈希对不上才发现。
+  if (options.alphabet === 'b47' && options.mode !== 'term') {
+    throw new TransferError(
+      'alphabet',
+      '基数 47 只能用于「终端 / 命令行」目标端：编辑器会自动更正 -- 、1/2 、... 并自动闭合引号括号。请改用 ASCII 5 位档'
+    )
+  }
+
   const info = await stat(path).catch(() => null)
   if (!info) throw new TransferError('not-found', `无法读取文件：${path}`)
   if (!info.isFile()) throw new TransferError('not-file', `不是普通文件：${path}`)
@@ -329,6 +349,11 @@ export async function prepareTransfer(input: PrepareTransferInput): Promise<Prep
 
   const name = options.name?.trim() || basename(path)
   const job = randomJobId()
+
+  // 质量自动升级：默认 q9 之外，小文件直接上 q11——多花的准备时间（几秒）远小于它省下的键入时间，
+  // 大文件则维持 q9，避免准备阶段变成新的瓶颈。用户显式选了别的质量就完全按用户的来。
+  const effectiveQuality =
+    quality === DEFAULT_TRANSFER_QUALITY && size <= Q11_MAX_BYTES ? 11 : quality
 
   // 1) 文件画像：只读样本、不改写文件；决定"要不要压"
   const profile = await analyzeFile(path, size)
@@ -349,7 +374,7 @@ export async function prepareTransfer(input: PrepareTransferInput): Promise<Prep
   let sha256: string
   let actualCompression = compression
   if (compression === 'br' && size > 0) {
-    const result = await compressFile({ path, size, quality, job, deps })
+    const result = await compressFile({ path, size, quality: effectiveQuality, job, deps })
     wire = result.source
     sha256 = result.sha256
     // 压完反而更大（极小文件 / 已压缩数据）：丢掉压缩结果，按原字节发，省字符也省时间
@@ -425,7 +450,7 @@ export async function prepareTransfer(input: PrepareTransferInput): Promise<Prep
     job,
     alphabet: options.alphabet,
     compression: actualCompression,
-    quality: actualCompression === 'br' ? quality : 0,
+    quality: actualCompression === 'br' ? effectiveQuality : 0,
     mode: options.mode,
     chunkBytes,
     maxFrameChars,
@@ -441,7 +466,7 @@ export async function prepareTransfer(input: PrepareTransferInput): Promise<Prep
     compressionNote:
       actualCompression === 'br'
         ? profile.compressible
-          ? `${profile.reason}；已按 q${quality} 整文件压缩`
+          ? `${profile.reason}；已按 q${effectiveQuality} 整文件压缩`
           : `实测压缩收益很小（${
               size > 0 ? Math.round((1 - wire.size / size) * 100) : 0
             }%），但按设置强制压缩了；改用「自动」可跳过这一步，省掉准备时间`

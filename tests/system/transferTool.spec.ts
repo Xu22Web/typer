@@ -1,11 +1,20 @@
 import { execFile, spawn } from 'node:child_process'
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { parseFrame, sha256Hex } from '@main/util/frame'
+import { decodeSymbols, getAlphabet, symbolCount } from '@main/util/codec'
 import { prepareTransfer, type PreparedTransfer } from '@main/transfer/prepare'
 import { matchResume, parseResumeState } from '@main/transfer/resume'
 import type { TransferPrepareOptions } from '@shared/transfer/transfer'
@@ -178,12 +187,13 @@ describe('typer-recv.mjs：端到端接收与完整性校验', () => {
     )
     expect(shown.stderr).toBe('')
     expect(shown.code).toBe(0)
-    // 规模一行 + 至少一行进度（进度条 + 百分比 + 片数）
+    // 规模一行 + 至少一行进度（状态 / 进度条 / 百分比 / 片数）
     expect(shown.stdout).toContain('接收开始')
-    expect(shown.stdout).toMatch(/接收\s+\S+\s+\d+\.\d%\s+\d+\/\d+ 片/)
-    // 非 TTY 不该出现颜色转义（否则重定向到日志会一团污）
+    expect(shown.stdout).toMatch(/接收中\s+\[[#-]+\]\s+\d+\.\d%\s+\d+\/\d+ 片/)
+    // 非 TTY 不该出现颜色转义与回车重绘（否则重定向到日志会一团污）
     // eslint-disable-next-line no-control-regex -- 就是要断言输出里没有 ESC 序列
     expect(shown.stdout).not.toMatch(/\u001b\[/)
+    expect(shown.stdout).not.toContain('\r')
     // 结束摘要：大小 / 片数 / 用时 / 平均速率 / 校验结果
     expect(shown.stdout).toMatch(/完成 .* · \d+ 片 · 用时 .+ · 平均 .+?\/s · SHA-256 已校验/)
 
@@ -201,11 +211,47 @@ describe('typer-recv.mjs：端到端接收与完整性校验', () => {
     expect(quietOn.stdout).not.toContain('接收开始')
   }, 60_000)
 
-  it('--progress 只接受 auto / on / off', async () => {
+  it('--progress 只接受 auto / on / plain / off；--ime 只接受 auto / on / off', async () => {
     const result = await runTool(['--progress', 'loud'], work)
     expect(result.code).toBe(4)
     expect(result.stderr).toContain('--progress 只接受')
+
+    const ime = await runTool(['--ime', 'always'], work)
+    expect(ime.code).toBe(4)
+    expect(ime.stderr).toContain('--ime 只接受')
+
+    // --ime off 时仍然能正常收完（只是不动输入法）
+    const source = makeSource(3000)
+    writeFileSync(join(work, 'src.bin'), source)
+    const { lines } = await appFrames('src.bin')
+    writeFrames('frames.txt', lines)
+    const off = await runTool(
+      ['--in', 'frames.txt', '-o', 'ime-off.bin', '-d', 'parts-ime', '--ime', 'off', '--quiet'],
+      work
+    )
+    expect(off.code).toBe(0)
+    expect(readFileSync(join(work, 'ime-off.bin')).equals(source)).toBe(true)
   })
+
+  it('同一分片目录被另一个活着的进程占用时拒绝写盘（避免两份进程互相覆盖）', async () => {
+    const source = makeSource(3000)
+    writeFileSync(join(work, 'src.bin'), source)
+    const { lines } = await appFrames('src.bin')
+    writeFrames('frames.txt', lines)
+
+    // 目录里放一个“活着的”持有者：用测试进程自己的 PID（肯定还活着，但不是接收端）
+    const parts = join(work, 'parts-locked')
+    mkdirSync(parts, { recursive: true })
+    writeFileSync(join(parts, '.recv-lock'), String(process.pid))
+
+    const blocked = await runTool(
+      ['--in', 'frames.txt', '-o', 'out.bin', '-d', 'parts-locked'],
+      work
+    )
+    expect(blocked.code).toBe(4)
+    expect(blocked.stdout).toContain('另有一个接收端正在处理这个任务')
+    expect(existsSync(join(work, 'out.bin'))).toBe(false)
+  }, 30_000)
 
   it('片号分隔符只接受英文字符：中文标点被拒并指出是哪个字符', async () => {
     writeFileSync(join(work, 'dunhao.txt'), '@T2R a1b2c3d4 10 3、5\n')
@@ -552,6 +598,42 @@ describe('应用与接收端的一致性（同一文件、同一参数）', () =
       expect(basename('src.bin')).toBeTruthy()
     }
   })
+
+  it('基数 47 端到端：真实接收端能还原，载荷只含 47 个零 Shift 键', async () => {
+    // 4000 字节跨了多个 32 字节块，能同时覆盖满块与末块
+    const source = makeSource(4000)
+    writeFileSync(join(work, 'src.bin'), source)
+    const all = await appFrames('src.bin', { alphabet: 'b47' })
+
+    const allowed = new Set(getAlphabet('b47').table)
+    let b47Chars = 0
+    for (const frame of all.lines.map((line) => parseFrame(line))) {
+      if (frame.kind !== 'data') continue
+      // 不允许出现大写（Shift）、空白或 `@`（帧标记）
+      expect(frame.payload).not.toMatch(/[\s@A-Z]/)
+      for (const char of frame.payload) expect(allowed.has(char.charCodeAt(0))).toBe(true)
+      // 字符数与符号表口径一致；同时确认能按同样口径解回去
+      expect(frame.payload).toHaveLength(symbolCount(frame.bytes, 'b47'))
+      expect(Buffer.from(decodeSymbols(frame.payload, 'b47', frame.bytes))).toHaveLength(
+        frame.bytes
+      )
+      b47Chars += frame.payload.length
+    }
+
+    // 同样的字节数，5 位档要多打约 8% 的字符
+    const fiveChars = Array.from({ length: all.job.summary.total }, (_value, index) =>
+      symbolCount(
+        Math.min(DEFAULT_OPTIONS.chunkBytes, source.length - index * DEFAULT_OPTIONS.chunkBytes),
+        'ascii32'
+      )
+    ).reduce((sum, count) => sum + count, 0)
+    expect(b47Chars).toBeLessThan(fiveChars)
+
+    writeFrames('b47.txt', all.lines)
+    const done = await runTool(['--in', 'b47.txt', '-o', 'out.bin', '-d', 'work', '--quiet'], work)
+    expect(done.code).toBe(0)
+    expect(readFileSync(join(work, 'out.bin')).equals(source)).toBe(true)
+  }, 60_000)
 })
 
 describe.skipIf(process.platform !== 'win32')('run.bat：给目标机用的双击入口', () => {

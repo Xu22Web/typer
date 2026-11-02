@@ -165,7 +165,7 @@ describe('prepareTransfer · 不压缩（原字节）', () => {
 })
 
 describe('prepareTransfer · 逐片渲染', () => {
-  it.each(['ascii32', 'ascii64', 'hex'] as const)(
+  it.each(['ascii32', 'ascii64', 'b47', 'hex'] as const)(
     '%s：每片解码后与源区间逐字节一致',
     async (alphabet) => {
       const source = binary(2500)
@@ -367,11 +367,88 @@ describe('prepareTransfer · 校验与取消', () => {
   })
 })
 
+describe('prepareTransfer · 基数 47 与质量自动升级', () => {
+  it('基数 47 只能在终端：编辑器模式直接拒绝并说明原因', async () => {
+    const path = writeSource('src.bin', binary(300))
+    await expect(prepare(path, { alphabet: 'b47', mode: 'line' })).rejects.toMatchObject({
+      code: 'alphabet',
+      message: expect.stringMatching(/基数 47 只能用于「终端/)
+    })
+    // 终端模式下同一个文件正常准备
+    await expect(prepare(path, { alphabet: 'b47', mode: 'term' })).resolves.toBeTruthy()
+  })
+
+  it('基数 47：字符数比 5 位档再少约 8%，且能逐字节还原', async () => {
+    const source = binary(8192, 11)
+    const wide = await prepare(writeSource('a.bin', source), {
+      alphabet: 'b47',
+      chunkBytes: 4096
+    })
+    const five = await prepare(writeSource('a.bin', source), {
+      alphabet: 'ascii32',
+      chunkBytes: 4096
+    })
+
+    expect(wide.summary.alphabet).toBe('b47')
+    expect(wide.summary.frameChars).toBeLessThan(five.summary.frameChars)
+    // 省下的比例应在 6%~10% 之间（真实值是 ~8%）
+    const saved = (five.summary.frameChars - wide.summary.frameChars) / five.summary.frameChars
+    expect(saved).toBeGreaterThan(0.05)
+    expect(saved).toBeLessThan(0.11)
+
+    for (let index = 0; index < wide.summary.total; index++) {
+      const bytes = await renderWire(wide, index)
+      const start = index * wide.summary.chunkBytes
+      expect(Buffer.compare(bytes, source.subarray(start, start + bytes.length))).toBe(0)
+    }
+  })
+
+  it('默认质量对小文件自动升到 q11：比固定低质量更小，解压后逐字节一致', async () => {
+    // 造一份"有熵"的文本：重复率足以判定为可压缩，但 q11 与 q4 的差距仍然明显
+    let text = ''
+    for (let index = 0; index < 6000; index++) {
+      text += `${index}\t模块${index % 97}\t路径 src/feature-${index % 53}/file-${index}.ts\t状态 ${['通过', '失败', '跳过'][index % 3]}\n`
+    }
+    const source = Buffer.from(text, 'utf8')
+    const auto = await prepare(writeSource('note.txt', source), {
+      alphabet: 'ascii32',
+      compression: 'br'
+    })
+    const fixed = await prepare(writeSource('note.txt', source), {
+      alphabet: 'ascii32',
+      compression: 'br',
+      quality: 4
+    })
+
+    // 质量 9 与设置里的默认值是同一个数，无法区分“用户手选 9”与“没选”，因此 9 一律视为自动
+    expect(auto.summary.quality).toBe(11)
+    expect(auto.summary.compressionNote).toMatch(/q11/)
+    expect(fixed.summary.quality).toBe(4)
+    expect(auto.summary.wireBytes).toBeLessThan(fixed.summary.wireBytes)
+
+    const parts: Buffer[] = []
+    for (let index = 0; index < auto.summary.total; index++)
+      parts.push(await renderWire(auto, index))
+    expect(brotliDecompressSync(Buffer.concat(parts)).equals(source)).toBe(true)
+  })
+
+  it('用户显式选的质量不会被自动升级覆盖', async () => {
+    const source = Buffer.from('质量 5 也必须被尊重。\n'.repeat(500), 'utf8')
+    const job = await prepare(writeSource('note.txt', source), {
+      alphabet: 'ascii32',
+      compression: 'br',
+      quality: 5
+    })
+    expect(job.summary.quality).toBe(5)
+  })
+})
+
 describe('payloadCharsFor', () => {
   it('与符号表的位宽口径一致', () => {
     expect(payloadCharsFor(8, 'ascii32')).toBe(Math.ceil(64 / 5))
     expect(payloadCharsFor(8, 'ascii64')).toBe(Math.ceil(64 / 6))
     expect(payloadCharsFor(8, 'hex')).toBe(16)
+    expect(payloadCharsFor(8, 'b47')).toBe(symbolCount(8, 'b47'))
     expect(symbolCount(8, 'ascii32')).toBe(payloadCharsFor(8, 'ascii32'))
   })
 })

@@ -5,7 +5,7 @@
  */
 
 /** 载荷符号表：每字符承载多少比特，直接决定要打多少个字符。 */
-export type TransferAlphabet = 'ascii32' | 'ascii64' | 'hex'
+export type TransferAlphabet = 'ascii32' | 'ascii64' | 'hex' | 'b47'
 
 /** 压缩方式选项（`auto` 表示按样本试压结果决定）。 */
 export type TransferCompression = 'auto' | 'br' | 'none'
@@ -23,15 +23,28 @@ export interface TransferAlphabetOption {
   description: string
   /** 每字节需要的字符数（8 / bits） */
   charsPerByte: number
+  /** 只在终端安全（编辑器会自动更正/自动闭合这些字符），非终端目标端应隐藏该选项 */
+  terminalsOnly?: boolean
 }
 
 export const TRANSFER_BITS: Readonly<Record<TransferAlphabet, number>> = {
   ascii32: 5,
   ascii64: 6,
-  hex: 4
+  hex: 4,
+  // 47 键：log2(47) = 5.554（分块后实际 5.447，见 symbolsForBytes）
+  b47: Math.log2(47)
 }
 
 export const TRANSFER_ALPHABET_OPTIONS: readonly TransferAlphabetOption[] = [
+  {
+    value: 'b47',
+    label: '基数 47（终端最快）',
+    bits: Math.log2(47),
+    charsPerByte: 8 / Math.log2(47),
+    terminalsOnly: true,
+    description:
+      "用满美式布局上零 Shift 的 47 个可打印键（字母数字 + ` - = [ ] \\ ; ' , . /）：字符数比 5 位档再少约 8%，不需要任何 Shift。仅限终端：编辑器会把 -- 、1/2 、... 自动更正，还会自动闭合引号与括号"
+  },
   {
     value: 'ascii32',
     label: 'ASCII 5 位（云桌面推荐）',
@@ -42,7 +55,7 @@ export const TRANSFER_ALPHABET_OPTIONS: readonly TransferAlphabetOption[] = [
   },
   {
     value: 'ascii64',
-    label: 'ASCII 6 位（最快）',
+    label: 'ASCII 6 位（字符最少）',
     bits: 6,
     charsPerByte: 8 / 6,
     description:
@@ -262,11 +275,40 @@ export function durationTone(ms: number): 'ok' | 'warn' | 'danger' {
 }
 
 /**
- * @description 给定线上字节数与符号表，算出载荷字符数（与线格式实现口径一致）
+ * @description 给定线上字节数与符号表，算出载荷字符数（与线格式实现口径一致）。
+ *
+ * 与 `codec.ts` 的 `symbolCount` 必须同口径：基数表按 32 字节一块定长换算，
+ * 位打包表按 `ceil(bytes*8/bits)`——单元测试会把两边逐个对齐。
  * @param bytes 线上字节数
  * @param alphabet 符号表
  * @returns 字符数
  */
 export function symbolsForBytes(bytes: number, alphabet: TransferAlphabet): number {
-  return bytes <= 0 ? 0 : Math.ceil((bytes * 8) / TRANSFER_BITS[alphabet])
+  if (bytes <= 0) return 0
+  if (alphabet !== 'b47') return Math.ceil((bytes * 8) / TRANSFER_BITS[alphabet])
+  const full = Math.floor(bytes / RADIX_BLOCK_BYTES)
+  const rest = bytes % RADIX_BLOCK_BYTES
+  return full * B47_BLOCK_DIGITS + (rest > 0 ? (B47_REST_DIGITS[rest] as number) : 0)
 }
+
+/** 分块基数编码的块大小（字节，与 codec.ts 一致） */
+export const RADIX_BLOCK_BYTES = 32
+
+/** 47 进制下一个满块（32 字节）需要的字符数：ceil(256 / log2(47))，已按整数幂校验 */
+export const B47_BLOCK_DIGITS = 47
+
+/** 47 进制下 1..31 字节的末块字符数（用整数幂校验，避免浮点少算一位） */
+const B47_REST_DIGITS: ReadonlyArray<number> = (() => {
+  const table: number[] = [0]
+  for (let length = 1; length < RADIX_BLOCK_BYTES; length++) {
+    const limit = 1n << BigInt(length * 8)
+    let digits = Math.ceil((length * 8) / Math.log2(47))
+    let power = 47n ** BigInt(digits)
+    while (power < limit) {
+      digits += 1
+      power *= 47n
+    }
+    table.push(digits)
+  }
+  return table
+})()

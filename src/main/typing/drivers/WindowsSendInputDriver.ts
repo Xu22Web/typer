@@ -169,10 +169,10 @@ export class WindowsSendInputDriver implements KeyboardDriver {
    * @param options ensureEnglish 为 true 时尝试切到英文直输（切 US 布局 + 关掉中文输入法）
    * @returns 切换前后的状态（及是否已处于英文直输）
    */
-  async ime(options: { ensureEnglish?: boolean } = {}): Promise<HostImeData> {
+  async ime(options: { ensureEnglish?: boolean; restore?: boolean } = {}): Promise<HostImeData> {
     return this.client.request<HostImeData>(
       'ime',
-      { ensureEnglish: options.ensureEnglish === true },
+      { ensureEnglish: options.ensureEnglish === true, restore: options.restore === true },
       // 切换包含一次“投递消息 + 等目标线程处理”的短暂等待，5s 足够
       5_000
     )

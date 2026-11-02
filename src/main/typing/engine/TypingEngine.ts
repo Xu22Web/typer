@@ -219,6 +219,8 @@ export class TypingEngine {
   private lastForeground: HostForegroundData | null = null
   /** 单个请求的动作数（极速档按实测速率调整，保证暂停/停止的粒度） */
   private actionsPerRequest = 0
+  /** 本次运行是否动过输入法状态（动过才需要还原） */
+  private imeTouched = false
   /**
    * 未在输入的时长（倒计时 + 暂停）。
    *
@@ -280,6 +282,7 @@ export class TypingEngine {
     this.countdownRemainingMs = 0
     this.pressureWarned = false
     this.lastForeground = null
+    this.imeTouched = false
     this.actionsPerRequest = Math.max(1, settings.chunkSize)
     this.idleMs = 0
     this.frames =
@@ -304,6 +307,8 @@ export class TypingEngine {
     } finally {
       // 任何路径都必须释放修饰键，避免"粘键"
       await this.releaseModifiers('结束')
+      // 开始时把输入法切到了英文直输：结束（完成 / 中止 / 失败）就还原，别把用户的中文输入法留着关着
+      await this.restoreIme()
 
       this.running = false
       if (error) this.setState('failed', error.message)
@@ -748,6 +753,8 @@ export class TypingEngine {
     let result: HostImeData
     try {
       result = await ime.call(this.driver, { ensureEnglish: true })
+      // 只要真的问过宿主，就记下来：结束时无条件尝试还原，由宿主判断"有没有需要还原的东西"
+      this.imeTouched = true
     } catch (error) {
       this.deps.onLog?.(
         'warn',
@@ -771,6 +778,33 @@ export class TypingEngine {
       )
     }
     if (result.note) this.deps.onLog?.('warn', `输入法切换提示：${result.note}`)
+  }
+
+  /**
+   * @description 还原开始输入前被切走的输入法 / 键盘布局。
+   *
+   * 不还原的后果很具体：用户下次在目标程序里打中文，发现输入法被关成了英文，还以为程序坏了。
+   * 这里只尽力而为——还原失败最多记一条日志，绝不影响本次输入的终态。
+   */
+  private async restoreIme(): Promise<void> {
+    if (!this.imeTouched) return
+    this.imeTouched = false
+    const ime = this.driver.ime
+    if (!ime) return
+    try {
+      const result = await ime.call(this.driver, { restore: true })
+      if (result.restored) {
+        this.deps.onLog?.('info', `已把输入法还原为输入前的状态：${describeIme(result.after)}`)
+      } else if (result.note) {
+        this.deps.onLog?.('info', `输入法未还原：${result.note}`)
+      }
+    } catch (error) {
+      this.deps.onLog?.(
+        'warn',
+        `还原输入法失败：${error instanceof Error ? error.message : String(error)}` +
+          '（目标程序若仍是英文直输，手动切回即可）'
+      )
+    }
   }
 
   /**

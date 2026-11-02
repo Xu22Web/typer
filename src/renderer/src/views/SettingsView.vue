@@ -7,7 +7,8 @@ import {
   TRANSFER_ALPHABET_OPTIONS,
   TRANSFER_LIMITS,
   TRANSFER_MODE_OPTIONS,
-  formatBytes
+  formatBytes,
+  type TransferTargetMode
 } from '@shared/transfer/transfer'
 
 /**
@@ -27,8 +28,7 @@ const restoring = ref(false)
 
 /** 片大小与帧长上限的边界值（与主进程共用同一份定义） */
 const limits = TRANSFER_LIMITS
-/** 字符档 / 目标端的可选项（供模板渲染） */
-const alphabetOptions = TRANSFER_ALPHABET_OPTIONS
+/** 目标端的可选项（供模板渲染；字符档按目标端过滤，见 alphabetChoices） */
 const modeOptions = TRANSFER_MODE_OPTIONS
 const typing = useTyping()
 
@@ -90,6 +90,30 @@ const alphabetHint = computed(() => {
   const value = draft.value?.transfer.alphabet ?? 'ascii32'
   return TRANSFER_ALPHABET_OPTIONS.find((option) => option.value === value)?.description ?? ''
 })
+
+/**
+ * 可选字符档：基数 47 用到编辑器会自动更正的字符（`--`、引号、括号），
+ * 因此只在「终端」目标端下才提供
+ */
+const alphabetChoices = computed(() =>
+  TRANSFER_ALPHABET_OPTIONS.filter(
+    (option) => !option.terminalsOnly || draft.value?.transfer.mode === 'term'
+  )
+)
+
+/**
+ * @description 切换目标端：从终端切走时把仅在终端可用的字符档退回默认
+ * @param mode 目标端
+ */
+function applyTargetMode(mode: TransferTargetMode): void {
+  if (!draft.value || mode === 'term') return
+  const current = TRANSFER_ALPHABET_OPTIONS.find(
+    (option) => option.value === draft.value?.transfer.alphabet
+  )
+  if (!current?.terminalsOnly) return
+  draft.value.transfer.alphabet = 'ascii32'
+  ElMessage.info('基数 47 只能在终端使用：已切回 ASCII 5 位档')
+}
 
 /**
  * @description 应用片大小预设；预设同时决定片大小与帧长上限（两者必须配套）
@@ -697,7 +721,7 @@ async function restoreDefaults(): Promise<void> {
             <p class="group-desc">
               把文件切成"每片一行"的帧逐片输入。接收端逐片校验、支持断点续传，合并后再校验整文件哈希；
               字符档决定"一个字符能带多少比特"，压缩决定"要带多少字节"。远程桌面只转发真实键盘事件，
-              因此默认用零 Shift 的 5 位档。
+              因此默认用零 Shift 的 5 位档；目标端是终端时还可以选基数 47 档（再省约 8% 字符）。
             </p>
 
             <div class="row">
@@ -707,7 +731,7 @@ async function restoreDefaults(): Promise<void> {
               </div>
               <ElSelect v-model="draft.transfer.alphabet" class="control">
                 <ElOption
-                  v-for="option in alphabetOptions"
+                  v-for="option in alphabetChoices"
                   :key="option.value"
                   :label="option.label"
                   :value="option.value"
@@ -736,7 +760,10 @@ async function restoreDefaults(): Promise<void> {
             <div class="row">
               <div class="label">
                 <div>压缩等级</div>
-                <small>Brotli 质量：9 是速度与压缩率的平衡点；10~11 更小但准备时间成倍增长</small>
+                <small>
+                  Brotli 质量。默认 9 = 自动：8 MB 以内的文件准备时自动升到 11（多花不到 2 秒， 换
+                  3%~7% 更少的字节）；填 1~8 或 10 表示固定质量，不再自动调整
+                </small>
               </div>
               <ElInputNumber
                 v-model="draft.transfer.quality"
@@ -753,7 +780,11 @@ async function restoreDefaults(): Promise<void> {
                   报文（最快、关回显）、编辑器用真回车、单行框不加换行</small
                 >
               </div>
-              <ElSelect v-model="draft.transfer.mode" class="control">
+              <ElSelect
+                v-model="draft.transfer.mode"
+                class="control"
+                @change="applyTargetMode($event as TransferTargetMode)"
+              >
                 <ElOption
                   v-for="mode in modeOptions"
                   :key="mode.value"

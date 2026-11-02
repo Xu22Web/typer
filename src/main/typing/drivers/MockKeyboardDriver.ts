@@ -45,8 +45,10 @@ export class MockKeyboardDriver implements KeyboardDriver {
   cancelCalls = 0
   /** foreground() 被调用的次数：用于断言"焦点查询已搭车、没有额外往返" */
   foregroundCalls = 0
-  /** ime() 的调用参数：用于断言"输入前确实检查过输入法" */
-  readonly imeCalls: Array<{ ensureEnglish?: boolean }> = []
+  /** ime() 的调用参数：用于断言“输入前确实检查过输入法”与“结束后确实还原了” */
+  readonly imeCalls: Array<{ ensureEnglish?: boolean; restore?: boolean }> = []
+  /** 本轮是否真的切换过输入法（restore 的返回值据此决定，与真实宿主口径一致） */
+  private switched = false
   disposed = false
   private readonly options: MockDriverOptions
 
@@ -113,13 +115,12 @@ export class MockKeyboardDriver implements KeyboardDriver {
 
   /**
    * @description 报告输入法状态；默认是“英文布局 + 输入法关闭”的就绪状态
-   * @param options ensureEnglish 表示调用方希望切到英文直输
+   * @param options ensureEnglish 表示调用方希望切到英文直输；restore 表示本轮结束要还原
    * @returns 切换前后的状态
    */
-  async ime(options: { ensureEnglish?: boolean } = {}): Promise<HostImeData> {
+  async ime(options: { ensureEnglish?: boolean; restore?: boolean } = {}): Promise<HostImeData> {
     if (this.options.failing) throw new Error('mock driver: ime failed')
     this.imeCalls.push({ ...options })
-    if (this.options.imeResult) return this.options.imeResult
     const state: HostImeSnapshot = this.options.imeState ?? {
       layoutId: 0x0409,
       layoutName: '00000409',
@@ -128,12 +129,22 @@ export class MockKeyboardDriver implements KeyboardDriver {
       imeOpen: false,
       nativeMode: false
     }
-    return {
+    const ok = !state.nativeMode && !state.imeOpen
+    if (options.restore) {
+      // 与真实宿主一致：只有“真的切过”才有东西可还原
+      const restored = this.switched
+      this.switched = false
+      return { before: state, after: state, switched: false, restored, ok }
+    }
+    const result: HostImeData = this.options.imeResult ?? {
       before: state,
       after: state,
       switched: false,
-      ok: !state.nativeMode && !state.imeOpen
+      ok
     }
+    // 记下这一轮到底改没改过：restore 的返回值据此决定（宿主那边同样只还原“改过的”）
+    this.switched = result.switched
+    return result
   }
 
   /**

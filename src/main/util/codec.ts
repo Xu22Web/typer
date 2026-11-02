@@ -12,13 +12,23 @@
 // 主进程与接收端脚本共用这一份实现。源码可以用较新的语法，接收端产物由 esbuild 按 node14 目标自动降级。
 
 /** 载荷符号表标识（写进开始帧的 `alpha` 字段）。 */
-export type AlphabetId = 'ascii32' | 'ascii64' | 'hex'
+export type AlphabetId = 'ascii32' | 'ascii64' | 'hex' | 'b47'
 
-/** 符号表：`bits` 位/字符，`table[i]` 是索引 i 对应的 UTF-16 码元。 */
+/**
+ * 符号表。两种编码方式：
+ *   · `bits`  —— 位打包，每字符固定 `bits` 位（只支持 2 的幂）；
+ *   · `radix` —— 分块基数转换：把每 {@link RADIX_BLOCK_BYTES} 字节当成一个大整数换成 `radix` 进制。
+ *
+ * 为什么需要第二种：位打包要求字符集大小是 2 的幂，而"美式布局上无需 Shift 的可打印键"有 47 个，
+ * 只用 32 个白扔了 0.55 bit/字符（≈8% 的字符数）。基数转换不受这个限制。
+ */
 export interface Alphabet {
   id: AlphabetId
-  /** 每个字符承载的比特数 */
+  kind: 'bits' | 'radix'
+  /** 每个字符承载的比特数（`radix` 表这里是理论值 log2(radix)；估算请用 `symbolsForBytes`） */
   bits: number
+  /** 进制：位打包表为 2^bits */
+  radix: number
   /** 索引 → 码元 */
   table: readonly number[]
   /** 码元 → 索引 */
@@ -60,10 +70,21 @@ const ASCII64_CHARS = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstu
 const HEX_CHARS = '0123456789ABCDEF'
 
 /**
+ * 47 键符号表：美式布局上**全部无需 Shift 的可打印键**（不含空格，也不含 `@`——它是帧标记）。
+ *
+ * 36 个字母数字 + `` ` - = [ ] \ ; ' , . / `` 共 47 个：log2(47) = 5.554 bit/字符，
+ * 分块后实际 5.447（每 32 字节用 47 个字符），比 ascii32 少约 8% 字符。
+ *
+ * **只用于终端**：编辑器会把 `--`、`1/2`、`...` 自动更正成 `—`/`½`/`…`，`' [ ] `` ` `` 还会自动闭合，
+ * 这些都会直接改写载荷（接收端的整文件哈希能发现，但那一刻已经白打了）。
+ */
+const B47_CHARS = '0123456789abcdefghijklmnopqrstuvwxyz`-=[]\\;' + "'" + ',./'
+
+/**
  * @description 由字符集构造符号表
  * @param id 符号表标识
- * @param chars 等长字符集（长度必须是 2 的幂）
- * @param bits 每字符比特数
+ * @param chars 字符集（位打包表长度必须是 2 的幂）
+ * @param bits 每字符理论比特数
  * @returns 符号表
  */
 function fromChars(id: AlphabetId, chars: string, bits: number): Alphabet {
@@ -71,19 +92,58 @@ function fromChars(id: AlphabetId, chars: string, bits: number): Alphabet {
   const index = new Map<number, number>()
   for (let position = 0; position < chars.length; position++) {
     const code = chars.charCodeAt(position)
+    if (index.has(code)) throw new CodecError(`符号表 ${id} 里有重复字符`)
     table.push(code)
     index.set(code, position)
   }
-  return { id, bits, table, index }
+  const radix = chars.length
+  const kind = (radix & (radix - 1)) === 0 ? 'bits' : 'radix'
+  if (kind === 'bits' && radix !== 1 << bits) {
+    throw new CodecError(`符号表 ${id} 的长度与位宽不一致`)
+  }
+  return { id, kind, bits, radix, table, index }
 }
 
+/** 分块基数编码的块大小（字节）：32 字节 = 256 bit，一次 BigInt 除法就够便宜 */
+export const RADIX_BLOCK_BYTES = 32
+
+/** 每个基数符号表"字节长度 → 字符数"的查表（长度 0..RADIX_BLOCK_BYTES） */
+const digitTables = new Map<AlphabetId, number[]>()
+
 /**
- * @description 构造 15 bit 的 CJK 符号表
- * @returns 符号表
+ * @description 一个块（≤ 32 字节）换成基数符号需要几个字符。
+ *
+ * 用整数幂校验而不是只靠 `ceil(8n/log2(radix))`：浮点误差会让某个长度少算一位，
+ * 那是"偶尔写坏一个字节"的经典来源。
+ * @param bytes 块内字节数
+ * @param alphabet 基数符号表
+ * @returns 字符数
  */
+function blockDigits(bytes: number, alphabet: Alphabet): number {
+  if (bytes <= 0) return 0
+  let table = digitTables.get(alphabet.id)
+  if (!table) {
+    table = new Array<number>(RADIX_BLOCK_BYTES + 1).fill(0)
+    const radix = BigInt(alphabet.radix)
+    for (let length = 1; length <= RADIX_BLOCK_BYTES; length++) {
+      const limit = 1n << BigInt(length * 8)
+      let digits = Math.ceil((length * 8) / Math.log2(alphabet.radix))
+      let power = radix ** BigInt(digits)
+      while (power < limit) {
+        digits += 1
+        power *= radix
+      }
+      table[length] = digits
+    }
+    digitTables.set(alphabet.id, table)
+  }
+  return table[bytes] as number
+}
+
 let ascii32: Alphabet | null = null
 let ascii64: Alphabet | null = null
 let hex: Alphabet | null = null
+let b47: Alphabet | null = null
 
 /**
  * @description 取符号表（惰性构造并缓存）
@@ -93,6 +153,7 @@ let hex: Alphabet | null = null
 export function getAlphabet(id: AlphabetId): Alphabet {
   if (id === 'ascii32') return (ascii32 ??= fromChars('ascii32', ASCII32_CHARS, 5))
   if (id === 'ascii64') return (ascii64 ??= fromChars('ascii64', ASCII64_CHARS, 6))
+  if (id === 'b47') return (b47 ??= fromChars('b47', B47_CHARS, Math.log2(B47_CHARS.length)))
   return (hex ??= fromChars('hex', HEX_CHARS, 4))
 }
 
@@ -102,7 +163,18 @@ export function getAlphabet(id: AlphabetId): Alphabet {
  * @returns 是否为 AlphabetId
  */
 export function isAlphabetId(value: unknown): value is AlphabetId {
-  return value === 'ascii32' || value === 'ascii64' || value === 'hex'
+  return value === 'ascii32' || value === 'ascii64' || value === 'hex' || value === 'b47'
+}
+
+/**
+ * @description 每个符号平均承载的比特数（位打包表是精确值；基数表按分块后的实际值算）
+ * @param id 符号表标识
+ * @returns 比特/字符
+ */
+export function bitsPerSymbol(id: AlphabetId): number {
+  const alphabet = getAlphabet(id)
+  if (alphabet.kind === 'bits') return alphabet.bits
+  return (RADIX_BLOCK_BYTES * 8) / blockDigits(RADIX_BLOCK_BYTES, alphabet)
 }
 
 /**
@@ -115,8 +187,12 @@ export function symbolCount(bytes: number, id: AlphabetId): number {
   if (!Number.isInteger(bytes) || bytes < 0) {
     throw new CodecError(`字节数不合法：${String(bytes)}`)
   }
-  const { bits } = getAlphabet(id)
-  return bytes === 0 ? 0 : Math.ceil((bytes * 8) / bits)
+  if (bytes === 0) return 0
+  const alphabet = getAlphabet(id)
+  if (alphabet.kind === 'bits') return Math.ceil((bytes * 8) / alphabet.bits)
+  const full = Math.floor(bytes / RADIX_BLOCK_BYTES)
+  const rest = bytes % RADIX_BLOCK_BYTES
+  return full * blockDigits(RADIX_BLOCK_BYTES, alphabet) + blockDigits(rest, alphabet)
 }
 
 /**
@@ -127,6 +203,7 @@ export function symbolCount(bytes: number, id: AlphabetId): number {
  */
 export function encodeSymbols(bytes: Uint8Array, id: AlphabetId): string {
   const alphabet = getAlphabet(id)
+  if (alphabet.kind === 'radix') return encodeRadix(bytes, alphabet)
   const { bits, table } = alphabet
   const mask = (1 << bits) - 1
   const out: string[] = []
@@ -174,6 +251,8 @@ export function decodeSymbols(text: string, id: AlphabetId, bytes: number): Uint
     )
   }
 
+  if (alphabet.kind === 'radix') return decodeRadix(text, alphabet, bytes)
+
   const out = new Uint8Array(bytes)
   let accumulator = 0
   let accumulated = 0
@@ -199,6 +278,74 @@ export function decodeSymbols(text: string, id: AlphabetId, bytes: number): Uint
   }
   if (accumulated > 0 && accumulator !== 0) {
     throw new CodecError('载荷末组补位不为零（数据被改写或符号表不匹配）')
+  }
+  return out
+}
+/**
+ * @description 分块基数编码：每 {@link RADIX_BLOCK_BYTES} 字节当成一个大整数换成 `radix` 进制。
+ *
+ * 末块按实际字节数定长，因此解码端不需要额外元信息（帧头里的 `bytes` 就够）。
+ * @param bytes 原始字节
+ * @param alphabet 基数符号表
+ * @returns 符号串
+ */
+function encodeRadix(bytes: Uint8Array, alphabet: Alphabet): string {
+  const { table } = alphabet
+  const radix = BigInt(alphabet.radix)
+  const out: string[] = []
+  for (let offset = 0; offset < bytes.length; offset += RADIX_BLOCK_BYTES) {
+    const length = Math.min(RADIX_BLOCK_BYTES, bytes.length - offset)
+    let value = 0n
+    for (let index = 0; index < length; index++) {
+      value = (value << 8n) | BigInt(bytes[offset + index] as number)
+    }
+    const digits = blockDigits(length, alphabet)
+    const chars: string[] = new Array<string>(digits)
+    for (let index = digits - 1; index >= 0; index--) {
+      chars[index] = String.fromCharCode(table[Number(value % radix)] as number)
+      value /= radix
+    }
+    // 数学上必然为 0（位数已按整数幂校验过）；留着是为了实现走偏时当场报错，而不是写出坏数据
+    if (value !== 0n) throw new CodecError('块内数值超出可编码范围')
+    out.push(chars.join(''))
+  }
+  return out.join('')
+}
+
+/**
+ * @description 分块基数解码：逐块把 radix 进制还原成字节，并校验每块数值不越过字节长度
+ * @param text 符号串（长度已由调用方校验）
+ * @param alphabet 基数符号表
+ * @param bytes 期望字节数
+ * @returns 原始字节
+ */
+function decodeRadix(text: string, alphabet: Alphabet, bytes: number): Uint8Array {
+  const radix = BigInt(alphabet.radix)
+  const { index } = alphabet
+  const out = new Uint8Array(bytes)
+  let cursor = 0
+  let written = 0
+  while (written < bytes) {
+    const length = Math.min(RADIX_BLOCK_BYTES, bytes - written)
+    const digits = blockDigits(length, alphabet)
+    let value = 0n
+    for (let offset = 0; offset < digits; offset++) {
+      const symbol = index.get(text.charCodeAt(cursor + offset))
+      if (symbol === undefined) {
+        throw new CodecError(`载荷含符号表之外的字符（第 ${cursor + offset + 1} 个）`)
+      }
+      value = value * radix + BigInt(symbol)
+    }
+    cursor += digits
+    // 越过本块字节能表示的范围 ⇒ 载荷被改写过（帧 CRC 之外的第二道防线）
+    if (value >> BigInt(length * 8) !== 0n) {
+      throw new CodecError('载荷块数值超出字节长度（数据被改写或符号表不匹配）')
+    }
+    for (let offset = length - 1; offset >= 0; offset--) {
+      out[written + offset] = Number(value & 0xffn)
+      value >>= 8n
+    }
+    written += length
   }
   return out
 }

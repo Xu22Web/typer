@@ -10,18 +10,76 @@ import {
 import { TransferError } from './prepare'
 import type { ResumeMatch, ResumeState, TransferJobSummary } from '@shared/transfer/transfer'
 
+/** 续传令牌行（接收端会把 `@T2R …` 单独打成一行） */
+const TOKEN_LINE = /^@T2R\s/
+/** 缺片回执行（操作者手抄的就是这一行） */
+const MISS_LINE = /^#MISS\s+/
+
 /**
- * @description 解析操作者从接收端带回来的续传状态；接受 resume.json、续传令牌或裸片号列表，只认"片号集合"这一种语义
- * @param raw 续传文本（报告 / 令牌 / 片号列表）
+ * @description 解析操作者从接收端带回来的续传状态。
+ *
+ * 接收端出错时打印的不是单独一行，而是一整段（`#FAIL 5 crc` / `#MISS 5` / `@T2R …` / 中文说明），
+ * 让人先挑出令牌再粘太容易出错，所以这里按「令牌 > #MISS > 内嵌 JSON 报告 > 裸片号」的顺序找锚点：
+ * 整段粘进来就能用。
+ * @param raw 续传文本（报告 / 令牌 / 片号列表 / 接收端整段输出）
  * @returns 续传状态
  */
 export function parseResumeState(raw: string): ResumeState {
   const text = String(raw ?? '').trim()
   if (text.length === 0) throw new TransferError('resume-format', '续传状态为空')
 
+  // 1) 整段就是令牌 / 报告：最常见，也最精确
   if (isFrameLine(text)) return parseToken(text)
+
+  // 2) 整段粘贴：先找令牌，再找 #MISS，再看有没有嵌在文字里的报告 JSON
+  const tokenLine = firstMatchingLine(text, TOKEN_LINE)
+  if (tokenLine) return parseToken(tokenLine)
+
+  const missLine = firstMatchingLine(text, MISS_LINE)
+  if (missLine) return parseRanges(missLine.replace(MISS_LINE, '').trim())
+
+  const embedded = findJsonObject(text)
+  if (embedded) return parseReport(embedded)
+
   if (text.startsWith('{')) return parseReport(text)
+
+  // 3) 裸片号列表（操作者手抄）
   return parseRanges(text)
+}
+
+/**
+ * @description 找第一行命中给定锚点的文本
+ * @param text 整段文本
+ * @param pattern 行首锚点
+ * @returns 去除首尾空白的该行；没有时返回 null
+ */
+function firstMatchingLine(text: string, pattern: RegExp): string | null {
+  for (const line of text.split(/\r?\n/)) {
+    const trimmed = line.trim()
+    if (trimmed.length > 0 && pattern.test(trimmed)) return trimmed
+  }
+  return null
+}
+
+/**
+ * @description 从夹杂着说明文字的一段里抠出续传报告 JSON
+ * @param text 整段文本
+ * @returns JSON 文本；不是合法报告时返回 null
+ */
+function findJsonObject(text: string): string | null {
+  const start = text.indexOf('{')
+  const end = text.lastIndexOf('}')
+  if (start < 0 || end <= start) return null
+  const candidate = text.slice(start, end + 1)
+  try {
+    const parsed: unknown = JSON.parse(candidate)
+    if (parsed && typeof parsed === 'object' && 'job' in (parsed as Record<string, unknown>)) {
+      return candidate
+    }
+  } catch {
+    // 说明文字里也可能有花括号，解析不了就当作没有报告
+  }
+  return null
 }
 
 /**
@@ -121,7 +179,8 @@ function parseRanges(text: string): ResumeState {
   } catch (error) {
     throw new TransferError(
       'resume-format',
-      `无法识别续传状态：${error instanceof Error ? error.message : String(error)}`
+      `无法识别续传状态（${error instanceof Error ? error.message : String(error)}）。` +
+        '把接收端那一段整段粘进来就行：@T2R 令牌、#MISS 行、resume.json 都认'
     )
   }
 }

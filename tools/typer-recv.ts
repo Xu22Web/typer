@@ -5,27 +5,31 @@
  *
  *   · 载荷是 15 / 6 / 4 比特一个字符的符号流（见 src/main/util/codec.ts），15 位档把字符数压到十六进制的 1/3.75；
  *   · 整文件先压缩再切片（`br`）或直接切片（`none`），每片自带 CRC32，整文件带 SHA-256；
- *   · 传输期间**不打印任何东西**（终端回显经云桌面回传极慢），只有出错那一行才打印，结束时打印一行结果；
- *   · 走 raw 模式并关回显，接收端自己把控制台代码页切到 UTF-8；
+ *   · 传输期间只刷“进度”本身：终端里原地重绘（两行 → 单行 → 逐行日志按能力降级），
+ *     输出**永远不会超出终端宽度**——超宽会被终端折行，原地重绘就会错乱成“一行行往上滞”；
+ *   · 走 raw 模式并关回显；启动时用一次 **隐藏的** PowerShell 把控制台切到 UTF-8 + 开 ANSI，
+ *     并把目标窗口切到英文直输（与主程序 `typing-host.ps1` 同一套逻辑），**退出时还原**；
  *   · 默认边收边落盘，中断后重跑即可续传；失败只补缺失片。
  *
- * 零第三方依赖，只用 node: 内置模块，Node >= 14 可运行（目标机常见的是 Node 14/16）。
- * 本文件由 `pnpm build:tools` 打成单文件 tools/typer-recv.mjs 后分发。
+ * 分层：帧解析与落盘在本文件；排版 / 着色 / 输出 / 控制台能力分别在 `recv/` 下的
+ * progress.ts / text.ts / screen.ts / console.ts，均为纯函数或只碰终端的薄层，便于单独测试。
  */
-import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import {
+  closeSync,
   createReadStream,
   createWriteStream,
   existsSync,
   mkdirSync,
+  openSync,
   readdirSync,
   readFileSync,
   rmdirSync,
   rmSync,
   statSync,
   unlinkSync,
-  writeFileSync
+  writeFileSync,
+  writeSync
 } from 'node:fs'
 import { basename, join, resolve, sep } from 'node:path'
 import { Readable, Transform } from 'node:stream'
@@ -55,9 +59,17 @@ import {
   type ParsedDataFrame,
   type ParsedEndFrame
 } from '../src/main/util/frame'
+import { describeIme, prepareConsole, restoreConsoleIme, type ConsoleSetup } from './recv/console'
+import { formatPercent, formatSize, formatSpan } from './recv/format'
+import { buildView, layoutProgress, rowWidth, type ViewInput } from './recv/progress'
+import { Screen, type ScreenMode } from './recv/screen'
+import { paint, type Style } from './recv/text'
 
 const EXIT = { OK: 0, INCOMPLETE: 2, BAD: 3, USAGE: 4 }
 const REPORT_VERSION = 2
+
+/** 分片目录里的单实例锁文件名（两个接收端同时写同一批分片会互相覆盖） */
+const LOCK_FILE = '.recv-lock'
 
 const HELP = `Typer 文件接收端 v2（逐片校验 + 断点续传 + 整文件校验）
 
@@ -74,7 +86,8 @@ const HELP = `Typer 文件接收端 v2（逐片校验 + 断点续传 + 整文件
       --token             缺失时始终打印续传令牌（默认同样打印）
       --probe             只统计收到了什么，不落盘（确认链路能过非 ASCII 字符）
       --stats             结束时打印字符数/字节数与耗时
-      --progress <mode>   进度回显：auto（终端下自动，默认）/ on / off
+      --progress <mode>   进度回显：auto（终端下自动，默认）/ on / plain（逐行，写日志用）/ off
+      --ime <mode>        启动时切英文直输、退出时还原：auto（默认，交互式终端才切）/ on / off
   -q, --quiet             不打印提示（仅保留 #FAIL / #MISS / #DONE / #BAD）
   -v, --verbose           打印逐片处理信息（很吵，仅排障用）
       --selftest          自检编解码、CRC、帧解析
@@ -94,8 +107,13 @@ interface Options {
   keepParts: boolean
   probe: boolean
   stats: boolean
-  /** 进度回显：auto = 只有“人坐在终端前面”时开；on / off 强制 */
-  progress: 'auto' | 'on' | 'off'
+  /** 进度回显：auto = 只有“人坐在终端前面”时开；on / plain / off 强制 */
+  progress: 'auto' | 'on' | 'plain' | 'off'
+  /**
+   * 输入法处理：auto = 只在“真的在用键盘输入”（交互式终端且没给 `--in`）时切英文直输
+   * （中文输入法会把打进来的帧吃成候选上屏），退出时会把状态还原
+   */
+  ime: 'auto' | 'on' | 'off'
   quiet: boolean
   verbose: boolean
 }
@@ -118,6 +136,7 @@ function parseArgs(argv: string[]): Options {
     probe: false,
     stats: false,
     progress: 'auto',
+    ime: 'auto',
     quiet: false,
     verbose: false
   }
@@ -142,10 +161,16 @@ function parseArgs(argv: string[]): Options {
     else if (arg === '--stats') options.stats = true
     else if (arg === '--progress') {
       const value = next()
-      if (value !== 'auto' && value !== 'on' && value !== 'off') {
-        throw new Error(`--progress 只接受 auto / on / off（收到 ${value}）`)
+      if (value !== 'auto' && value !== 'on' && value !== 'plain' && value !== 'off') {
+        throw new Error(`--progress 只接受 auto / on / plain / off（收到 ${value}）`)
       }
       options.progress = value
+    } else if (arg === '--ime') {
+      const value = next()
+      if (value !== 'auto' && value !== 'on' && value !== 'off') {
+        throw new Error(`--ime 只接受 auto / on / off（收到 ${value}）`)
+      }
+      options.ime = value
     } else if (arg === '-q' || arg === '--quiet') options.quiet = true
     else if (arg === '-v' || arg === '--verbose') options.verbose = true
     else if (arg === '-h' || arg === '--help') {
@@ -176,7 +201,7 @@ const verbose = options.verbose
 const startedAt = Date.now()
 
 // ---------------------------------------------------------------------------
-// 进度回显
+// 终端与进度回显
 // ---------------------------------------------------------------------------
 
 /**
@@ -189,18 +214,25 @@ const startedAt = Date.now()
 function progressEnabled(): boolean {
   if (quiet) return false
   if (options.progress === 'off') return false
-  if (options.progress === 'on') return true
+  if (options.progress === 'on' || options.progress === 'plain') return true
   return options.input === null
 }
 
-/** 终端里能不能用 `\r` 原地重绘；不能就只能一行一行打（重定向到日志时） */
-const progressInPlace = Boolean(process.stdout.isTTY)
-
-/** 原地重绘的最小间隔（毫秒）：刷得再快也看不见，反而抢终端带宽 */
-const PROGRESS_TTY_INTERVAL_MS = 500
-
-/** 非终端（重定向到日志 / 管道）时每行之间的最小间隔（毫秒） */
-const PROGRESS_LINE_INTERVAL_MS = 5_000
+/**
+ * @description 该用哪种输出方式（按需决定是否原地重绘）。
+ *
+ * 只有“是终端 + 支持 ANSI”才敢用两行原地重绘（要上移光标）；老式控制台退成单行原地重绘
+ * （只依赖 `\r`）；重定向到日志 / 管道则一行一行打。
+ *
+ * 旧版把“能否原地重绘”直接绑在 `isTTY` 上、补空格又按**字符数**算，一旦忽略中文占两格，
+ * 行就会超出终端宽度被**折行**——于是“有时原地刷新、有时一行行往上滚”同时出现。
+ * @returns 输出模式
+ */
+function progressMode(): ScreenMode {
+  if (!setup.caps.tty) return 'plain'
+  if (options.progress === 'plain') return 'plain'
+  return setup.caps.vt ? 'block' : 'row'
+}
 
 /**
  * 多久**没有任何输入**才提醒（毫秒）。
@@ -213,86 +245,55 @@ const IDLE_WARN_MS = 10_000
 /** 已经提醒过之后，隔多久才允许再提一次（毫秒） */
 const IDLE_WARN_REPEAT_MS = 20_000
 
-/** 当前这一帧收了这么久还没收完时，在进度里补一句耗时（毫秒）：让人看出“在收、只是慢” */
-const FRAME_SLOW_HINT_MS = 20_000
-
 /** 速率按最近这段时间的增量算（毫秒）：用“从开始到现在的平均值”会把卡顿与恢复都抹平 */
 const RATE_WINDOW_MS = 8_000
 
-/** 进度条宽度：终端下宽一些，写进日志时窄一些 */
-const BAR_WIDTH_TTY = 20
-const BAR_WIDTH_PLAIN = 16
-
-/** ANSI 颜色：只在终端且支持颜色时用（`NO_COLOR` 可关，日志里永远不留转义序列） */
-const ANSI = {
-  reset: '\u001b[0m',
-  bold: '\u001b[1m',
-  dim: '\u001b[2m',
-  green: '\u001b[32m',
-  cyan: '\u001b[36m',
-  yellow: '\u001b[33m',
-  magenta: '\u001b[35m',
-  red: '\u001b[31m'
+/** 控制台能力（由 prepareConsole 在 run() 里填；未初始化时按“纯文本输出”处理） */
+let setup: ConsoleSetup = {
+  caps: { tty: false, vt: false, columns: 80, unicode: false, color: false },
+  probed: false,
+  note: null,
+  ime: null
 }
 
-/** 终端是否上色：非 TTY（管道 / 重定向到日志）一律不上色，避免日志里混转义序列 */
-const colorEnabled =
-  Boolean(process.stdout.isTTY) && process.stdout.hasColors?.(16) === true && !process.env.NO_COLOR
+/** 输出层：只负责把排版好的行写到终端，不关心行里写的是什么 */
+let screen = new Screen(setup.caps, 'plain', (text) => process.stdout.write(text))
 
-/** 匹配 ANSI 颜色序列（算可见宽度、补空格前要剥掉） */
-// eslint-disable-next-line no-control-regex -- 要匹配的就是 ESC 序列本身
-const ANSI_SEQUENCE = /\u001b\[[0-9;]*m/g
+/** 动画帧序号：只有原地重绘才看得到（写日志时不画转圈） */
+let spinnerIndex = 0
 
-/** 进度行是否还停在终端最后一行（后续输出前要先换行） */
-let progressDrawn = false
-/** 上一次画出的**可见宽度**：原地重绘时用来盖掉短行残留 */
-let progressLastWidth = 0
-let lastProgressAt = 0
 /** 最近一次收到任何输入的时刻（毫秒）：判断“上游还在打字吗” */
 let lastInputAt = 0
-/** 最近一次收下一整片的时刻（毫秒）：算“这一片收了多久” */
-let lastShardAt = 0
 /** 最近一次“没有任何输入”提醒的时刻 */
 let lastIdleWarnAt = 0
 /** 合并阶段进度（-1 表示不在合并） */
 let mergeDone = -1
 let mergeTotal = 0
-let mergeStartedAt = 0
 /** 速率采样：`{ 时刻, 已收文件字节 }`，只保留最近 RATE_WINDOW_MS */
 const rateSamples: Array<{ at: number; bytes: number }> = []
 /** 切分器里还没成帧的半行：用来显示“当前这一片收到哪了” */
 let pendingFrameText = ''
 
-/** @description 给文本套上颜色（不上色时原样返回） */
-function paint(text: string, color: string): string {
-  return colorEnabled ? `${color}${text}${ANSI.reset}` : text
-}
-
-/** @description 可见宽度：剥掉颜色序列后的字符数 */
-function visibleWidth(text: string): number {
-  return text.replace(ANSI_SEQUENCE, '').length
+/**
+ * @description 给一段文本上色（不上色时原样返回）
+ * @param text 文本
+ * @param kind 样式
+ * @returns 可直接写出的字符串
+ */
+function style(text: string, kind: Style): string {
+  return paint(text, kind, setup.caps.color)
 }
 
 /**
- * @description 进度条：终端里用实心方块，写进日志时退回 ASCII（不挑字体）
- * @param ratio 0~1
- * @param width 宽度（字符数）
- * @returns 形如 `████████░░░░░░░░░░░░`
+ * @description 状态标记：终端支持 Unicode 时用符号，否则退回 ASCII（老控制台不认 `✔`）
+ * @param kind 类型
+ * @returns 标记文本
  */
-function renderBar(ratio: number, width: number): string {
-  const clamped = Math.max(0, Math.min(1, ratio))
-  const filled = Math.round(clamped * width)
-  const full = progressInPlace ? '\u2588' : '#'
-  const empty = progressInPlace ? '\u2591' : '-'
-  return full.repeat(filled) + empty.repeat(width - filled)
-}
-
-/** @description 进度条宽度：有列宽信息时按剩余空间收缩，避免一行折行把界面打乱 */
-function barWidth(): number {
-  if (!progressInPlace) return BAR_WIDTH_PLAIN
-  const columns = process.stdout.columns ?? 0
-  if (columns <= 0) return BAR_WIDTH_TTY
-  return Math.max(10, Math.min(BAR_WIDTH_TTY, columns - 70))
+function mark(kind: 'ok' | 'err' | 'warn'): string {
+  const unicode = setup.caps.unicode
+  if (kind === 'ok') return unicode ? '✔' : 'OK'
+  if (kind === 'err') return unicode ? '✖' : '!!'
+  return '!'
 }
 
 /**
@@ -328,167 +329,78 @@ function currentRate(): number {
  *
  * 依据是切分器里的半行缓冲：帧要“整行到齐”才算收到，但字节是连续到的，
  * 所以大文件里这一句能让人看出“正在收第 42 片、已经 63%”，而不是盯着一个不动的百分比。
- * @returns 形如 `第 42 片 63%`；没有半帧或无法判断时返回空串
+ * @returns 片号（0 基）与片内比例；没有半帧或无法判断时返回 null
  */
-function frameInFlightText(): string {
+function frameInFlight(): { order: number; fraction: number } | null {
   const task = meta
-  if (!task || mergeDone >= 0) return ''
+  if (!task || mergeDone >= 0) return null
   // `--in` 是把整份文件一次读完的，半行缓冲里可能已经排了好几帧，显示“当前这一片”只会误导
-  if (options.input !== null) return ''
+  if (options.input !== null) return null
   const partial = pendingFrameText
-  if (partial.length === 0 || !partial.startsWith('@T2')) return ''
-
-  if (partial.startsWith(MARKERS.begin)) {
-    return `正在收开始帧（${partial.length} 字符）`
-  }
+  if (partial.length === 0 || !partial.startsWith('@T2')) return null
+  // 开始帧没有片号，不值得为此单独报一行
+  if (partial.startsWith(MARKERS.begin)) return null
 
   const match = /^@T2D (\S+) (\d+) (\S+) ([0-9a-f]{8})/.exec(partial)
-  if (!match) return '正在收数据帧…'
+  if (!match) return null
   const job = match[1] as string
-  const seq = match[2] as string
+  const seqText = match[2] as string
   const bytesText = match[3] as string
   const crc = match[4] as string
   const bytes = Number(bytesText)
-  // 片号在协议里从 0 开始，给人看的“第几片”从 1 开始
-  const order = Number(seq)
-  const label = Number.isInteger(order) ? String(order + 1) : seq
-  if (!Number.isInteger(bytes) || bytes < 0) return `正在收第 ${label} 片…`
+  const order = Number(seqText)
+  if (!Number.isInteger(order) || order < 0) return null
+  if (!Number.isInteger(bytes) || bytes < 0) return { order, fraction: 0 }
 
   // 帧长 = 帧头（@T2D job seq bytes crc32）+ 空格 + 头 CRC（8）+ 空格 + 载荷字符数
-  const head = `${MARKERS.data} ${job} ${seq} ${bytesText} ${crc}`
+  const head = `${MARKERS.data} ${job} ${seqText} ${bytesText} ${crc}`
   const total = head.length + 1 + 8 + 1 + symbolCount(bytes, task.alphabet)
-  const ratio = total === 0 ? 0 : Math.min(1, partial.length / total)
-  const elapsed = lastShardAt > 0 ? Date.now() - lastShardAt : 0
-  const slow = elapsed >= FRAME_SLOW_HINT_MS ? `（已收 ${formatSpan(elapsed)}）` : ''
-  return `第 ${label} 片 ${(ratio * 100).toFixed(0)}%${slow}`
+  const fraction = total === 0 ? 0 : Math.min(1, partial.length / total)
+  return { order, fraction }
+}
+
+/** @description 一段片号文本太长时截断显示（完整列表仍然打在 #MISS 行里） */
+function compactIndexList(text: string, limit = 160): string {
+  return text.length > limit ? `${text.slice(0, limit)}…` : text
 }
 
 /**
- * @description 把字节数格式化成人读的大小
- * @param bytes 字节数
- * @returns 形如 `12.3 MB`
+ * @description 把当前状态折算成排版字段
+ * @returns 排版视图输入
  */
-function formatSize(bytes: number): string {
-  if (!Number.isFinite(bytes)) return '?'
-  if (bytes < 1024) return `${Math.round(bytes)} B`
-  const units = ['KB', 'MB', 'GB', 'TB']
-  let value = bytes / 1024
-  let unit = 0
-  while (value >= 1024 && unit < units.length - 1) {
-    value /= 1024
-    unit += 1
-  }
-  return `${value >= 10 ? Math.round(value) : value.toFixed(1)} ${units[unit]}`
-}
-
-/**
- * @description 把毫秒格式化成人读的时长
- * @param ms 时长（毫秒）
- * @returns 形如 `3 分 20 秒`
- */
-function formatSpan(ms: number): string {
-  const seconds = Math.max(0, Math.round(ms / 1000))
-  if (seconds < 60) return `${seconds} 秒`
-  const minutes = Math.floor(seconds / 60)
-  if (minutes < 60) return `${minutes} 分 ${seconds % 60} 秒`
-  return `${Math.floor(minutes / 60)} 时 ${minutes % 60} 分`
-}
-
-/**
- * @description 生成一行进度文本：等待 / 收片 / 合并三个阶段各显示各自有用的字段
- * @returns 一行进度文本（终端下带颜色与进度条）
- */
-function progressText(): string {
+function viewInput(): ViewInput {
   const task = meta
-  if (!task) {
-    return paint(
-      `等待开始帧 · 已 ${formatSpan(Date.now() - startedAt)}（在目标机按「开始发送」）`,
-      ANSI.yellow
-    )
+  return {
+    now: Date.now(),
+    startedAt,
+    total: task ? task.total : null,
+    size: task ? task.size : null,
+    doneCount: done.size,
+    failures: failures.size,
+    inFlight: frameInFlight(),
+    merge: mergeDone >= 0 ? { done: mergeDone, total: mergeTotal } : null,
+    rate: currentRate(),
+    lastInputAt,
+    idleWarnMs: IDLE_WARN_MS,
+    compressed: task ? task.compression === 'br' : false
   }
-
-  if (mergeDone >= 0) {
-    const ratio = mergeTotal === 0 ? 1 : mergeDone / mergeTotal
-    const elapsed = Math.max(1, Date.now() - mergeStartedAt)
-    const perSecond = (task.size * ratio * 1000) / elapsed
-    const tail =
-      ratio >= 1
-        ? '校验通过后写出文件'
-        : perSecond > 0
-          ? `${formatSize(perSecond)}/s · 剩余 ${formatSpan(
-              ((task.size * (1 - ratio)) / perSecond) * 1000
-            )}`
-          : '解压 / 校验中…'
-    return [
-      paint('合并', ANSI.magenta),
-      renderBar(ratio, barWidth()),
-      paint(`${(ratio * 100).toFixed(1)}%`, ANSI.bold),
-      `${mergeDone}/${mergeTotal} 片`,
-      tail
-    ].join('  ')
-  }
-
-  const count = done.size
-  const ratio = task.total === 0 ? 1 : count / task.total
-  const fileBytes = Math.round(task.size * ratio)
-  const rate = currentRate()
-  const parts = [
-    paint('接收', ANSI.cyan),
-    renderBar(ratio, barWidth()),
-    paint(`${(ratio * 100).toFixed(1)}%`, ANSI.bold),
-    `${count}/${task.total} 片`
-  ]
-
-  // 正在收的那一片：字节连续到，帧要整行才算收到，这里把“半帧”的进展也报出来
-  const inFlight = ratio < 1 ? frameInFlightText() : ''
-  if (inFlight.length > 0) parts.push(paint(inFlight, ANSI.dim))
-
-  parts.push(`${formatSize(fileBytes)}/${formatSize(task.size)}`)
-
-  if (ratio >= 1) parts.push('已收齐，等待合并')
-  else if (rate > 0) {
-    parts.push(
-      `${formatSize(rate)}/s · 剩余 ${formatSpan(((task.size - fileBytes) / rate) * 1000)}`
-    )
-  } else if (inFlight.length === 0) {
-    // 已经有半片在收了就别再喊“等待首片”，否则自相矛盾
-    parts.push(fileBytes > 0 ? '测速中…' : '等待首片…')
-  }
-
-  if (failures.size > 0) parts.push(paint(`失败 ${failures.size} 片`, ANSI.red))
-  return parts.join('  ')
 }
 
 /**
- * @description 画一行进度：终端里原地重绘，管道/日志里按间隔逐行打
- * @param text 进度文本
- * @param force 是否忽略节流立即重画
+ * @description 画进度（节流与“清掉进度块”都由输出层负责）
+ * @param force 忽略节流立即重画（阶段切换 / 收齐 / 最后一片）
  */
-function drawProgress(text: string, force = false): void {
+function drawProgress(force = false): void {
   if (!progressEnabled()) return
-  const now = Date.now()
-  const interval = progressInPlace ? PROGRESS_TTY_INTERVAL_MS : PROGRESS_LINE_INTERVAL_MS
-  if (!force && now - lastProgressAt < interval) return
-  lastProgressAt = now
-
-  if (!progressInPlace) {
-    process.stdout.write(`${text}\n`)
-    return
-  }
-  // 原地重绘：按**可见宽度**补空格（颜色序列不占宽度）
-  const width = visibleWidth(text)
-  const pad = width >= progressLastWidth ? '' : ' '.repeat(progressLastWidth - width)
-  process.stdout.write(`\r${text}${pad}`)
-  progressLastWidth = width
-  progressDrawn = true
-}
-
-/** @description 结束进度行（后面要打别的输出时先调用，否则会接在进度行尾巴上） */
-function clearProgressLine(): void {
-  if (!progressDrawn) return
-  process.stdout.write('\n')
-  progressDrawn = false
-  progressLastWidth = 0
+  const mode = progressMode()
+  const rows = layoutProgress(buildView(viewInput()), {
+    columns: setup.caps.columns,
+    unicode: setup.caps.unicode,
+    maxRows: mode === 'block' ? 2 : 1,
+    spinnerIndex,
+    mode: mode === 'plain' ? 'plain' : 'inline'
+  })
+  screen.draw(rows, force)
 }
 
 /** @description 收到任何输入（哪怕只是半帧）：记下“上游还活着”，用于区分卡住与正在收 */
@@ -501,48 +413,41 @@ function noteInput(): void {
  * @param force 是否忽略节流（开始帧 / 收齐时用）
  */
 function noteProgress(force = false): void {
-  const now = Date.now()
-  lastInputAt = now
-  lastShardAt = now
+  lastInputAt = Date.now()
   const task = meta
   if (task) {
     const ratio = task.total === 0 ? 1 : done.size / task.total
     recordRateSample(Math.round(task.size * ratio))
   }
-  drawProgress(progressText(), force)
+  drawProgress(force)
 }
 
 /**
  * @description 启动进度刷新与“没有任何输入”提醒。
  *
- * 判据是**最后一次收到字节**的时刻：一个 16 KB 的片要打几十秒，用“最后一次收下整片”当判据
- * 会在每片期间反复误报“没收到新片”。现在只要上游还在打字就一直不报，只有真的断了输入才提醒，
- * 且两次提醒之间留 20 秒间隔。
+ * 刷新按 300ms 走：转圈动画要够快才看得出“在动”，又不能快过终端（尤其云桌面）的回传能力。
+ * 断流判据是**最后一次收到字节**的时刻，两次提醒之间留 20 秒，避免一直刷同一句话。
  */
 function startProgressLoop(): void {
   if (!progressEnabled()) return
 
   const timer = setInterval(() => {
+    spinnerIndex += 1
     const now = Date.now()
     const merging = mergeDone >= 0
     const finished = merging || (meta !== null && done.size >= meta.total)
     const idleMs = now - Math.max(lastInputAt, startedAt)
 
-    if (!finished && idleMs >= IDLE_WARN_MS) {
-      if (now - lastIdleWarnAt < IDLE_WARN_REPEAT_MS) return
+    if (!finished && idleMs >= IDLE_WARN_MS && now - lastIdleWarnAt >= IDLE_WARN_REPEAT_MS) {
       lastIdleWarnAt = now
-      const where = meta ? `（${done.size}/${meta.total} 片已完成）` : '（还没收到开始帧）'
-      const hint = paint(
-        `! 已 ${formatSpan(idleMs)}没有任何输入${where}：` +
-          '上游可能停了、链路卡住，或目标窗口里弹出的模态框挡住了输入',
-        ANSI.yellow
+      const where = meta ? `（已完成 ${done.size}/${meta.total} 片）` : '（还没收到开始帧）'
+      info(
+        style(`${mark('warn')} 已 ${formatSpan(idleMs)}没有任何输入${where}`, 'warn') +
+          '：上游可能停了、链路卡住，或目标窗口里弹出的模态框挡住了输入'
       )
-      if (progressInPlace) drawProgress(`${progressText()}  ${hint}`, true)
-      else process.stdout.write(`${hint}\n`)
-      return
     }
-    drawProgress(progressText())
-  }, 1000)
+    drawProgress()
+  }, 300)
   // 显示用途的定时器不能拖住进程退出
   timer.unref?.()
 }
@@ -553,29 +458,21 @@ function startProgressLoop(): void {
  * @param total 总片数
  */
 function reportMergeProgress(count: number, total: number): void {
-  if (mergeStartedAt === 0) mergeStartedAt = Date.now()
   mergeTotal = total
   mergeDone = count
   // 最后一片必须画出来（否则节流会让界面停在 99%）
-  drawProgress(progressText(), count >= total)
-}
-
-/** @description 一段片号文本太长时截断显示（完整列表仍然打在 #MISS 行里） */
-function compactIndexList(text: string, limit = 160): string {
-  return text.length > limit ? `${text.slice(0, limit)}…` : text
+  drawProgress(count >= total)
 }
 
 /** 打印普通信息（quiet 时静默）。 */
 function info(line: string): void {
   if (quiet) return
-  clearProgressLine()
-  process.stdout.write(`${line}\n`)
+  screen.log(line)
 }
 
 /** 打印回执行（`#` 前缀，Typer 与操作者约定的输出格式）。 */
 function ack(line: string): void {
-  clearProgressLine()
-  process.stdout.write(`${line}\n`)
+  screen.log(line)
 }
 
 // ---------------------------------------------------------------------------
@@ -593,8 +490,9 @@ function runSelfTest(): number {
   }
 
   try {
-    for (const alphabet of ['ascii32', 'ascii64', 'hex'] as const) {
-      for (const size of [0, 1, 2, 3, 7, 8, 16, 255, 1024, 4096]) {
+    for (const alphabet of ['ascii32', 'ascii64', 'b47', 'hex'] as const) {
+      // 31/32/33 跨过了基数表的块边界（32 字节一块），专门用来抓“末块位数算错”
+      for (const size of [0, 1, 2, 3, 7, 8, 16, 31, 32, 33, 255, 1024, 4096]) {
         const bytes = Buffer.allocUnsafe(size)
         for (let index = 0; index < size; index++) bytes[index] = (index * 37 + 11) & 0xff
         const text = encodeSymbols(bytes, alphabet)
@@ -652,6 +550,47 @@ function runSelfTest(): number {
 
     const sanitized = sanitizeLine('\u001b[200~@T2H x\u001b[201~')
     check('bracketed paste 清理', sanitized === '@T2H x')
+
+    // 排版的硬约束：任何宽度、任何阶段生成的行都不得超出终端宽度。
+    // 超一格终端就会折行，而折行会让“光标上移重画”错位成一团，正是旧版看起来“乱跳”的原因。
+    const view = buildView({
+      now: 65_000,
+      startedAt: 0,
+      total: 8,
+      size: 59_000,
+      doneCount: 5,
+      failures: 0,
+      inFlight: { order: 5, fraction: 0.63 },
+      merge: null,
+      rate: 14_000,
+      lastInputAt: 65_000,
+      idleWarnMs: IDLE_WARN_MS,
+      compressed: true
+    })
+    for (const columns of [40, 60, 72, 92, 120, 160]) {
+      const rows = layoutProgress(view, {
+        columns,
+        unicode: true,
+        maxRows: 2,
+        spinnerIndex: 1,
+        mode: 'inline'
+      })
+      check(`排版不超两行（${columns} 列）`, rows.length > 0 && rows.length <= 2)
+      check(
+        `排版不超宽（${columns} 列）`,
+        rows.every((row) => rowWidth(row) <= columns)
+      )
+    }
+    const asciiRows = layoutProgress(view, {
+      columns: 60,
+      unicode: false,
+      maxRows: 1,
+      spinnerIndex: 3,
+      mode: 'plain'
+    })
+    check('纯文本排版只有一行', asciiRows.length === 1)
+    check('纯文本排版不含转义序列', !asciiRows[0]?.some((item) => item.text.includes('\u001b')))
+    check('百分比文案', formatPercent(0.625, 1) === '62.5%')
   } catch (error) {
     failures.push(`异常：${error instanceof Error ? error.message : String(error)}`)
   }
@@ -809,8 +748,102 @@ function writeReport(force = false): void {
   }
 }
 
+// ---------------------------------------------------------------------------
+// 单实例锁
+// ---------------------------------------------------------------------------
+
+/** 锁文件路径（拿到分片目录之后才会设置） */
+let lockPath: string | null = null
+
 /**
- * @description 应用任务元信息：建目录、初始化缺失片集合
+ * @description 判断某个进程号是否还活着（Windows 上 `kill(pid, 0)` 同样可用）
+ * @param pid 进程号
+ * @returns 是否存活
+ */
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (error) {
+    // EPERM = 进程还在，只是没权限给它发信号
+    return (error as NodeJS.ErrnoException).code === 'EPERM'
+  }
+}
+
+/**
+ * @description 抢占“这个分片目录归我写”的锁。
+ *
+ * 两个接收端同时收同一批片会互相覆盖分片、各自合并一次（用户看到的“多开了一份”）；
+ * 锁文件用 `wx` 原子创建，持有者进程已消失（陈旧锁）时自动接管。
+ * @returns 是否拿到锁
+ */
+function acquireLock(): boolean {
+  if (options.probe || dir.length === 0 || lockPath) return true
+  const path = join(dir, LOCK_FILE)
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const fd = openSync(path, 'wx')
+      writeSync(fd, String(process.pid))
+      closeSync(fd)
+      lockPath = path
+      return true
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') return true
+    }
+    let owner = 0
+    try {
+      owner = Number.parseInt(readFileSync(path, 'utf8').trim(), 10)
+    } catch {
+      owner = 0
+    }
+    if (Number.isInteger(owner) && owner > 0 && owner !== process.pid && isProcessAlive(owner)) {
+      return false
+    }
+    // 陈旧锁：上一个实例被强杀 / 断链时留下的
+    removePath(path)
+  }
+  return true
+}
+
+/** @description 释放锁（退出钩子也会调一次，崩溃残留由下次启动的陈旧锁检测兜住） */
+function releaseLock(): void {
+  const path = lockPath
+  if (!path) return
+  lockPath = null
+  removePath(path)
+}
+
+/**
+ * @description 分片目录被另一个还活着的接收端占用。
+ *
+ * 单独一个错误类型：它不是“某一帧坏了”，不能跟着正常的 #FAIL 流程走（那会误导成重传该片），
+ * 而是直接停掉本次接收——继续写下去只会让两份进程互相覆盖分片。
+ */
+class LockBusyError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'LockBusyError'
+  }
+}
+
+/** 是否因为锁冲突已经停掉本次接收 */
+let lockBlocked = false
+
+/**
+ * @description 把“另一个实例在跑”说清楚（顺便给出恢复办法）
+ * @param dirPath 分片目录
+ */
+function reportLockBusy(dirPath: string): void {
+  lockBlocked = true
+  info(
+    style(`${mark('err')} 另有一个接收端正在处理这个任务：${dirPath}`, 'err') +
+      '\n  → 为避免两份进程互相覆盖分片，本次不再写盘。关掉多余的那个窗口后重跑；' +
+      `若确认旧窗口已经结束，删掉该目录下的 ${LOCK_FILE} 再试。`
+  )
+}
+
+/**
+ * @description 应用任务元信息：建目录、抢锁、初始化缺失片集合
  * @param next 任务元信息
  */
 function applyMeta(next: TaskMeta): void {
@@ -821,6 +854,7 @@ function applyMeta(next: TaskMeta): void {
   dir = options.dir ? resolve(options.dir) : resolve(`.typer-${next.job}`)
   if (!options.probe) mkdirSync(dir, { recursive: true })
   if (!options.probe && !reportPath) reportPath = join(dir, 'resume.json')
+  if (!options.probe && !acquireLock()) throw new LockBusyError(dir)
   saveMeta()
   for (let index = 0; index < next.total; index++) if (!done.has(index)) missing.add(index)
 }
@@ -882,14 +916,14 @@ function handleBegin(frame: ParsedBeginFrame): void {
   })
   const found = scanExistingParts()
   info(
-    `${paint('接收开始', ANSI.cyan)}  ${frame.total} 片 · 文件 ${formatSize(frame.size)}` +
+    `${style(`${mark('ok')} 接收开始`, 'ok')}  ${frame.total} 片 · 文件 ${formatSize(frame.size)}` +
       `（线上 ${formatSize(frame.wire)}，每片 ${formatSize(frame.chunk)}）· ` +
       `${frame.alphabet} / ${frame.compression} / ${frame.mode}` +
-      (found > 0 ? ` · ${paint(`续传已有 ${found} 片`, ANSI.yellow)}` : '')
+      (found > 0 ? ` · ${style(`续传已有 ${found} 片`, 'warn')}` : '')
   )
   info(
-    `${paint('  输出', ANSI.dim)} ${options.out ?? frame.name ?? `job-${frame.job}.bin`}` +
-      `   ${paint('分片', ANSI.dim)} ${dir}`
+    `${style('  输出', 'dim')} ${options.out ?? frame.name ?? `job-${frame.job}.bin`}` +
+      `   ${style('分片', 'dim')} ${dir}`
   )
   noteProgress(true)
 }
@@ -1014,9 +1048,9 @@ async function mergeAndVerify(): Promise<number> {
     ack(buildResumeToken({ job: task.job, total: task.total, missing: missingList }))
     writeReport(true)
     info(
-      `数据不全：还缺 ${missingList.length}/${task.total} 片（${compactIndexList(
-        formatIndexList(missingList, task.total)
-      )}）。\n  → 在 Typer 里粘贴上面的 @T2R 令牌，只补这些片即可；已收到的分片全部保留。`
+      `${style(`${mark('err')} 数据不全`, 'err')}：还缺 ${missingList.length}/${task.total} 片` +
+        `（${compactIndexList(formatIndexList(missingList, task.total))}）\n` +
+        '  → 在 Typer 里粘贴上面的 @T2R 令牌，只补这些片即可；已收到的分片全部保留。'
     )
     return EXIT.INCOMPLETE
   }
@@ -1024,8 +1058,11 @@ async function mergeAndVerify(): Promise<number> {
   const crcs = collectPartCrcs()
   mergeTotal = task.total
   mergeDone = 0
-  mergeStartedAt = Date.now()
-  drawProgress(progressText(), true)
+  info(
+    style(`${mark('ok')} 全部 ${task.total} 片已通过逐片校验`, 'ok') +
+      (task.compression === 'br' ? ' · 解压并校验整文件' : ' · 校验整文件')
+  )
+  drawProgress(true)
   const source = task.total === 0 ? Readable.from([]) : partStream(task.total, crcs)
   const outputPath = resolveOutputPath()
   if (outputPath === null) return EXIT.USAGE
@@ -1048,12 +1085,13 @@ async function mergeAndVerify(): Promise<number> {
       await pipeline(source, meter, sink)
     }
   } catch (error) {
-    // 半成品必须删掉：留着会让人误以为"已经有结果了"
+    // 半成品必须删掉：留着会让人误以为”已经有结果了“
     removePath(outputPath)
     ack(`#BAD decode`)
     info(
-      `合并/解压失败：${error instanceof Error ? error.message : String(error)}\n` +
-        '  → 压缩档依赖"全部片都正确"。分片已保留，可继续续传；仍失败就改用不压缩重传。'
+      `${style(`${mark('err')} 合并/解压失败`, 'err')}：` +
+        `${error instanceof Error ? error.message : String(error)}\n` +
+        '  → 压缩档依赖”全部片都正确“。分片已保留，可继续续传；仍失败就改用不压缩重传。'
     )
     return EXIT.BAD
   }
@@ -1061,13 +1099,17 @@ async function mergeAndVerify(): Promise<number> {
   const actual = hash.digest('hex')
   if (produced !== task.size) {
     ack('#BAD len')
-    info(`整文件大小不符：期望 ${task.size}，实际 ${produced}。分片保留，可继续续传。`)
+    info(
+      `${style(`${mark('err')} 整文件大小不符`, 'err')}：` +
+        `期望 ${task.size}，实际 ${produced}。分片保留，可继续续传。`
+    )
     return EXIT.BAD
   }
   if (actual !== task.sha256) {
     ack('#BAD sha256')
     info(
-      `整文件 SHA-256 不符：期望 ${task.sha256}，实际 ${actual}。\n` +
+      `${style(`${mark('err')} 整文件 SHA-256 不符`, 'err')}：` +
+        `期望 ${task.sha256}，实际 ${actual}。\n` +
         '  → 数据在链路上被改写（常见原因：输入法、编辑器自动缩进/自动闭合）。分片保留，请改用 ASCII 档重传。'
     )
     return EXIT.BAD
@@ -1086,11 +1128,12 @@ async function mergeAndVerify(): Promise<number> {
     removePath(dir, true)
   }
 
+  // 先把输入法还原：拿到结果的同时就能用自己的输入法，不必等窗口关掉
+  restoreConsoleIme()
   ack(`#DONE ${task.size} ${actual} ${outputPath}`)
   if (options.stats) {
     const ms = Math.max(1, Date.now() - startedAt)
-    const bits = task.alphabet === 'ascii32' ? 5 : task.alphabet === 'ascii64' ? 6 : 4
-    const chars = task.wire === 0 ? 0 : Math.ceil((task.wire * 8) / bits)
+    const chars = task.wire === 0 ? 0 : symbolCount(task.wire, task.alphabet)
     ack(
       `#STATS chunks=${task.total} bytes=${task.size} wire=${task.wire} chars=${chars} ` +
         `ms=${ms} cps=${Math.round(chars / (ms / 1000))}`
@@ -1100,10 +1143,12 @@ async function mergeAndVerify(): Promise<number> {
     const elapsedMs = Math.max(1, Date.now() - startedAt)
     const average = (task.size / elapsedMs) * 1000
     info(
-      `${paint('✔ 完成', ANSI.green)}  ${formatSize(task.size)} · ${task.total} 片 · ` +
-        `用时 ${formatSpan(elapsedMs)} · 平均 ${formatSize(average)}/s · SHA-256 已校验`
+      `${style(`${mark('ok')} 传输完成`, 'ok')}  ${formatSize(task.size)} · ${task.total} 片 · ` +
+        `用时 ${elapsedMs < 1000 ? '不到 1 秒' : formatSpan(elapsedMs)} · ` +
+        `平均 ${formatSize(average)}/s · SHA-256 已校验`
     )
-    info(`  ${paint('输出', ANSI.dim)} ${outputPath}`)
+    info(`  ${style('输出', 'dim')} ${outputPath}`)
+    info(`  ${style('提示', 'dim')} 关闭本窗口（或按 Ctrl+C）即可退出`)
   }
   return EXIT.OK
 }
@@ -1182,14 +1227,46 @@ function createStreamSplitter(): { push(text: string): string[]; flush(): string
   return { push, flush }
 }
 
-/** 把控制台切到 UTF-8 代码页（15 位档的 CJK 字符要靠它原样进 stdin）。 */
-function ensureUtf8Console(): void {
-  if (process.platform !== 'win32') return
-  try {
-    spawnSync('cmd.exe', ['/c', 'chcp 65001 >nul'], { stdio: 'ignore', windowsHide: true })
-  } catch {
-    // 切不了就按当前代码页读：非 ASCII 档会报符号表之外的字符，用户可改用 ASCII 档
+/**
+ * @description 把控制台 / 输入法的探测结果说清楚。
+ *
+ * 后续排查“中文显示成乱码”“帧被输入法吃掉”全靠这几行：正常时一行，异常时直接给怎么办。
+ */
+function reportConsoleSetup(): void {
+  if (quiet || !setup.caps.tty) return
+  if (!setup.probed) {
+    if (process.platform === 'win32') {
+      // 这条路径下中文很可能显示成乱码，所以这句刻意用 ASCII：至少能看懂发生了什么
+      info(
+        `[!] console init unavailable${setup.note ? ` (${setup.note})` : ''}: ` +
+          'UTF-8 codepage / ANSI / IME switch skipped. ' +
+          'Run with --progress plain if the output looks broken.'
+      )
+    }
+    return
   }
+  const ime = setup.ime
+  if (!ime) return
+  if (ime.switched) {
+    info(
+      `${style('  输入法', 'dim')} ${describeIme(ime.before)} → ${describeIme(ime.after)}` +
+        ` ${style('（结束时自动还原）', 'dim')}`
+    )
+    return
+  }
+  if (ime.after && (ime.after.open || ime.after.native)) {
+    info(
+      style(`${mark('warn')} 目标窗口的输入法仍在合成状态（${describeIme(ime.after)}）`, 'warn') +
+        '：打进来的帧可能被吃成候选上屏，建议手动切到英文后再开始'
+    )
+  }
+}
+
+/** @description 终端宽度变了：作废旧进度块的几何信息，按新宽度重排一次 */
+function onResize(): void {
+  setup.caps.columns = Number(process.stdout.columns ?? 0) || 80
+  screen.forget()
+  drawProgress(true)
 }
 
 /**
@@ -1199,14 +1276,32 @@ function ensureUtf8Console(): void {
 async function run(): Promise<number> {
   const splitter = createStreamSplitter()
 
+  // 终端能力与输入法：Windows 下用一次**隐藏的** PowerShell 一起搞定
+  // （UTF-8 代码页 + 开 ANSI + 必要时切英文直输），退出时再还原
+  const wantIme =
+    options.ime === 'on' ||
+    (options.ime === 'auto' && options.input === null && process.stdin.isTTY === true)
+  setup = prepareConsole({ ensureIme: wantIme })
+  screen = new Screen(setup.caps, progressMode(), (text) => process.stdout.write(text))
+  process.stdout.on('resize', onResize)
+  reportConsoleSetup()
+
   // 指定了 --dir 且目录里有 meta.json：即使这次没有开始帧也能续传
   if (options.dir) {
     dir = resolve(options.dir)
     const loaded = loadMeta(dir)
     if (loaded) {
-      applyMeta(loaded)
+      try {
+        applyMeta(loaded)
+      } catch (error) {
+        if (!(error instanceof LockBusyError)) throw error
+        reportLockBusy(error.message)
+        return EXIT.USAGE
+      }
       const found = scanExistingParts()
-      if (found > 0 && !quiet) info(`续传：目录里已有 ${found}/${loaded.total} 片`)
+      if (found > 0 && !quiet) {
+        info(style(`续传：目录里已有 ${found}/${loaded.total} 片`, 'warn'))
+      }
     }
   }
 
@@ -1217,6 +1312,7 @@ async function run(): Promise<number> {
    */
   const consume = (lines: string[]): boolean => {
     for (const line of lines) {
+      if (lockBlocked) return true
       handleLine(line)
       if (pendingEnd) return true
     }
@@ -1228,9 +1324,8 @@ async function run(): Promise<number> {
 
   if (!options.input) {
     if (process.stdin.isTTY && !options.cooked) {
-      ensureUtf8Console()
       process.stdin.setRawMode(true)
-      if (!quiet) info('（raw 模式：不回显、无行宽限制；Ctrl+C 中止）')
+      if (!quiet) info(style('（raw 模式：不回显、无行宽限制；Ctrl+C 中止）', 'dim'))
     }
     process.stdin.setEncoding('utf8')
   }
@@ -1240,6 +1335,7 @@ async function run(): Promise<number> {
    * @param chunk 输入数据块
    */
   const onData = (chunk: string | Buffer): void => {
+    if (lockBlocked) return
     const text = typeof chunk === 'string' ? chunk : chunk.toString('utf8')
     // 任何字节都算“上游还活着”：帧要整行才算收到，但靠这个才不会把“正在收长片”误报成断流
     noteInput()
@@ -1275,6 +1371,7 @@ async function run(): Promise<number> {
   })
 
   if (!ended) consume(splitter.flush())
+  if (lockBlocked) return EXIT.USAGE
 
   if (options.probe) {
     ack(
@@ -1327,7 +1424,10 @@ function handleLine(rawLine: string): void {
     } else if (noiseLines <= 3) {
       // 带上具体原因：像"片号分隔符只接受英文字符"这种提示，比"混入了回显"有用得多
       const detail = error instanceof Error && error.message ? `：${error.message}` : ''
-      info(`忽略无法解析的行（${code}）${detail}。若持续出现，请检查是否混入了终端回显或提示符。`)
+      info(
+        style(`! 忽略无法解析的行（${code}）`, 'warn') +
+          `${detail}。若持续出现，请检查是否混入了终端回显或提示符。`
+      )
     }
     return
   }
@@ -1338,6 +1438,10 @@ function handleLine(rawLine: string): void {
     else if (frame.kind === 'end') pendingEnd = frame
     else info(`提示：这是一条续传令（缺 ${formatIndexList(frame.missing, frame.total)}）。`)
   } catch (error) {
+    if (error instanceof LockBusyError) {
+      reportLockBusy(error.message)
+      return
+    }
     const code = error instanceof FrameError ? error.code : 'field'
     const seq = frame.kind === 'data' ? frame.seq : '-'
     ack(`#FAIL ${seq} ${code}`)
@@ -1347,11 +1451,25 @@ function handleLine(rawLine: string): void {
       done.delete(Number(seq))
     }
     info(
-      `片 ${seq} 失败（${code}）：${error instanceof Error ? error.message : String(error)}\n` +
+      `${style(`${mark('err')} 第 ${Number(seq) + 1} 片失败（${code}）`, 'err')}：` +
+        `${error instanceof Error ? error.message : String(error)}\n` +
         `  → ${ERROR_HINTS[code] ?? '请重传该片'}`
     )
   }
 }
+
+// 退出前把输入法还原、锁释放：正常结束、Ctrl+C（cooked 模式）、未预期异常都要能覆盖。
+// 还原走的是同步子进程，所以放在 exit 钩子里也能真的跑完。
+process.on('exit', () => {
+  restoreConsoleIme()
+  releaseLock()
+})
+process.once('SIGINT', () => {
+  restoreConsoleIme()
+  screen.clear()
+  releaseLock()
+  process.exit(130)
+})
 
 run()
   .then((code) => {

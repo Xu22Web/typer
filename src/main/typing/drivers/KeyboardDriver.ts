@@ -50,9 +50,10 @@ export interface KeyboardDriver {
    * 读取/切换目标窗口的键盘布局与输入法状态（可选能力）。
    *
    * 注入的是真实按键，按键先经过目标窗口线程的输入法：开着中文输入法时字母键会被吃成候选上屏。
+   * `restore: true` 表示本轮已结束，把开始时切走的状态改回去（不把用户的中文输入法留在关的位置）。
    * 不实现这个方法的驱动表示“这条链路没有输入法概念”（例如测试用 Mock）。
    */
-  ime?(options?: { ensureEnglish?: boolean }): Promise<HostImeData>
+  ime?(options?: { ensureEnglish?: boolean; restore?: boolean }): Promise<HostImeData>
   /** 探测是否仍有按键处于按下状态（abort 后自检） */
   probe(): Promise<HostProbeData>
   /** 关闭宿主并释放资源 */

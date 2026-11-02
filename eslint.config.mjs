@@ -13,7 +13,8 @@ const autoImportConfig = JSON.parse(
 export default defineConfig(
   {
     // tools/*.mjs 是 scripts/build-tools.mjs 打包出来的接收端产物（机器生成，不参与 lint）
-    ignores: ['**/node_modules', '**/dist', '**/out', 'tools/*.mjs']
+    // `.typer-*` 是接收端在本地跑过一次后留下的分片/输出目录，同样不该进 lint
+    ignores: ['**/node_modules', '**/dist', '**/out', 'tools/*.mjs', '**/.typer-*']
   },
   tseslint.configs.recommended,
   eslintPluginVue.configs['flat/recommended'],
