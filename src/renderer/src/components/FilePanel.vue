@@ -169,7 +169,7 @@ const alphabetOption = computed(() =>
 )
 
 /**
- * 可选符号表：基数 47 用到 `- . / ' [ ] \`` 这些键，编辑器会把它们自动更正或自动闭合，
+ * 可选符号表：47 进制用到 `- . / ' [ ] \`` 这些键，编辑器会把它们自动更正或自动闭合，
  * 所以只在终端模式下才给选。
  */
 const alphabetChoices = computed(() =>
@@ -226,7 +226,7 @@ async function changeAlphabet(alphabet: TransferAlphabet): Promise<void> {
 async function changeMode(mode: TransferTargetMode): Promise<void> {
   const fallback = mode !== 'term' && Boolean(alphabetOption.value.terminalsOnly)
   if (fallback) {
-    ElMessage.info('基数 47 只能在终端使用：编辑器会自动更正符号，已切回 ASCII 5 位档')
+    ElMessage.info('47 进制档只能在终端使用：编辑器会自动更正符号，已切回 ASCII 5 位档')
   }
   const alphabet: TransferAlphabet = fallback ? 'ascii32' : options.value.alphabet
   await settingsStore.update({ transfer: fallback ? { mode, alphabet } : { mode } })

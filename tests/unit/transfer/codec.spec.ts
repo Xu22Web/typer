@@ -66,7 +66,7 @@ describe('符号表', () => {
     expect(symbolCount(1, 'hex')).toBe(2)
   })
 
-  it('基数 47：47 个零 Shift 可打印键，不含空白与 @（帧标记）', () => {
+  it('47 进制：47 个零 Shift 可打印键，不含空白与 @（帧标记）', () => {
     const alphabet = getAlphabet('b47')
     expect(alphabet.kind).toBe('radix')
     expect(alphabet.radix).toBe(47)
@@ -81,7 +81,7 @@ describe('符号表', () => {
     }
   })
 
-  it('基数 47：一个批块（32 字节）用 47 个字符，末块按整数幂取整', () => {
+  it('47 进制：一个批块（32 字节）用 47 个字符，末块按整数幂取整', () => {
     const block = 32
     expect(symbolCount(block, 'b47')).toBe(47)
     expect(symbolCount(block * 2, 'b47')).toBe(94)
@@ -155,7 +155,7 @@ describe('严格校验：宁可报错也不写出坏数据', () => {
     expect(() => symbolCount(1.5, 'hex')).toThrow(CodecError)
   })
 
-  it('基数 47：块内数值越过字节长度时报错（载荷被改写的第二道防线）', () => {
+  it('47 进制：块内数值越过字节长度时报错（载荷被改写的第二道防线）', () => {
     // 满块全填最大符号 → 数值逼近 47^47，远超 32 字节能表示的 2^256
     const alphabet = getAlphabet('b47')
     const maxChar = String.fromCharCode(alphabet.table[alphabet.table.length - 1] as number)
@@ -163,7 +163,7 @@ describe('严格校验：宁可报错也不写出坏数据', () => {
     expect(() => decodeSymbols(tampered, 'b47', 32)).toThrow(/超出字节长度/)
   })
 
-  it('基数 47：块内出现符号表之外的字符时报错', () => {
+  it('47 进制：块内出现符号表之外的字符时报错', () => {
     const text = encodeSymbols(binary(64), 'b47')
     const broken = `${text.slice(0, 5)}Z${text.slice(6)}`
     expect(() => decodeSymbols(broken, 'b47', 64)).toThrow(/符号表之外/)

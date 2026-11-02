@@ -367,18 +367,18 @@ describe('prepareTransfer · 校验与取消', () => {
   })
 })
 
-describe('prepareTransfer · 基数 47 与质量自动升级', () => {
-  it('基数 47 只能在终端：编辑器模式直接拒绝并说明原因', async () => {
+describe('prepareTransfer · 47 进制与质量自动升级', () => {
+  it('47 进制只能在终端：编辑器模式直接拒绝并说明原因', async () => {
     const path = writeSource('src.bin', binary(300))
     await expect(prepare(path, { alphabet: 'b47', mode: 'line' })).rejects.toMatchObject({
       code: 'alphabet',
-      message: expect.stringMatching(/基数 47 只能用于「终端/)
+      message: expect.stringMatching(/47 进制档只能用于「终端/)
     })
     // 终端模式下同一个文件正常准备
     await expect(prepare(path, { alphabet: 'b47', mode: 'term' })).resolves.toBeTruthy()
   })
 
-  it('基数 47：字符数比 5 位档再少约 8%，且能逐字节还原', async () => {
+  it('47 进制：字符数比 5 位档再少约 8%，且能逐字节还原', async () => {
     const source = binary(8192, 11)
     const wide = await prepare(writeSource('a.bin', source), {
       alphabet: 'b47',

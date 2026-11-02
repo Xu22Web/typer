@@ -599,7 +599,7 @@ describe('应用与接收端的一致性（同一文件、同一参数）', () =
     }
   })
 
-  it('基数 47 端到端：真实接收端能还原，载荷只含 47 个零 Shift 键', async () => {
+  it('47 进制端到端：真实接收端能还原，载荷只含 47 个零 Shift 键', async () => {
     // 4000 字节跨了多个 32 字节块，能同时覆盖满块与末块
     const source = makeSource(4000)
     writeFileSync(join(work, 'src.bin'), source)

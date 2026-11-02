@@ -271,8 +271,8 @@ describe('toEngineSettings', () => {
     expect(fallback.transfer.compression).toBe(DEFAULT_SETTINGS.transfer.compression)
   })
 
-  it('基数 47 与目标端联动：编辑器 / 单行框下自动退回 5 位档，终端下保留', () => {
-    // 终端：基数 47 是合法档位，必须原样保留（否则 UI 选了也存不住）
+  it('47 进制与目标端联动：编辑器 / 单行框下自动退回 5 位档，终端下保留', () => {
+    // 终端：47 进制是合法档位，必须原样保留（否则 UI 选了也存不住）
     expect(
       normalizeSettings({ transfer: { alphabet: 'b47', mode: 'term' } }).transfer.alphabet
     ).toBe('b47')

@@ -462,7 +462,7 @@ export function normalizeSettings(raw: unknown): Settings {
     }
   }
 
-  // 基数 47 用到了 `- . / ' [ ] \`` 这些键：编辑器会把 `--`、`1/2`、`...` 自动更正，
+  // 47 进制用到了 `- . / ' [ ] \`` 这些键：编辑器会把 `--`、`1/2`、`...` 自动更正，
   // 还会自动闭合引号与括号，载荷当场被改写。这个死组合在读取时就地纠正（任何来源：
   // 设置页、文件页、手改的 settings.json、早期版本），而不是等到准备阶段才报错。
   if (settings.transfer.alphabet === 'b47' && settings.transfer.mode !== 'term') {

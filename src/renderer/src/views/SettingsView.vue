@@ -92,7 +92,7 @@ const alphabetHint = computed(() => {
 })
 
 /**
- * 可选字符档：基数 47 用到编辑器会自动更正的字符（`--`、引号、括号），
+ * 可选字符档：47 进制用到编辑器会自动更正的字符（`--`、引号、括号），
  * 因此只在「终端」目标端下才提供
  */
 const alphabetChoices = computed(() =>
@@ -112,7 +112,7 @@ function applyTargetMode(mode: TransferTargetMode): void {
   )
   if (!current?.terminalsOnly) return
   draft.value.transfer.alphabet = 'ascii32'
-  ElMessage.info('基数 47 只能在终端使用：已切回 ASCII 5 位档')
+  ElMessage.info('47 进制档只能在终端使用：已切回 ASCII 5 位档')
 }
 
 /**
@@ -721,7 +721,7 @@ async function restoreDefaults(): Promise<void> {
             <p class="group-desc">
               把文件切成"每片一行"的帧逐片输入。接收端逐片校验、支持断点续传，合并后再校验整文件哈希；
               字符档决定"一个字符能带多少比特"，压缩决定"要带多少字节"。远程桌面只转发真实键盘事件，
-              因此默认用零 Shift 的 5 位档；目标端是终端时还可以选基数 47 档（再省约 8% 字符）。
+              因此默认用零 Shift 的 5 位档；目标端是终端时还可以选 47 进制档（再省约 8% 字符）。
             </p>
 
             <div class="row">

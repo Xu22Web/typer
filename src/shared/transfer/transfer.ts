@@ -38,7 +38,7 @@ export const TRANSFER_BITS: Readonly<Record<TransferAlphabet, number>> = {
 export const TRANSFER_ALPHABET_OPTIONS: readonly TransferAlphabetOption[] = [
   {
     value: 'b47',
-    label: '基数 47（终端最快）',
+    label: '47 进制（终端最快）',
     bits: Math.log2(47),
     charsPerByte: 8 / Math.log2(47),
     terminalsOnly: true,
