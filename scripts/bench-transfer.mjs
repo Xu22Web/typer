@@ -48,7 +48,7 @@ function parseArgs(argv) {
 const args = parseArgs(process.argv.slice(2))
 if (!args.file) {
   console.error(
-    '用法：node scripts/bench-transfer.mjs <文件> [--alphabet ascii32|ascii64|hex] [--chunk 16384] [--emit <frames.txt>] [--verify]'
+    '用法：node scripts/bench-transfer.mjs <文件> [--alphabet ascii32|ascii64|b47|hex] [--chunk 16384] [--emit <frames.txt>] [--verify]'
   )
   process.exit(4)
 }
@@ -85,8 +85,10 @@ const chunkPreset =
   CHUNK_PRESETS.find((preset) => preset.id === (args.preset ?? 'default')) ?? CHUNK_PRESETS[1]
 const chunkBytes = args.chunk ? Number(args.chunk) : chunkPreset.chunkBytes
 const maxFrameChars = args.chunk ? Number(args.chunk) * 4 : chunkPreset.maxFrameChars
-const alphaList = args.alphabet ? [args.alphabet] : ['ascii32', 'ascii64', 'hex']
+const alphaList = args.alphabet ? [args.alphabet] : ['b47', 'ascii32', 'ascii64', 'hex']
 const quality = args.quality === undefined ? 9 : Number(args.quality)
+// 47 进制用到了编辑器会自动更正的字符，只能在终端目标端下跑
+const mode = args.mode ?? 'term'
 const compression = args.compression ?? 'auto'
 
 console.log(`文件：${path}`)
@@ -96,9 +98,9 @@ console.log(`大小：${size} 字节（${(size / 1024 / 1024).toFixed(2)} MiB）
 function human(ms) {
   if (ms < 1000) return `${Math.round(ms)} ms`
   const seconds = ms / 1000
-  if (seconds < 90) return `${seconds.toFixed(0)} 秒`
+  if (seconds < 60) return `${seconds.toFixed(0)} 秒`
   const minutes = seconds / 60
-  if (minutes < 90) return `${minutes.toFixed(0)} 分`
+  if (minutes < 90) return `${Math.floor(minutes)} 分 ${Math.round(seconds % 60)} 秒`
   return `${(minutes / 60).toFixed(1)} 小时`
 }
 
@@ -109,8 +111,45 @@ const SPEEDS = [
   { label: 'turbo 700 cps', cps: 700 }
 ]
 
+/**
+ * 需要 Shift 的字符：`ascii64` 里的大写字母与 `_`（US 布局）。
+ * `ascii32` / `b47` / `hex` 按构造就全是无需 Shift 的键。
+ */
+const SHIFT_CHARS = /[A-Z_]/
+/** 一次修饰键切换的代价：宿主 lead 15ms + tail 10ms（连续同修饰键保持按住，只算一次） */
+const SHIFT_SWITCH_MS = 25
+
+/**
+ * @description 统计载荷里的 Shift 字符比例与“修饰键切换”次数
+ * @param job 已准备好的传输任务
+ * @returns 字符占比与切换次数
+ */
+async function measureShift(job) {
+  let previous = false
+  let switches = 0
+  let total = 0
+  let hit = 0
+  for (let index = 0; index < job.summary.total; index++) {
+    const payload = (await job.renderFrame(index)).split(' ').pop() ?? ''
+    for (const char of payload) {
+      const need = SHIFT_CHARS.test(char)
+      total += 1
+      if (need) hit += 1
+      if (need !== previous) {
+        switches += 1
+        previous = need
+      }
+    }
+  }
+  return { share: total === 0 ? 0 : hit / total, switches }
+}
+
 const rows = []
 for (const alphabet of alphaList) {
+  if (alphabet === 'b47' && mode !== 'term') {
+    console.log(`跳过 ${alphabet}：47 进制只能用于终端目标端`)
+    continue
+  }
   const job = await prepareTransfer({
     path,
     options: {
@@ -119,49 +158,62 @@ for (const alphabet of alphaList) {
       quality,
       chunkBytes,
       maxFrameChars,
-      mode: args.mode ?? 'term'
+      mode
     }
   })
   const summary = job.summary
-  rows.push({ alphabet, summary })
+  const shift = args['no-shift'] ? { share: 0, switches: 0 } : await measureShift(job)
+  rows.push({ alphabet, summary, shift })
   await job.dispose()
 }
 
-const head = '字符档    压缩      线上字节   分片   字符数        字符/字节  '
+const baseline = rows.find((row) => row.alphabet === 'ascii32') ?? rows[0]
+const head = '字符档    线上字节   字符数      字符/字节  相对 5 位  Shift 占比·切换'
 console.log(
-  `\n分片：${chunkBytes} 字节（帧长上限 ${maxFrameChars}），压缩：${compression} q${quality}\n`
+  `\n分片：${chunkBytes} 字节（帧长上限 ${maxFrameChars}），压缩：${compression}，` +
+    `质量：请求 q${quality} → 实际 q${rows[0].summary.quality}\n`
 )
 console.log(head)
 for (const row of rows) {
   const s = row.summary
+  const relative = ((s.frameChars / baseline.summary.frameChars) * 100).toFixed(1)
+  const shiftCell =
+    row.shift.switches === 0
+      ? '-'
+      : `${(row.shift.share * 100).toFixed(0)}% · ${row.shift.switches} 次`
   console.log(
-    `${row.alphabet.padEnd(9)} ${String(s.compression).padEnd(9)} ${String(s.wireBytes).padStart(10)} ` +
-      `${String(s.total).padStart(5)} ${String(s.frameChars).padStart(13)} ` +
-      `${(s.frameChars / Math.max(1, s.size)).toFixed(3).padStart(10)}`
+    `${row.alphabet.padEnd(9)} ${String(s.wireBytes).padStart(10)} ` +
+      `${String(s.frameChars).padStart(10)}  ${(s.frameChars / Math.max(1, s.size)).toFixed(3).padStart(8)} ` +
+      `${`${relative}%`.padStart(9)}  ${shiftCell}`
   )
 }
 
-console.log('\n预计耗时（按字符数 ÷ 每秒字符数）：')
+console.log('\n预计耗时（字符数 ÷ 每秒字符数，外加修饰键切换）：')
 for (const row of rows) {
   const s = row.summary
-  const parts = SPEEDS.map((speed) => `${speed.label}=${human((s.frameChars / speed.cps) * 1000)}`)
-  console.log(`  ${row.alphabet.padEnd(9)} ${parts.join('  ')}`)
+  const extra = row.shift.switches * SHIFT_SWITCH_MS
+  console.log(`  ${row.alphabet}`)
+  for (const speed of SPEEDS) {
+    const typed = (s.frameChars / speed.cps) * 1000
+    const detail = extra === 0 ? '' : `（字符 ${human(typed)} + 切换 ${human(extra)}）`
+    console.log(`    ${speed.label.padEnd(14)} 总计 ${human(typed + extra)}${detail}`)
+  }
 }
 console.log(`\n压缩结论：${rows[0].summary.compressionNote}`)
 console.log(`准备耗时：${rows[0].summary.prepareMs} ms`)
 
 if (args.emit) {
-  // 按默认（或指定）字符档把所有帧写成文本，供接收端离线校验
-  const target = rows[rows.length - 1]
+  // 默认用终端最优档（b47）落帧，顺带验证新编码分支；显式 --alphabet 时按指定的来
+  const targetAlphabet = args.alphabet ?? 'b47'
   const job = await prepareTransfer({
     path,
     options: {
-      alphabet: target.alphabet,
+      alphabet: targetAlphabet,
       compression,
       quality,
       chunkBytes,
       maxFrameChars,
-      mode: args.mode ?? 'term'
+      mode: targetAlphabet === 'b47' ? 'term' : mode
     }
   })
   const lines = [job.beginFrame()]
