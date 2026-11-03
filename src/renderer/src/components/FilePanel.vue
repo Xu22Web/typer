@@ -346,23 +346,30 @@ async function sendMissingOnly(): Promise<void> {
 /**
  * @description 把接收脚本当普通文件发送（用于更新目标机上已有的接收端）。
  *
- * 文本模式的节奏是"给人看的"（默认 6 字符/秒），24 KB 的脚本要打一个多小时；
- * 走文件传输 + ASCII 6 位档 + 压缩，同样的脚本只要几千个字符，几十秒就能打完。
- * 用 ASCII 档是因为脚本本身是纯 ASCII，且不必依赖目标端代码页。
- * 注意：这条路径需要目标机上**已经**有能跑的接收端；首次仍然要先把脚本打进去。
+ * 脚本就是一份文件，因此沿用当前设置（字符档、压缩、目标端、片大小、帧长上限），
+ * 与手动选择文件走同一条路径。唯一的例外是 Base47：它只支持终端目标端，编辑器 /
+ * 单行框下退回 ASCII 6 位档（脚本是纯 ASCII，6 位档字符数最少），否则准备会被拒绝。
+ * 注意：这条路径要求目标机上**已经**有能跑的接收端。
  */
 async function sendScriptAsFile(): Promise<void> {
   const script = await transfer.loadToolScript()
   if (!script) return
-  await transfer.prepare(script.path, {
-    alphabet: 'ascii64',
-    compression: 'br',
-    quality: 9,
-    mode: 'term',
-    chunkBytes: 16384,
-    maxFrameChars: 65536
-  })
-  ElMessage.success('已按「ASCII 6 位 + 压缩」准备接收脚本：点「开始输入」即可打进目标机')
+
+  const current = options.value
+  const fallback = current.mode !== 'term' && Boolean(alphabetOption.value.terminalsOnly)
+  const alphabet: TransferAlphabet = fallback ? 'ascii64' : current.alphabet
+  if (fallback) ElMessage.info('Base47 只支持终端目标端：本次按 ASCII 6 位档发送脚本')
+
+  await transfer.prepare(script.path, { ...current, alphabet })
+
+  const job = summary.value
+  if (!job) return
+  const label =
+    TRANSFER_ALPHABET_OPTIONS.find((option) => option.value === job.alphabet)?.label ?? job.alphabet
+  const compressionLabel = job.compression === 'br' ? `Brotli q${job.quality}` : '未压缩'
+  ElMessage.success(
+    `已按当前设置准备接收脚本（${label} · ${compressionLabel}）：点「开始输入」即可打进目标机`
+  )
 }
 
 /** Hex 预览行（由主进程截取） */
@@ -724,7 +731,7 @@ const previewRows = computed(() => summary.value?.preview ?? [])
           size="small"
           text
           :disabled="typing.isRunning.value || preparing"
-          title="目标机已有接收端时，可用文件传输更新脚本（ASCII 6 位 + 压缩，数十秒）；首次仍需先把脚本打进终端"
+          title="目标机已有接收端时，可用文件传输更新脚本（沿用当前字符档 / 压缩 / 目标端设置，数十秒）；首次仍需先把脚本打进终端"
           @click="sendScriptAsFile"
         >
           <span class="i-mdi-rocket-launch-outline" /><span>以文件方式发送脚本</span>
