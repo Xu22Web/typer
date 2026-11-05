@@ -89,7 +89,7 @@ function clear(): void {
         <div
           v-if="ignoredCount > 0"
           class="chip warn"
-          title="这些字符没有对应的键盘按键，开始时会跳过"
+          title="这些字符没有对应的键盘按键，开始时会跳过；如需完整保留，可用操作条的「转文件发送」"
         >
           <div>
             忽略 <strong>{{ ignoredCount }}</strong> 个

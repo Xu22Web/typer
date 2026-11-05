@@ -7,7 +7,6 @@ import {
   durationTone,
   formatBytes,
   type TransferAlphabet,
-  type TransferCompression,
   type TransferTargetMode
 } from '@shared/transfer/transfer'
 import { formatDuration } from '@shared/format/duration'
@@ -30,15 +29,8 @@ const emit = defineEmits<{ insertScript: [] }>()
 /** 当前生效的设置（符号表、压缩、片大小都从这里读） */
 const settings = settingsStore.settings
 
-/** 传给主进程的准备参数；设置尚未加载时用与 schema 一致的默认值 */
-const options = computed(() => ({
-  alphabet: (settings.value?.transfer.alphabet ?? 'ascii32') as TransferAlphabet,
-  compression: (settings.value?.transfer.compression ?? 'auto') as TransferCompression,
-  quality: settings.value?.transfer.quality ?? 9,
-  mode: (settings.value?.transfer.mode ?? 'term') as TransferTargetMode,
-  chunkBytes: settings.value?.transfer.chunkBytes ?? 16384,
-  maxFrameChars: settings.value?.transfer.maxFrameChars ?? 65536
-}))
+/** 传给主进程的准备参数：与「转文件发送」共用同一份，避免两边算出不同的档位 / 片大小 */
+const options = transfer.options
 
 /** 已准备的文件摘要 */
 const summary = transfer.summary
@@ -209,6 +201,57 @@ async function pick(): Promise<void> {
   await transfer.pickAndPrepare(options.value)
 }
 
+/** 拖拽进入的层数：dragenter / dragleave 会在子元素之间反复触发，用计数避免覆盖层闪烁 */
+const dragDepth = ref(0)
+
+/** 是否接受拖入：运行中或正在准备时不让新文件打断当前任务 */
+const canAcceptDrop = computed(() => !typing.isRunning.value && !preparing.value)
+
+/**
+ * @description 有文件拖进面板：只在确实带文件时计数（拖选文字也会触发 dragenter）
+ * @param event 拖拽事件
+ */
+function onDragEnter(event: DragEvent): void {
+  if (!canAcceptDrop.value) return
+  if (!event.dataTransfer?.types.includes('Files')) return
+  event.preventDefault()
+  dragDepth.value += 1
+}
+
+/**
+ * @description 停在面板上：必须阻止默认行为，否则浏览器不会派发 drop
+ * @param event 拖拽事件
+ */
+function onDragOver(event: DragEvent): void {
+  if (!canAcceptDrop.value) return
+  event.preventDefault()
+  if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy'
+}
+
+/** @description 离开面板：层数归零时才隐藏覆盖层 */
+function onDragLeave(): void {
+  dragDepth.value = Math.max(0, dragDepth.value - 1)
+}
+
+/**
+ * @description 松手：取第一个文件的绝对路径并准备分片（不做扩展名过滤，任意文件都能传）
+ * @param event 拖拽事件
+ */
+async function onDrop(event: DragEvent): Promise<void> {
+  dragDepth.value = 0
+  if (!canAcceptDrop.value) return
+  event.preventDefault()
+  const files = event.dataTransfer?.files
+  if (!files || files.length === 0) return
+  if (files.length > 1) ElMessage.info('一次只能发送一个文件，已使用第一个')
+  const path = window.api.files.pathOf(files[0] as File)
+  if (path.length === 0) {
+    ElMessage.warning('无法读取拖入文件的位置，请改用「选择文件」')
+    return
+  }
+  await transfer.prepare(path, options.value)
+}
+
 /**
  * @description 切换符号表并立即按新档重新准备（沿用同一文件）
  * @param alphabet 目标符号表
@@ -377,7 +420,13 @@ const previewRows = computed(() => summary.value?.preview ?? [])
 </script>
 
 <template>
-  <section class="card file-panel">
+  <section
+    class="card file-panel"
+    @dragenter="onDragEnter"
+    @dragover="onDragOver"
+    @dragleave="onDragLeave"
+    @drop.prevent="onDrop"
+  >
     <div class="card-head">
       <h2 class="card-title">
         <span class="icon i-mdi-file-arrow-up-down-outline" /><span>文件输入</span>
@@ -387,12 +436,27 @@ const previewRows = computed(() => summary.value?.preview ?? [])
       <div v-if="summary" class="chip">每片 {{ formatBytes(summary.chunkBytes) }}</div>
       <div v-if="summary" class="chip">{{ alphabetOption.label }}</div>
       <div v-if="compressionHint !== null" class="chip">压缩到 {{ compressionHint }}%</div>
+      <div
+        v-if="summary && transfer.source.value === 'text'"
+        class="chip"
+        title="本次任务来自内容区文本：发送的是系统临时目录里的 UTF-8 副本"
+      >
+        <span class="i-mdi-text-box-outline" />来自内容区
+      </div>
+    </div>
+
+    <!-- 拖入提示：只做视觉反馈，不拦指针（drop 由面板接收） -->
+    <div v-if="dragDepth > 0" class="drop-overlay">
+      <div class="i-mdi-tray-arrow-down drop-overlay-icon" />
+      <div>松开以发送此文件</div>
+      <div class="drop-overlay-desc">一次一个文件，拖入后立即开始准备分片</div>
     </div>
 
     <div class="panel-body">
       <!-- 未选择文件：只给一个明确的入口与必要的解释 -->
       <div v-if="!summary" class="empty">
-        <p class="empty-title">选择一个文件，Typer 将其按帧逐片输入到目标窗口</p>
+        <div class="empty-icon i-mdi-tray-arrow-down" />
+        <p class="empty-title">把文件拖到这里，或选择一个文件</p>
         <p class="empty-desc">
           文件会被切成每片一行的纯文本帧，逐片校验、支持断点续传，接收端合并后再校验整文件哈希。
         </p>
@@ -749,9 +813,43 @@ const previewRows = computed(() => summary.value?.preview ?? [])
 
 <style scoped lang="scss">
 .file-panel {
+  /* 拖入覆盖层以面板为定位基准 */
+  position: relative;
   flex: 1;
   min-height: 0;
   overflow: hidden;
+}
+
+/*
+ * 拖入提示：铺满面板的虚线框。pointer-events: none 让 drop 事件继续落在面板上。
+ * 底色用不透明的卡片色叠一点强调色：下层内容必须完全盖住，否则会与提示文字重叠成一片。
+ */
+.drop-overlay {
+  position: absolute;
+  inset: 8px;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 2px dashed var(--accent);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--accent) 5%, var(--card-bg));
+  color: var(--accent);
+  font-size: 14px;
+  font-weight: 600;
+  pointer-events: none;
+}
+
+.drop-overlay-icon {
+  font-size: 30px;
+}
+
+.drop-overlay-desc {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--text-2);
 }
 
 /* 唯一滚动区：卡片头部常驻，其余内容在卡片内部滚动 */
@@ -786,6 +884,11 @@ const previewRows = computed(() => summary.value?.preview ?? [])
   gap: 10px;
   padding: 24px 16px;
   text-align: center;
+}
+
+.empty-icon {
+  font-size: 34px;
+  color: var(--text-3);
 }
 
 .empty-title {

@@ -142,6 +142,9 @@ async function prepareText(): Promise<string | null> {
     )
   }
   lines.push('内容区的原文不会被修改，只影响本次要输入的内容。')
+  if (dropped > 0) {
+    lines.push('如需完整保留这些字符，可点操作条的「转文件发送」，把内容当作文件逐片发送。')
+  }
 
   try {
     await ElMessageBox.confirm(lines.join('\n'), '部分字符将转换或忽略', {

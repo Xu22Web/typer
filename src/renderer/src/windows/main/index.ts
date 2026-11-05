@@ -21,4 +21,8 @@ app.use(router)
 // 主题存在 pinia store 里，必须在 app.use(pinia) 之后读取；挂载前写入根元素可避免首帧闪白
 setupTheme()
 
+// 拖到窗口任意位置都不应让 Chromium 导航到 file://（真正的拖放目标由文件页自己处理）
+window.addEventListener('dragover', (event) => event.preventDefault())
+window.addEventListener('drop', (event) => event.preventDefault())
+
 app.mount('#app')

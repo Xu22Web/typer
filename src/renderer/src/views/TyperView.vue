@@ -28,8 +28,8 @@ const latestLog = computed(() => typing.logs.value.at(-1) ?? null)
 /** 页头说明：两种模式各一句话（窄窗口会被省略号截断，鼠标悬停看全文） */
 const pageDesc = computed(() =>
   mode.value === 'text'
-    ? '将待输入内容粘贴到内容区，点开始后在倒计时内切换到目标窗口。可打印 ASCII 与需要 Shift 的符号均可输入。'
-    : '选择一个文件，按“每片一行”的帧逐片输入；接收端逐片校验、支持断点续传，合并后再校验整文件哈希。'
+    ? '将待输入内容粘贴到内容区，点开始后在倒计时内切换到目标窗口。可打印 ASCII 与需要 Shift 的符号均可输入；无法用键盘敲出的字符可用「转文件发送」完整送达。'
+    : '选择一个文件（或直接拖入），按“每片一行”的帧逐片输入；接收端逐片校验、支持断点续传，合并后再校验整文件哈希。'
 )
 
 /** 开始按钮文案：文件模式显示要发多少片，倒计时非 0 时补上"几秒后" */
@@ -65,6 +65,20 @@ function start(): void {
 async function insertToolScriptFromFile(): Promise<void> {
   mode.value = 'text'
   await toolScript.insert()
+}
+
+/**
+ * @description 把内容区文本转为文件发送：文本原样写成 UTF-8 文件，再按当前文件设置准备分片。
+ *
+ * 为什么不在转换后直接开始：文件任务的字符档 / 目标端与文本模式并不相同（例如 Base47 只支持终端），
+ * 在文件页先看到摘要与预计耗时、确认参数后再点「发送 N 片」更稳。
+ */
+async function convertToFile(): Promise<void> {
+  if (typing.isRunning.value || typing.busy.value || transfer.preparing.value) return
+  const text = typing.text.value
+  if (text.length === 0) return
+  mode.value = 'file'
+  await transfer.prepareText(text, transfer.options.value)
 }
 </script>
 
@@ -185,6 +199,20 @@ async function insertToolScriptFromFile(): Promise<void> {
           @click="typing.importFile()"
         >
           <span class="i-mdi-file-import-outline" /><span>导入文本</span>
+        </ElButton>
+        <ElButton
+          v-if="mode === 'text'"
+          id="tour-send-as-file"
+          :disabled="
+            typing.isRunning.value ||
+            typing.busy.value ||
+            transfer.preparing.value ||
+            typing.text.value.length === 0
+          "
+          title="把内容区文本原样写成 .txt 文件，再按文件逐片发送：中文、emoji 等无法用键盘输入的字符都能完整送达"
+          @click="convertToFile()"
+        >
+          <span class="i-mdi-file-arrow-up-down-outline" /><span>转文件发送</span>
         </ElButton>
         <RouterLink class="link-btn" to="/settings">
           <div class="i-mdi-tune-vertical" />

@@ -1,9 +1,12 @@
 import type { TransferToolScriptPayload } from '@main/ipc/contracts'
 import type {
   ResumeMatch,
+  TransferAlphabet,
+  TransferCompression,
   TransferJobSummary,
   TransferPrepareOptions,
-  TransferPrepareProgress
+  TransferPrepareProgress,
+  TransferTargetMode
 } from '@shared/transfer/transfer'
 import { CHUNK_PRESETS, TRANSFER_LIMITS } from '@shared/transfer/transfer'
 import { formatDuration } from '@shared/format/duration'
@@ -37,6 +40,24 @@ const fromIndex = ref(0)
 const error = ref('')
 /** 续传信息解析失败的原因（与全局 error 分开：粘错一段文字不该弹"准备失败"红条） */
 const resumeError = ref('')
+/** 当前任务来自哪里：选择的文件，还是内容区文本（仅用于界面标注） */
+const source = ref<'file' | 'text'>('file')
+
+/**
+ * 传给主进程的准备参数；设置尚未加载时用与 schema 一致的默认值。
+ * 文本转文件与选择文件必须用同一份，否则改完设置两边会算出不同的字符档 / 片大小。
+ */
+const options = computed<TransferPrepareOptions>(() => {
+  const current = useSettings().settings.value
+  return {
+    alphabet: (current?.transfer.alphabet ?? 'ascii32') as TransferAlphabet,
+    compression: (current?.transfer.compression ?? 'auto') as TransferCompression,
+    quality: current?.transfer.quality ?? 9,
+    mode: (current?.transfer.mode ?? 'term') as TransferTargetMode,
+    chunkBytes: current?.transfer.chunkBytes ?? 16384,
+    maxFrameChars: current?.transfer.maxFrameChars ?? 65536
+  }
+})
 
 /** 是否已订阅主进程的准备进度推送 */
 let wired = false
@@ -63,29 +84,31 @@ const ready = computed(() => hasJob.value && !preparing.value && !error.value)
 const sendingCount = computed(() => plan.value?.indexes.length ?? summary.value?.total ?? 0)
 
 /**
- * @description 让主进程读取文件并算出分片表（大文件走流式哈希）
- * @param path 待发送文件的绝对路径
- * @param options 编码、片大小与帧长上限
- * @param reuse 是否复用已有的准备结果（改动编码时用）
+ * @description 跑一次准备：统一进度、错误与日志，文件与内容区文本共用同一条路径
+ * @param kind 任务来源（只影响日志文案与界面标注）
+ * @param load 真正调用主进程的函数
+ * @param resetResume 是否清掉上一次的续传状态（换了源内容就必须清）
  */
-async function prepare(
-  path: string,
-  options: TransferPrepareOptions,
-  reuse = false
+async function runPrepare(
+  kind: 'file' | 'text',
+  load: () => Promise<TransferJobSummary>,
+  resetResume: boolean
 ): Promise<void> {
   wire()
   preparing.value = true
   error.value = ''
   prepareProgress.value = { phase: 'hash', done: 0, total: 0 }
   try {
-    const loaded = await window.api.transfer.prepare(path, options, { reuse })
+    const loaded = await load()
     summary.value = loaded
+    source.value = kind
     // 换了文件或重新准备后，之前的"要发哪些片"就不再有效
-    if (!reuse) resume.value = null
+    if (resetResume) resume.value = null
     await refreshPlan()
+    const prefix = kind === 'text' ? '已把内容区文本转为文件' : '已准备文件'
     useTyping().log(
       'info',
-      `已准备文件：${loaded.name}（${loaded.size} 字节 → ${loaded.total} 片，${loaded.alphabet}/${
+      `${prefix}：${loaded.name}（${loaded.size} 字节 → ${loaded.total} 片，${loaded.alphabet}/${
         loaded.compression
       }）`
     )
@@ -100,13 +123,40 @@ async function prepare(
 }
 
 /**
- * @description 打开系统文件选择框并准备（用户取消则什么都不做）
- * @param options 编码、片大小与帧长上限
+ * @description 让主进程读取文件并算出分片表（大文件走流式哈希）
+ * @param path 待发送文件的绝对路径
+ * @param prepareOptions 编码、片大小与帧长上限
+ * @param reuse 是否复用已有的准备结果（改动编码时用）
  */
-async function pickAndPrepare(options: TransferPrepareOptions): Promise<void> {
+async function prepare(
+  path: string,
+  prepareOptions: TransferPrepareOptions,
+  reuse = false
+): Promise<void> {
+  await runPrepare(
+    'file',
+    () => window.api.transfer.prepare(path, prepareOptions, { reuse }),
+    !reuse
+  )
+}
+
+/**
+ * @description 把内容区文本写成临时文件后准备发送（原样保留所有字符）
+ * @param text 内容区原文
+ * @param prepareOptions 编码、片大小与帧长上限
+ */
+async function prepareText(text: string, prepareOptions: TransferPrepareOptions): Promise<void> {
+  await runPrepare('text', () => window.api.transfer.prepareText(text, prepareOptions), true)
+}
+
+/**
+ * @description 打开系统文件选择框并准备（用户取消则什么都不做）
+ * @param prepareOptions 编码、片大小与帧长上限
+ */
+async function pickAndPrepare(prepareOptions: TransferPrepareOptions): Promise<void> {
   const path = await window.api.transfer.pick()
   if (!path) return
-  await prepare(path, options)
+  await prepare(path, prepareOptions)
 }
 
 /** @description 取消正在进行的准备（哈希/分片） */
@@ -288,11 +338,14 @@ export function useTransfer(): {
   fromIndex: Ref<number>
   error: Ref<string>
   resumeError: Ref<string>
+  source: Ref<'file' | 'text'>
+  options: ComputedRef<TransferPrepareOptions>
   hasJob: ComputedRef<boolean>
   ready: ComputedRef<boolean>
   sendingCount: ComputedRef<number>
   resumeMissing: ComputedRef<number[] | null>
   prepare: (path: string, options: TransferPrepareOptions, reuse?: boolean) => Promise<void>
+  prepareText: (text: string, options: TransferPrepareOptions) => Promise<void>
   pickAndPrepare: (options: TransferPrepareOptions) => Promise<void>
   cancelPrepare: () => Promise<void>
   refreshPlan: () => Promise<void>
@@ -315,11 +368,14 @@ export function useTransfer(): {
     fromIndex,
     error,
     resumeError,
+    source,
+    options,
     hasJob,
     ready,
     sendingCount,
     resumeMissing,
     prepare,
+    prepareText,
     pickAndPrepare,
     cancelPrepare,
     refreshPlan,

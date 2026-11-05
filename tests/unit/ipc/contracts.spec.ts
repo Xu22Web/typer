@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { IpcValidationError, parseTransferPrepareRequest } from '@main/ipc/contracts'
+import {
+  IpcValidationError,
+  MAX_TEXT_LENGTH,
+  parseTransferPrepareRequest,
+  parseTransferTextRequest
+} from '@main/ipc/contracts'
 import {
   TRANSFER_ALPHABETS,
   TRANSFER_COMPRESSIONS,
@@ -64,5 +69,42 @@ describe('parseTransferPrepareRequest', () => {
   it('请求本身不是对象时报错', () => {
     expect(() => parseTransferPrepareRequest(null)).toThrow(IpcValidationError)
     expect(() => parseTransferPrepareRequest('x')).toThrow(IpcValidationError)
+  })
+})
+
+describe('parseTransferTextRequest', () => {
+  /**
+   * @description 造一份合法的"文本转文件"请求
+   * @param text 待发送文本
+   * @param overrides 覆盖选项字段
+   * @returns 请求载荷
+   */
+  function textPayload(
+    text: unknown = '中文 content',
+    overrides: Record<string, unknown> = {}
+  ): Record<string, unknown> {
+    return { text, options: payload(overrides).options }
+  }
+
+  it('原样保留文本并复用同一套选项校验', () => {
+    const parsed = parseTransferTextRequest(textPayload('中文🙂\n第二行'))
+    expect(parsed.text).toBe('中文🙂\n第二行')
+    expect(parsed.options.alphabet).toBe('ascii32')
+    expect(parsed.options.mode).toBe('term')
+  })
+
+  it('拒绝空文本与超长文本', () => {
+    expect(() => parseTransferTextRequest(textPayload(''))).toThrow(/没有可发送的文本/)
+    expect(() => parseTransferTextRequest(textPayload('a'.repeat(MAX_TEXT_LENGTH + 1)))).toThrow(
+      /文本过长/
+    )
+  })
+
+  it('拒绝缺失或非法的字段', () => {
+    expect(() => parseTransferTextRequest({ options: payload().options })).toThrow(
+      IpcValidationError
+    )
+    expect(() => parseTransferTextRequest(null)).toThrow(IpcValidationError)
+    expect(() => parseTransferTextRequest(textPayload('a', { alphabet: 'b64' }))).toThrow(/符号表/)
   })
 })

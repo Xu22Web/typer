@@ -150,6 +150,7 @@ function createFakeTransfer(toolScript: TransferControls['toolScript']): Transfe
   return {
     pickFile: async () => null,
     prepare: async () => ({}),
+    prepareText: async () => ({}),
     cancelPrepare: () => {},
     matchResume: () => ({}),
     createRequest: () => {

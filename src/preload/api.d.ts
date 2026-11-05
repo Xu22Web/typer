@@ -66,6 +66,8 @@ export interface TyperApi {
   files: {
     pick: () => Promise<string | null>
     import: (path: string, charset?: string) => Promise<ImportResult>
+    /** 拖入文件的绝对路径（Electron 32+ 已移除 File.path，必须经 webUtils 取得） */
+    pathOf: (file: File) => string
   }
   /** 文件传输：把文件切成"每片一行"的帧，用键盘/剪贴板送到目标窗口。 */
   transfer: {
@@ -77,6 +79,8 @@ export interface TyperApi {
       options: TransferPrepareOptions,
       config?: { reuse?: boolean }
     ) => Promise<TransferJobSummary>
+    /** 把内容区文本写成临时文件后按文件准备（完整保留无法用键盘输入的字符） */
+    prepareText: (text: string, options: TransferPrepareOptions) => Promise<TransferJobSummary>
     /** 中止正在进行的准备（哈希阶段） */
     cancelPrepare: () => Promise<boolean>
     /** 解析接收端带回来的续传状态（resume.json 内容或续传令牌） */

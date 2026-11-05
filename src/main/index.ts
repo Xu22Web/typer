@@ -475,6 +475,7 @@ async function bootstrap(): Promise<void> {
     transfer: {
       pickFile: () => pickTransferFile(),
       prepare: (path, options) => transferSession.prepare(path, options),
+      prepareText: (text, options) => transferSession.prepareText(text, options),
       cancelPrepare: () => transferSession.cancelPrepare(),
       matchResume: (text) => transferSession.matchResume(text),
       createRequest: (options, hooks) => transferSession.createRequest(options, hooks),

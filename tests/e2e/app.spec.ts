@@ -416,6 +416,121 @@ describe.skipIf(process.platform !== 'win32')('端到端（真实应用 + dry-ru
   )
 
   it(
+    '文本转文件：内容区里的中文/emoji 经文件通道还原后逐字节一致',
+    async () => {
+      // 文本模式打不出中文与 emoji，但把它们**写成文件**就没有键位限制。
+      // 这个用例验收两件事：界面确实切到了文件任务，且还原出的字节与原文完全相同。
+      const text = '中文内容 🙂 标点：，。\n第二行 Hello, Typer!'
+
+      await app.cdp.evaluate(`(() => {
+        const group = document.querySelector('#tour-mode-switch')
+        if (!group) throw new Error('找不到模式切换')
+        const button = [...group.querySelectorAll('button')].find((item) =>
+          item.textContent.includes('文本')
+        )
+        if (!button) throw new Error('找不到「文本」模式')
+        button.click()
+        return true
+      })()`)
+      await waitFor(
+        () => app.cdp.evaluate<boolean>("Boolean(document.querySelector('#tour-text-input'))"),
+        { timeoutMs: 30_000, intervalMs: 200, label: '切到文本模式' }
+      )
+
+      await app.cdp.evaluate(`(() => {
+        const field = document.querySelector('#tour-text-input')
+        const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set
+        setter.call(field, ${JSON.stringify(text)})
+        field.dispatchEvent(new Event('input', { bubbles: true }))
+        return field.value.length
+      })()`)
+
+      // 走界面上的「转文件发送」：文本会被写成临时 .txt，再按文件模式准备分片
+      await waitFor(
+        () =>
+          app.cdp.evaluate<boolean>(`(() => {
+            const button = document.querySelector('#tour-send-as-file')
+            return Boolean(button) && !button.disabled
+          })()`),
+        { timeoutMs: 30_000, intervalMs: 200, label: '「转文件发送」按钮可用' }
+      )
+      await app.cdp.evaluate(`(() => {
+        document.querySelector('#tour-send-as-file').click()
+        return true
+      })()`)
+
+      const panelText = await waitFor(
+        async () => {
+          const value = await app.cdp.evaluate<string>(
+            "(document.querySelector('.file-panel')?.innerText ?? '')"
+          )
+          return value.includes('来自内容区') && value.includes('文本-') ? value : null
+        },
+        { timeoutMs: 90_000, intervalMs: 300, label: '文件面板出现文本任务' }
+      )
+      expect(panelText).toMatch(/文本-\d{8}-\d{6}\.txt/)
+
+      const startLabel = await waitFor(
+        () =>
+          app.cdp.evaluate<string | null>(`(() => {
+            const button = document.querySelector('#tour-start button')
+            if (!button || button.disabled) return null
+            return button.textContent.trim()
+          })()`),
+        { timeoutMs: 30_000, intervalMs: 200, label: '「发送 N 片」按钮可用' }
+      )
+      expect(startLabel).toContain('发送')
+
+      resetRecording(app.recordPath)
+      await app.cdp.evaluate(`(() => {
+        document.querySelector('#tour-start button').click()
+        return true
+      })()`)
+
+      const run = await waitFor(
+        async () => {
+          const status = await app.cdp.evaluate<{ state: string; typed: number; total: number }>(
+            '(async () => await window.api.typing.status())()'
+          )
+          return ['completed', 'aborted', 'failed'].includes(status.state) ? status : null
+        },
+        { timeoutMs: RUN_TIMEOUT_MS, intervalMs: 300, label: '文本转文件跑到终态' }
+      )
+      expect(run.state).toBe('completed')
+      expect(run.typed).toBe(run.total)
+
+      const frameText = replayAsText(parseRecordedEvents(readRecordedLines(app.recordPath)))
+      expect(frameText.startsWith('@T2')).toBe(true)
+      writeFileSync(join(sample.dir, 'frames-text.txt'), frameText, 'utf8')
+
+      // 注意：接收端成功后会把分片目录整个清空，因此 -d 必须指向专用子目录
+      const received = await runReceiver(
+        [
+          '--in',
+          'frames-text.txt',
+          '-o',
+          'received-text.txt',
+          '-d',
+          join(sample.dir, 'shards-text'),
+          '--quiet'
+        ],
+        sample.dir
+      )
+      expect(received.code).toBe(0)
+      expect(received.stderr).toBe('')
+
+      const expected = Buffer.from(text, 'utf8')
+      const doneText = parseDoneLine(received.stdout)
+      expect(doneText).not.toBeNull()
+      expect(doneText?.size).toBe(expected.length)
+
+      const restored = readFileSync(join(sample.dir, 'received-text.txt'))
+      expect(restored.equals(expected)).toBe(true)
+    },
+    RUN_TIMEOUT_MS + 30_000
+  )
+
+  it(
     '开启脚本：点「插入接收脚本到文本输入」→ 点开始 → 打出去的文本与脚本逐字符一致且能直接跑',
     async () => {
       // 目标机第一次传输时还没有接收端，唯一的送法是**把脚本本身逐字符打进去**。
@@ -516,7 +631,12 @@ describe.skipIf(process.platform !== 'win32')('端到端（真实应用 + dry-ru
           }>('(async () => await window.api.typing.status())()')
           return ['completed', 'aborted', 'failed'].includes(status.state) ? status : null
         },
-        { timeoutMs: RUN_TIMEOUT_MS, intervalMs: 300, label: '脚本输入跑到终态' }
+        {
+          // 脚本单行 5 万多字符，且大量符号需要 Shift 切换：按长度给超时，避免慢机器上误报
+          timeoutMs: Math.max(RUN_TIMEOUT_MS, toolScript.text.length * 8),
+          intervalMs: 300,
+          label: '脚本输入跑到终态'
+        }
       )
       // 脚本里每个字符都必须有物理键位，否则引擎会在开始前抛出"没有对应的物理键位"
       expect(run.state).toBe('completed')
@@ -537,6 +657,7 @@ describe.skipIf(process.platform !== 'win32')('端到端（真实应用 + dry-ru
       expect(selftest.code).toBe(0)
       expect(selftest.stdout).toContain('自检通过')
     },
-    RUN_TIMEOUT_MS + 60_000
+    // 脚本越长，键入时间越长（见上面的按长度计时：约 5~6ms/字符）
+    RUN_TIMEOUT_MS + 300_000
   )
 })

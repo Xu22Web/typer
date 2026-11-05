@@ -19,6 +19,7 @@ import {
   parseTransferFramesRequest,
   parseTransferPrepareRequest,
   parseTransferResumeRequest,
+  parseTransferTextRequest,
   type AppInfo,
   type TransferToolScriptPayload
 } from './contracts'
@@ -80,6 +81,11 @@ export interface TransferControls {
     path: string,
     options: Parameters<TransferSession['prepare']>[1],
     config?: { reuse?: boolean }
+  ) => Promise<unknown>
+  /** 把内容区文本写成临时文件后准备传输 */
+  prepareText: (
+    text: string,
+    options: Parameters<TransferSession['prepareText']>[1]
   ) => Promise<unknown>
   cancelPrepare: () => void
   matchResume: (text: string) => unknown
@@ -254,6 +260,13 @@ export function registerIpcHandlers(options: RegisterIpcOptions): string[] {
         reuse: request.reuse
       })
       logger?.info(`已准备文件传输：${String((summary as { name?: string }).name ?? '')}`)
+      return summary
+    })
+
+    register(IPC.transferPrepareText, async (_event, payload) => {
+      const request = parseTransferTextRequest(payload)
+      const summary = await transfer.prepareText(request.text, request.options)
+      logger?.info(`已把内容区文本转为文件：${String((summary as { name?: string }).name ?? '')}`)
       return summary
     })
 

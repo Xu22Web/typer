@@ -1,6 +1,9 @@
 import { copyFileSync, mkdirSync, readdirSync, statSync } from 'node:fs'
+import { unlink, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 
+import { randomJobId } from '@main/util/frame'
 import { TransferError, prepareTransfer, type PreparedTransfer } from './prepare'
 import { describeIndexes, matchResume, parseResumeState, resolveSendIndexes } from './resume'
 import type { TypingRequest } from '../typing/engine/TypingEngine'
@@ -10,6 +13,22 @@ import type {
   TransferPrepareOptions,
   TransferPrepareProgress
 } from '@shared/transfer/transfer'
+
+/** 「内容区文本」副本的存放目录（系统临时目录下，随任务替换与退出清理） */
+const TEXT_TEMP_DIRECTORY = 'typer-paste'
+
+/**
+ * @description 生成文本副本的文件名：接收端按这个名字落盘，时间戳便于区分多次转换
+ * @param date 转换时刻
+ * @returns 形如 `文本-20261105-153012.txt`
+ */
+export function textFileName(date: Date): string {
+  const pad = (value: number): string => String(value).padStart(2, '0')
+  const stamp =
+    `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-` +
+    `${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`
+  return `文本-${stamp}.txt`
+}
 
 export interface TransferSessionDeps {
   onPrepareProgress?: (progress: TransferPrepareProgress) => void
@@ -49,6 +68,8 @@ export class TransferSession {
   private current: PreparedTransfer | null = null
   private preparing = false
   private canceled = false
+  /** 本轮任务的文本副本（只在任务来自内容区时存在）；替换任务或退出时删除 */
+  private textTemp: string | null = null
 
   /**
    * @description 建立传输会话（同一时刻只持有一个任务）
@@ -109,10 +130,50 @@ export class TransferSession {
       const previous = this.current
       this.current = next
       if (previous) await previous.dispose()
+      // 文件任务一旦接管，上一轮文本副本就没有用了（发送按需读的是当前任务的文件）
+      await this.releaseTextTemp(path)
       return next.summary
     } finally {
       this.preparing = false
     }
+  }
+
+  /**
+   * @description 把内容区文本当普通文件发送：写入临时文件后走与「选择文件」完全相同的准备流程。
+   *
+   * 为什么落盘而不是新增一条内存源：`none` 压缩下帧是按片从磁盘读的（内存恒定），
+   * 复用同一条路径才能让大文本也不吃内存，并且续传、逐片校验的行为与文件任务完全一致。
+   * @param text 内容区原文（原样发送，不做标点映射或字符过滤）
+   * @param options 传输选项（符号表、压缩、目标端、片大小）
+   * @returns 新任务的摘要
+   */
+  async prepareText(text: string, options: TransferPrepareOptions): Promise<TransferJobSummary> {
+    if (this.preparing) throw new TransferError('busy', '已有文件正在准备，请稍候')
+    const directory = join(tmpdir(), TEXT_TEMP_DIRECTORY)
+    mkdirSync(directory, { recursive: true })
+    const path = join(directory, `${randomJobId()}.txt`)
+    await writeFile(path, text, 'utf8')
+
+    try {
+      const summary = await this.prepare(path, { ...options, name: textFileName(new Date()) })
+      this.textTemp = path
+      return summary
+    } catch (error) {
+      // 准备失败时不留孤儿文件：旧任务与它的文件都还在，用户可以直接重试
+      await unlink(path).catch(() => undefined)
+      throw error
+    }
+  }
+
+  /**
+   * @description 删除上一轮文本副本（保留当前任务正在使用的那一份）
+   * @param keep 当前任务的文件路径；省略表示全部删除
+   */
+  private async releaseTextTemp(keep?: string): Promise<void> {
+    const temp = this.textTemp
+    if (!temp || temp === keep) return
+    this.textTemp = null
+    await unlink(temp).catch(() => undefined)
   }
 
   /** @description 中止正在进行的准备（读取 / 哈希阶段会尽快退出） */
@@ -192,6 +253,7 @@ export class TransferSession {
     const job = this.current
     this.current = null
     if (job) await job.dispose()
+    await this.releaseTextTemp()
   }
 
   /**

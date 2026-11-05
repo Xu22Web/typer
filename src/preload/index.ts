@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
 import { IPC } from '@main/ipc/channels'
 import { toIpcError } from '@main/ipc/ipcError'
@@ -59,12 +59,17 @@ const api = {
   },
   files: {
     pick: () => invoke(IPC.filesPick),
-    import: (path: string, charset?: string) => invoke(IPC.filesImport, { path, charset })
+    import: (path: string, charset?: string) => invoke(IPC.filesImport, { path, charset }),
+    /** 拖入文件的绝对路径（Electron 32+ 已移除 File.path，必须经 webUtils 取得） */
+    pathOf: (file: File): string => webUtils.getPathForFile(file)
   },
   transfer: {
     pick: () => invoke(IPC.transferPick),
     prepare: (path: string, options: unknown, config?: { reuse?: boolean }) =>
       invoke(IPC.transferPrepare, { path, options, reuse: config?.reuse === true }),
+    /** 把内容区文本写成临时文件后按文件发送 */
+    prepareText: (text: string, options: unknown) =>
+      invoke(IPC.transferPrepareText, { text, options }),
     cancelPrepare: () => invoke(IPC.transferCancelPrepare),
     resumeState: (text: string) => invoke(IPC.transferResumeState, { text }),
     plan: (options: unknown) => invoke(IPC.transferPlan, options),

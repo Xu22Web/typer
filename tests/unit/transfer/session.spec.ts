@@ -1,5 +1,13 @@
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -223,6 +231,46 @@ describe('TransferSession · 续传状态比对', () => {
     )
     expect(matched.missing).toEqual([2])
     expect(matched.warnings).toEqual([])
+  })
+})
+
+describe('TransferSession · 内容区文本转文件', () => {
+  it('按 UTF-8 原样写盘：文件名带时间戳，摘要与磁盘内容都和原文一致', async () => {
+    const text = '中文与 emoji 🙂\r\n第二行\n'
+    const summary = await session.prepareText(text, OPTIONS)
+    const bytes = Buffer.from(text, 'utf8')
+
+    expect(summary.name).toMatch(/^文本-\d{8}-\d{6}\.txt$/)
+    expect(summary.size).toBe(bytes.length)
+    expect(summary.sha256).toBe(createHash('sha256').update(bytes).digest('hex'))
+    expect(readFileSync(summary.path, 'utf8')).toBe(text)
+  })
+
+  it('替换任务时删掉上一轮的副本；换成真实文件任务也会清理', async () => {
+    const first = await session.prepareText('第一次', OPTIONS)
+    expect(existsSync(first.path)).toBe(true)
+
+    const second = await session.prepareText('第二次', OPTIONS)
+    expect(existsSync(first.path)).toBe(false)
+    expect(existsSync(second.path)).toBe(true)
+
+    await session.prepare(sourcePath, OPTIONS)
+    expect(existsSync(second.path)).toBe(false)
+  })
+
+  it('准备失败时不留临时文件，旧任务仍然可用', async () => {
+    const first = await session.prepareText('保留我', OPTIONS)
+    const directory = join(tmpdir(), 'typer-paste')
+    const before = new Set(readdirSync(directory))
+
+    // Base47 只支持终端：这次准备一定失败
+    await expect(
+      session.prepareText('x', { ...OPTIONS, alphabet: 'b47', mode: 'editor' })
+    ).rejects.toThrow(/Base47/)
+
+    expect(session.summary?.path).toBe(first.path)
+    expect(existsSync(first.path)).toBe(true)
+    expect(readdirSync(directory).filter((name) => !before.has(name))).toEqual([])
   })
 })
 

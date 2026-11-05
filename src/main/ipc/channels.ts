@@ -15,6 +15,8 @@ export const IPC = {
   /** 文件传输（把文件逐片"打"到目标窗口） */
   transferPick: 'transfer:pick',
   transferPrepare: 'transfer:prepare',
+  /** 把内容区文本写进临时文件后按文件发送（完整保留无法用键盘输入的字符） */
+  transferPrepareText: 'transfer:prepare-text',
   transferCancelPrepare: 'transfer:cancel-prepare',
   transferPlan: 'transfer:plan',
   transferResumeState: 'transfer:resume-state',

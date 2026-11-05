@@ -113,7 +113,20 @@ export function parseTransferPrepareRequest(payload: unknown): TransferPrepareRe
     throw new IpcValidationError('准备传输失败：缺少文件路径')
   }
 
-  const raw = (record.options ?? {}) as Record<string, unknown>
+  return {
+    path,
+    reuse: record.reuse === true,
+    options: parseTransferOptions(record.options)
+  }
+}
+
+/**
+ * @description 校验传输选项（符号表 / 压缩 / 目标端 + 三个正数）；「选择文件」与「内容区文本」两条入口共用
+ * @param payload 渲染进程传来的选项对象
+ * @returns 归一化后的选项
+ */
+function parseTransferOptions(payload: unknown): TransferPrepareOptions {
+  const raw = (payload ?? {}) as Record<string, unknown>
   const alphabet = raw.alphabet
   if (
     typeof alphabet !== 'string' ||
@@ -134,17 +147,44 @@ export function parseTransferPrepareRequest(payload: unknown): TransferPrepareRe
   }
 
   return {
-    path,
-    reuse: record.reuse === true,
-    options: {
-      alphabet: alphabet as TransferPrepareOptions['alphabet'],
-      compression: compression as TransferPrepareOptions['compression'],
-      quality: readPositive(raw.quality, '压缩质量'),
-      mode: mode as TransferPrepareOptions['mode'],
-      chunkBytes: readPositive(raw.chunkBytes, '片大小'),
-      maxFrameChars: readPositive(raw.maxFrameChars, '帧长上限')
-    }
+    alphabet: alphabet as TransferPrepareOptions['alphabet'],
+    compression: compression as TransferPrepareOptions['compression'],
+    quality: readPositive(raw.quality, '压缩质量'),
+    mode: mode as TransferPrepareOptions['mode'],
+    chunkBytes: readPositive(raw.chunkBytes, '片大小'),
+    maxFrameChars: readPositive(raw.maxFrameChars, '帧长上限')
   }
+}
+
+export interface TransferTextRequest {
+  /** 内容区原文；原样发送，不做标点映射或字符过滤 */
+  text: string
+  options: TransferPrepareOptions
+}
+
+/**
+ * @description 校验「把内容区文本转成文件发送」的请求：文本必须非空且不超过单次输入上限
+ * @param payload 渲染进程传来的原始载荷
+ * @returns 归一化后的文本与传输选项
+ */
+export function parseTransferTextRequest(payload: unknown): TransferTextRequest {
+  if (typeof payload !== 'object' || payload === null) {
+    throw new IpcValidationError('转文件发送失败：请求参数格式错误')
+  }
+  const record = payload as Record<string, unknown>
+  const text = record.text
+  if (typeof text !== 'string') {
+    throw new IpcValidationError('转文件发送失败：缺少文本内容')
+  }
+  if (text.length === 0) {
+    throw new IpcValidationError('转文件发送失败：内容区没有可发送的文本')
+  }
+  if (text.length > MAX_TEXT_LENGTH) {
+    throw new IpcValidationError(
+      `文本过长（${text.length} 字符），单次最多 ${MAX_TEXT_LENGTH} 字符`
+    )
+  }
+  return { text, options: parseTransferOptions(record.options) }
 }
 
 export interface TransferFramesRequest {
