@@ -103,7 +103,7 @@ async function checkNow(): Promise<void> {
   else if (result?.status === 'error') ElMessage.error(result.message ?? '检查更新失败')
 }
 
-/** @description 用系统浏览器打开发布页（手动下载的兜底路径） */
+/** @description 用系统浏览器打开发布页：下载慢或失败时由用户自选方式下载 */
 function openDownloadPage(): void {
   const url = result.value?.latest?.pageUrl
   if (url) void window.api.openExternal(url)
@@ -120,9 +120,9 @@ function openDownloadPage(): void {
       <div class="chip" :class="{ accent: available }">
         <div class="dot" :class="tone" />
         <div>
-          当前 <strong>{{ currentVersion || '—' }}</strong>
+          当前 <span class="em">{{ currentVersion || '—' }}</span>
           <template v-if="latestVersion && available">
-            → 最新 <strong>{{ latestVersion }}</strong>
+            → 最新 <span class="em">{{ latestVersion }}</span>
           </template>
         </div>
       </div>
@@ -177,7 +177,7 @@ function openDownloadPage(): void {
         </button>
         <div v-if="sizeLabel" class="muted">安装包 {{ sizeLabel }}</div>
       </div>
-      <pre v-if="notesVisible" class="notes">{{ result.latest.notes }}</pre>
+      <MarkdownNotes v-if="notesVisible" :source="result.latest.notes" />
     </template>
 
     <div class="actions">
@@ -201,8 +201,8 @@ function openDownloadPage(): void {
         <ElButton type="primary" :disabled="!result?.latest?.asset" @click="download()">
           <span class="i-mdi-download" /><span>下载更新</span>
         </ElButton>
-        <ElButton v-if="!result?.latest?.asset" type="primary" plain @click="openDownloadPage()">
-          <span class="i-mdi-open-in-new" /><span>前往发布页</span>
+        <ElButton type="primary" plain @click="openDownloadPage()">
+          <span class="i-mdi-open-in-new" /><span>用浏览器下载</span>
         </ElButton>
       </template>
 
@@ -214,8 +214,12 @@ function openDownloadPage(): void {
     </div>
 
     <p class="hint muted">
-      下载后会计算安装包的 SHA-256 并与发布校验和比对；校验不通过会删除文件并拒绝安装。
-      安装前会退出本程序，由安装向导完成替换。
+      下载完成后会计算安装包的 <span class="em">SHA-256</span>，并与发布页公布的校验和比对；<span
+        class="risk"
+        >不一致时删除已下载的文件，终止安装</span
+      >。 安装前会退出本程序，由安装向导完成替换。 网络受限或下载较慢时，可点<span class="em"
+        >「用浏览器下载」</span
+      >，在发布页选择其他下载方式。
     </p>
   </section>
 </template>
@@ -286,21 +290,6 @@ function openDownloadPage(): void {
   &:hover {
     color: var(--text-1);
   }
-}
-
-.notes {
-  max-height: 220px;
-  overflow-y: auto;
-  padding: 10px 12px;
-  border: 1px solid var(--stroke);
-  border-radius: var(--radius-md);
-  background: var(--ctrl-fill);
-  font-family: var(--font-sans);
-  font-size: 12.5px;
-  line-height: 1.75;
-  color: var(--text-2);
-  white-space: pre-wrap;
-  word-break: break-word;
 }
 
 .actions {

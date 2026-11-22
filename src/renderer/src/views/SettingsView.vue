@@ -86,22 +86,21 @@ const presetId = computed(() => {
 })
 
 /**
- * 传输节奏的三档说明。
+ * 传输节奏的两档说明。
  *
- * 三档只差两个旋钮："字符之间等不等"（1ms / 0ms）与"片之间等不等"（听不听「片间停顿」）。
- * 快速档与稳健档的字符间隔完全一样，区别只是它强制片间不停——所以片间停顿为 0 时两者
- * 完全等价。这一点必须写破，否则没人能分清"快速"和"稳健"。
+ * 两档只差一个旋钮：片与片之间听不听「片间停顿」。字符间隔都是 1ms —— 实测这是真实终端
+ * 零丢失的下限，再快就会出现静默丢字符，只能靠该片 CRC 发现并整片重传，反而更慢。
  */
 const transferPaceHint = computed(() => {
   const gap = draft.value?.transfer.interFrameDelayMs ?? 0
   const fastLine =
     gap === 0
-      ? '快速：与稳健目前完全一样（片间停顿是 0）；把下面的「片间停顿」调大之后，它才会变成「片与片之间不停」'
-      : `快速：字符之间同样等 1ms，但片与片之间不停（忽略当前的 ${gap}ms 片间停顿）`
+      ? '快速：片与片之间不停；当前「片间停顿」为 0，两者表现相同'
+      : `快速：片与片之间不停（忽略当前的 ${gap}ms 片间停顿）`
   return [
-    '稳健：字符之间等 1ms，并按「片间停顿」在片与片之间留时间',
+    '稳健：字符间隔 1ms，并按「片间停顿」在片与片之间等',
     fastLine,
-    '极速：字符之间也不等（0ms），速度由目标端的输入处理能力决定；真丢了字符由该片 CRC 发现并单独重传'
+    '字符间隔固定 1ms：真实终端零丢失的下限，再快会丢字符并整片重传'
   ].join('\n')
 })
 
@@ -688,7 +687,8 @@ async function restoreDefaults(): Promise<void> {
               <span class="icon i-mdi-keyboard-settings-outline" /><span>键盘布局</span>
             </h2>
             <p class="group-desc">
-              真实按键由<strong>目标窗口的布局</strong>解释；布局里没有收录的字符会在开始前报错。
+              真实按键由<span class="em">目标窗口的布局</span
+              >解释；布局里没有收录的字符会在开始前报错。
             </p>
 
             <div class="row">
@@ -719,8 +719,8 @@ async function restoreDefaults(): Promise<void> {
               <span class="icon i-mdi-file-import-outline" /><span>文本导入</span>
             </h2>
             <p class="group-desc">
-              「导入文本」把磁盘上的文件装进输入框时使用的编码。它只影响读文件时的解码：
-              中文等没有物理键位的字符依然无法输入，会在开始前被列出来。
+              「导入文本」读取文件时使用的编码，只影响解码：中文等没有物理键位的字符依然无法输入，
+              开始前会列出来。
             </p>
 
             <div class="row">
@@ -741,9 +741,10 @@ async function restoreDefaults(): Promise<void> {
               <span class="icon i-mdi-file-arrow-up-down-outline" /><span>文件传输</span>
             </h2>
             <p class="group-desc">
-              把文件切成"每片一行"的帧逐片输入。接收端逐片校验、支持断点续传，合并后再校验整文件哈希；
-              字符档决定"一个字符能带多少比特"，压缩决定"要带多少字节"。远程桌面只转发真实键盘事件，
-              因此默认用零 Shift 的 5 位档；目标端是终端时还可以选 Base47 档（再省约 8% 字符）。
+              把文件切成「每片一行」的帧逐片输入；接收端逐片校验、支持断点续传，合并后再校验
+              <span class="em">整文件哈希</span
+              >。字符档决定每个字符承载多少比特，压缩决定要传多少字节； 默认 5 位档不触发
+              Shift，终端下可选 Base47（再省约 8% 字符）。
             </p>
 
             <div class="row">
@@ -825,8 +826,7 @@ async function restoreDefaults(): Promise<void> {
                 v-model="draft.transfer.paceMode"
                 :options="[
                   { label: '稳健', value: 'safe' },
-                  { label: '快速', value: 'fast' },
-                  { label: '极速', value: 'turbo' }
+                  { label: '快速', value: 'fast' }
                 ]"
               />
             </div>
@@ -866,9 +866,7 @@ async function restoreDefaults(): Promise<void> {
             <div class="row">
               <div class="label">
                 <div>片间停顿</div>
-                <small
-                  >用于留出接收端写盘与回显的时间。仅「稳健」档使用；快速与极速档固定为 0</small
-                >
+                <small>用于留出接收端写盘与回显的时间。仅「稳健」档使用；快速档固定为 0</small>
               </div>
               <ElInputNumber
                 v-model="draft.transfer.interFrameDelayMs"
@@ -1128,7 +1126,7 @@ async function restoreDefaults(): Promise<void> {
   line-height: 1.7;
   color: var(--text-2);
 
-  strong {
+  .em {
     font-weight: 600;
     color: var(--text-1);
   }

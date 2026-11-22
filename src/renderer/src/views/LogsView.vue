@@ -83,7 +83,7 @@ async function copyAll(): Promise<void> {
       <h1>日志</h1>
       <p class="page-desc">
         记录输入任务的开始、进度、中止与错误。日志只包含长度、种子等元信息，
-        <strong>不包含输入内容本身</strong>。
+        <span class="em">不包含输入内容本身</span>。
       </p>
     </header>
 

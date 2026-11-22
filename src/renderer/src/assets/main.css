@@ -199,7 +199,7 @@ a:hover {
   color: var(--text-2);
   white-space: nowrap;
 
-  strong {
+  .em {
     font-weight: 600;
     color: var(--text-1);
   }
@@ -210,7 +210,7 @@ a:hover {
   background: var(--accent-soft);
   color: var(--accent);
 
-  strong {
+  .em {
     color: var(--accent);
   }
 }
@@ -220,7 +220,7 @@ a:hover {
   background: var(--warning-soft);
   color: var(--warning);
 
-  strong {
+  .em {
     color: var(--warning);
   }
 }
@@ -270,6 +270,20 @@ a:hover {
 .muted {
   font-size: 12px;
   color: var(--text-3);
+}
+
+/*
+ * 正文里的关键值 / 限制（数字、上限、按钮名）：只加粗与提亮，不改字号。
+ * 一段里最多用两处：多了整段都是重点，等于没有重点。
+ */
+.em {
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+/* 正文里的不可逆后果（删除、终止、丢失）：只换颜色，不额外加粗 */
+.risk {
+  color: var(--danger);
 }
 
 .mono {

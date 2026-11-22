@@ -59,7 +59,8 @@ const limitations = [
   '部分安全软件会拦截合成按键，此时会返回可读错误而不是静默失败',
   '少数游戏或自绘界面只认扫描码、或忽略 WM_CHAR，无法通过合成按键输入',
   '键盘布局必须与目标窗口一致；布局里没有的字符会被判定为无法输入',
-  '远程桌面只转发真实键盘事件：中文、emoji 等没有物理键位的字符无法输入（不会静默丢字，开始前会报错）'
+  '远程桌面只转发真实键盘事件：中文、emoji 等没有物理键位的字符无法输入（不会静默丢字：全角标点映射成英文标点，其余先提示数量、确认后才开始）',
+  '内容区上限 8 万字符、单个文件上限 4 MB：更长的内容请拆分成多个文件分别发送'
 ]
 
 /** @description 读取应用身份信息（失败时页面上显示占位符） */
@@ -154,7 +155,7 @@ async function open(url: string): Promise<void> {
         <li v-for="item in highlights" :key="item.title">
           <div class="icon" :class="item.icon" />
           <div>
-            <strong>{{ item.title }}</strong>
+            <span class="em">{{ item.title }}</span>
             <p>{{ item.text }}</p>
           </div>
         </li>
@@ -183,7 +184,7 @@ async function open(url: string): Promise<void> {
         </template>
         <div class="license">
           <p>
-            本工具用于自动化填表、演示、批处理与测试等<strong>合法用途</strong>。
+            本工具用于自动化填表、演示、批处理与测试等<span class="em">合法用途</span>。
             请勿用于绕过安全控制、未获授权的自动化操作，或任何违反目标程序服务条款的场景；
             使用前请自行确认合规性。
           </p>
@@ -309,7 +310,7 @@ async function open(url: string): Promise<void> {
     color: var(--accent);
   }
 
-  strong {
+  .em {
     display: block;
     font-size: 13px;
     font-weight: 600;
@@ -350,7 +351,7 @@ async function open(url: string): Promise<void> {
   line-height: 1.8;
   color: var(--text-2);
 
-  strong {
+  .em {
     font-weight: 600;
     color: var(--text-1);
   }
