@@ -1,4 +1,5 @@
 <script setup lang="ts" vapor>
+import { formatDurationShort } from '@shared/format/duration'
 import { TEXT_INPUT_LIMIT } from '@shared/text/import'
 
 /**
@@ -40,15 +41,15 @@ const pageDesc = computed(() =>
       }
 )
 
-/** 开始按钮文案：文件模式显示要发多少片，倒计时非 0 时补上"几秒后" */
+/** 开始按钮文案：文件模式显示要发多少片，倒计时非 0 时补上「几秒后 / 几毫秒后」 */
 const startLabel = computed(() => {
   const delay = settings.value?.startDelayMs ?? 0
-  const suffix = delay > 0 ? `（${Math.round(delay / 1000)} 秒后）` : ''
+  const suffix = delay > 0 ? `（${formatDurationShort(delay)}后）` : ''
   if (mode.value === 'file') {
     const count = transfer.sendingCount.value
     return count > 0 ? `发送 ${count} 片${suffix}` : `开始发送${suffix}`
   }
-  return delay > 0 ? `开始输入（${Math.round(delay / 1000)} 秒后）` : '开始输入'
+  return `开始输入${suffix}`
 })
 
 /** 是否正忙：文件模式看准备进度，文本模式看引擎请求是否在途 */

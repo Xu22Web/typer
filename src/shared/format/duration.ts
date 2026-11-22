@@ -26,3 +26,15 @@ export function formatDuration(ms: number): string {
   if (seconds > 0 || parts.length === 0) parts.push(`${seconds}秒`)
   return parts.join('')
 }
+
+/**
+ * @description 亚秒级时长：不足 1 秒时直接给毫秒数，避免「0 秒」这种没有信息量的结果
+ * @param ms 毫秒数
+ * @returns 人类可读的时长文本（非法输入返回破折号）
+ */
+export function formatDurationShort(ms: number): string {
+  if (!Number.isFinite(ms)) return '—'
+
+  const value = Math.max(0, Math.round(ms))
+  return value < 1000 ? `${value}毫秒` : formatDuration(value)
+}

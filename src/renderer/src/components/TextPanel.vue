@@ -2,7 +2,7 @@
 import { stripUnsupported } from '@main/typing/planner/plan'
 import { mapPunctuation } from '@main/typing/planner/punctuation'
 import { estimateTypingMs } from '@main/typing/scheduling/estimate'
-import { formatDuration } from '@shared/format/duration'
+import { formatDurationShort } from '@shared/format/duration'
 import { TEXT_IMPORT_MAX_BYTES, TEXT_INPUT_LIMIT } from '@shared/text/import'
 import { formatBytes } from '@shared/transfer/transfer'
 import TextEditor from './TextEditor.vue'
@@ -200,7 +200,7 @@ const { dragDepth, onDragEnter, onDragOver, onDragLeave, onDrop } = useFileDrop(
       <span v-if="preview && unlimited">不限速：实际耗时由目标窗口的输入处理速度决定。</span>
       <span v-else-if="preview"
         >按当前设置预计需要
-        <span class="em">{{ formatDuration(preview.estimated) }}</span> 输入完成。</span
+        <span class="em">{{ formatDurationShort(preview.estimated) }}</span> 输入完成。</span
       >
       <span v-else>{{ blocker || '等待输入内容…' }}</span>
     </p>

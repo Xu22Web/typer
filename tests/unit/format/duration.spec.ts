@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { formatDuration } from '@shared/format/duration'
+import { formatDuration, formatDurationShort } from '@shared/format/duration'
 
 describe('formatDuration', () => {
   it('不足一分钟只显示秒', () => {
@@ -36,5 +36,24 @@ describe('formatDuration', () => {
 
   it('负数按 0 处理', () => {
     expect(formatDuration(-5)).toBe('0秒')
+  })
+})
+
+describe('formatDurationShort', () => {
+  it('不足 1 秒给毫秒，不出现「0 秒」', () => {
+    expect(formatDurationShort(0)).toBe('0毫秒')
+    expect(formatDurationShort(150)).toBe('150毫秒')
+    expect(formatDurationShort(999)).toBe('999毫秒')
+  })
+
+  it('达到 1 秒后回到秒级格式', () => {
+    expect(formatDurationShort(1_000)).toBe('1秒')
+    expect(formatDurationShort(1_500)).toBe('2秒')
+    expect(formatDurationShort(95_000)).toBe('1分35秒')
+  })
+
+  it('非法输入返回破折号', () => {
+    expect(formatDurationShort(Number.NaN)).toBe('—')
+    expect(formatDurationShort(Number.POSITIVE_INFINITY)).toBe('—')
   })
 })

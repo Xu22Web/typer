@@ -10,7 +10,7 @@ import {
   type TransferAlphabet,
   type TransferTargetMode
 } from '@shared/transfer/transfer'
-import { formatDuration } from '@shared/format/duration'
+import { formatDurationShort } from '@shared/format/duration'
 import { PACE_CHARS_PER_SECOND, estimateTransferMs } from '@shared/transfer/estimate'
 import { PACE_LABELS, finishClock, suggestSpeedUp } from '@shared/transfer/speedup'
 import { effectiveFrameGapMs, type TransferPace } from '@main/typing/scheduling/profile'
@@ -484,7 +484,7 @@ const previewRows = computed(() => summary.value?.preview ?? [])
             <div class="summary-item">
               <dt>预计耗时</dt>
               <dd :class="`tone-${tone}`">
-                <span class="figure">{{ formatDuration(estimatedMs) }}</span>
+                <span class="figure">{{ formatDurationShort(estimatedMs) }}</span>
               </dd>
               <div class="detail">{{ formatCount(estimate?.charsPerSecond ?? 0) }} 字符/秒</div>
             </div>
@@ -493,7 +493,7 @@ const previewRows = computed(() => summary.value?.preview ?? [])
             <div v-if="speedUp" class="speed-advice">
               <span class="icon i-mdi-lightning-bolt text-icon warn-icon" />
               <span class="speed-text">
-                {{ speedUp.title }}：约少 {{ formatDuration(speedUp.savedMs) }}
+                {{ speedUp.title }}：约少 {{ formatDurationShort(speedUp.savedMs) }}
                 <span class="muted">（-{{ Math.round(speedUp.savedRatio * 100) }}%）</span>
               </span>
               <ElButton size="small" type="primary" link @click="applySpeedUp">一键采用</ElButton>
@@ -625,12 +625,13 @@ const previewRows = computed(() => summary.value?.preview ?? [])
           <div class="i-mdi-alert-outline text-icon" />
           <div class="notice-text">
             <template v-if="tone === 'danger'">
-              预计需要 {{ formatDuration(estimatedMs) }}。提速手段按效果排序：先确认字符档（5 位档零
-              Shift，6 位档字符更少但需要 Shift）、开启压缩、换更大的片（减少帧头）。
+              预计需要 {{ formatDurationShort(estimatedMs) }}。提速手段按效果排序：先确认字符档（5
+              位档零 Shift，6 位档字符更少但需要 Shift）、开启压缩、换更大的片（减少帧头）。
               文件本身几乎不可压缩时，键入方式达不到 1 小时，只能拆分发送或改用其它通道。
             </template>
             <template v-else>
-              预计需要 {{ formatDuration(estimatedMs) }}，请确认目标窗口在倒计时结束前处于就绪状态。
+              预计需要
+              {{ formatDurationShort(estimatedMs) }}，请确认目标窗口在倒计时结束前处于就绪状态。
             </template>
           </div>
         </div>
