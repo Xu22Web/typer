@@ -70,13 +70,25 @@ function wire(): void {
   })
 }
 
-/** @description 重新读取前台窗口，作为待输入的目标 */
-async function refreshForeground(): Promise<void> {
+/**
+ * @description 重新读取目标窗口
+ *
+ * 主进程会排除本程序自己的窗口（点刷新这个动作本身就会把 Typer 激活），
+ * 因此这里拿到的可能是「上一次停在别的程序上的那个窗口」，也可能是空。
+ * @param announce 是否在拿不到窗口时提示用户（只有手动点刷新才提示，启动时静默）
+ */
+async function refreshForeground(announce = false): Promise<void> {
   try {
     const info = await window.api.typing.foreground()
-    targetWindow.value = info && info.title ? info.title : info ? `pid ${info.pid}` : '未检测'
+    if (info && info.pid > 0) {
+      targetWindow.value = info.title.trim().length > 0 ? info.title : `pid ${info.pid}`
+      return
+    }
+    targetWindow.value = '未检测'
+    if (announce) ElMessage.info('没有可用的目标窗口：先点一下目标程序，再回来点刷新')
   } catch {
     targetWindow.value = '未检测'
+    if (announce) ElMessage.info('读取前台窗口失败：先点一下目标程序，再回来点刷新')
   }
 }
 
@@ -355,7 +367,7 @@ export function useTyping(): {
   importFile: () => Promise<void>
   importText: (path: string) => Promise<boolean>
   replaceText: (next: string, options: ReplaceTextOptions) => Promise<boolean>
-  refreshForeground: () => Promise<void>
+  refreshForeground: (announce?: boolean) => Promise<void>
   /** 往运行日志里写一条（供文件传输等其它流程复用同一份日志） */
   log: (level: LogEntry['level'], message: string) => void
   clearLogs: () => void

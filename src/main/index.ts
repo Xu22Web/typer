@@ -34,6 +34,7 @@ import { TEXT_IMPORT_EXTENSIONS, TEXT_IMPORT_MAX_BYTES } from '@shared/text/impo
 import { formatBytes } from '@shared/transfer/transfer'
 import { createFloatingWindow, type FloatingWindowController } from './window/floatingWindow'
 import type { FloatPlacement } from './window/floatDock'
+import { createForegroundTracker, type ForegroundTracker } from './typing/foregroundTracker'
 
 /** 更新来源（GitHub Releases），与 package.json 的 repository 保持一致。 */
 const UPDATE_REPOSITORY = { owner: 'Xu22Web', repo: 'typer' } as const
@@ -46,6 +47,8 @@ let mainWindow: BrowserWindow | null = null
 let updates: UpdateService | null = null
 let transfer: TransferSession | null = null
 let floating: FloatingWindowController | null = null
+/** 目标窗口解析：自己的窗口被查询时回退到最近一次非自身的前台窗口 */
+let foregroundTracker: ForegroundTracker | null = null
 /** 预置的文件选择结果队列（仅自动化测试通过环境变量启用） */
 let presetPicks: ReturnType<typeof createPickQueue> | null = null
 
@@ -146,6 +149,14 @@ function createWindow(): void {
 
   window.on('ready-to-show', () => {
     window.show()
+  })
+
+  window.on('blur', () => {
+    // 窗口失焦说明用户切到了别的程序，此刻的前台窗口才可能是目标窗口。
+    // 延迟一点再读：切换瞬间前台可能还没落到新窗口上。
+    setTimeout(() => {
+      if (mainWindow === window) void foregroundTracker?.capture()
+    }, 120)
   })
 
   /** @description 把窗口最大化状态推给渲染进程，让标题栏按钮切换"最大化/还原"图标 */
@@ -414,6 +425,13 @@ async function bootstrap(): Promise<void> {
   })
   engine = instance
 
+  // 读前台窗口的入口都发生在自己的窗口上（启动、点「重新检测」），
+  // 直接取到的永远是 Typer 自己，因此额外记住最近一次非自身的前台窗口
+  foregroundTracker = createForegroundTracker({
+    read: () => instance.foreground(),
+    selfPid: () => process.pid
+  })
+
   const updateBridge = createUpdateEventBridge(broadcast)
   updates = createUpdateService({
     currentVersion: app.getVersion(),
@@ -439,6 +457,7 @@ async function bootstrap(): Promise<void> {
     ipcMain,
     settings: store,
     engine: instance,
+    resolveForeground: () => foregroundTracker?.resolve() ?? Promise.resolve(null),
     getAppInfo: () => ({
       name: app.getName(),
       version: app.getVersion(),

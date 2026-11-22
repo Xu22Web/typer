@@ -170,7 +170,7 @@ async function convertToFile(): Promise<void> {
               type="button"
               title="重新检测目标窗口"
               aria-label="重新检测目标窗口"
-              @click="typing.refreshForeground()"
+              @click="typing.refreshForeground(true)"
             >
               <span class="i-mdi-refresh" />
             </button>

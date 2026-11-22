@@ -5,6 +5,7 @@ import type { ImportCharset } from '../settings/types'
 import type { TypingEngine } from '../typing/engine/TypingEngine'
 import type { ProgressSnapshot } from '../typing/engine/progress'
 import type { EngineSnapshot } from '../typing/engine/states'
+import type { HostForegroundData } from '../typing/drivers/protocol'
 import type { TransferSession } from '../transfer/session'
 import type { UpdateCheckResult, UpdateProgress, UpdateState } from '../update/types'
 import type { Logger } from '../util/logger'
@@ -57,6 +58,8 @@ export interface RegisterIpcOptions {
   ipcMain: IpcMainLike
   settings: SettingsStore
   engine: TypingEngine
+  /** 目标窗口解析（缺省时直接用 engine.foreground）：主进程用它排除本程序自己的窗口 */
+  resolveForeground?: () => Promise<HostForegroundData | null>
   getAppInfo: () => AppInfo
   pickFile: () => Promise<string | null>
   importFile: (path: string, charset?: ImportCharset) => Promise<ImportResult>
@@ -235,7 +238,7 @@ export function registerIpcHandlers(options: RegisterIpcOptions): string[] {
 
   register(IPC.typingForeground, async () => {
     try {
-      return await engine.foreground()
+      return await (options.resolveForeground ?? (() => engine.foreground()))()
     } catch (error) {
       logger?.warn(`读取前台窗口失败：${toMessage(error)}`)
       return null
