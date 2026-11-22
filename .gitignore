@@ -15,8 +15,5 @@ tools/*.mjs
 # 接收端的默认分片工作目录（`-d` 里没给路径时是 ./.typer-<job>）
 .typer-*
 
-# codegraph 的本地索引（可随时重建，不入库）
-.codegraph
-
 # Serena 的本地项目配置与符号缓存（工具产物，不入库）
 .serena/

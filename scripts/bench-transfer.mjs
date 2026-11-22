@@ -104,11 +104,10 @@ function human(ms) {
   return `${(minutes / 60).toFixed(1)} 小时`
 }
 
-/** 各档位的每秒字符数（turbo 取实测值，真实速度仍受目标端消化能力影响） */
+/** 各档位的每秒字符数（真实速度仍受目标端消化能力影响） */
 const SPEEDS = [
   { label: 'safe 446 cps', cps: 446 },
-  { label: 'fast 446 cps', cps: 446 },
-  { label: 'turbo 700 cps', cps: 700 }
+  { label: 'fast 446 cps', cps: 446 }
 ]
 
 /**
