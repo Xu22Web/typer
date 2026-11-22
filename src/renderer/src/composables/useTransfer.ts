@@ -1,3 +1,5 @@
+import type { ComputedRef, Ref } from 'vue'
+import { ElMessage } from 'element-plus/es'
 import type { TransferToolScriptPayload } from '@main/ipc/contracts'
 import type {
   ResumeMatch,
@@ -8,7 +10,12 @@ import type {
   TransferPrepareProgress,
   TransferTargetMode
 } from '@shared/transfer/transfer'
-import { CHUNK_PRESETS, TRANSFER_LIMITS } from '@shared/transfer/transfer'
+import {
+  CHUNK_PRESETS,
+  TRANSFER_FILE_WARN_BYTES,
+  TRANSFER_LIMITS,
+  formatBytes
+} from '@shared/transfer/transfer'
 import { formatDuration } from '@shared/format/duration'
 
 /**
@@ -88,12 +95,13 @@ const sendingCount = computed(() => plan.value?.indexes.length ?? summary.value?
  * @param kind 任务来源（只影响日志文案与界面标注）
  * @param load 真正调用主进程的函数
  * @param resetResume 是否清掉上一次的续传状态（换了源内容就必须清）
+ * @returns 是否已准备好；失败时摘要为空、原因落在 `error`
  */
 async function runPrepare(
   kind: 'file' | 'text',
   load: () => Promise<TransferJobSummary>,
   resetResume: boolean
-): Promise<void> {
+): Promise<boolean> {
   wire()
   preparing.value = true
   error.value = ''
@@ -112,10 +120,19 @@ async function runPrepare(
         loaded.compression
       }）`
     )
+    // 超过提示阈值仍允许发送，只是把“可能要打很久”说在前面
+    if (loaded.size > TRANSFER_FILE_WARN_BYTES) {
+      ElMessage.warning(
+        `文件 ${formatBytes(loaded.size)} 超过 ${formatBytes(TRANSFER_FILE_WARN_BYTES)}，` +
+          '逐片键入可能耗时很久：建议先压缩或拆分'
+      )
+    }
+    return summary.value !== null
   } catch (err) {
     summary.value = null
     error.value = err instanceof Error ? err.message : String(err)
     useTyping().log('error', error.value)
+    return false
   } finally {
     preparing.value = false
     prepareProgress.value = null
@@ -144,9 +161,10 @@ async function prepare(
  * @description 把内容区文本写成临时文件后准备发送（原样保留所有字符）
  * @param text 内容区原文
  * @param prepareOptions 编码、片大小与帧长上限
+ * @returns 是否已准备好；调用方据此决定要不要切到文件页
  */
-async function prepareText(text: string, prepareOptions: TransferPrepareOptions): Promise<void> {
-  await runPrepare('text', () => window.api.transfer.prepareText(text, prepareOptions), true)
+async function prepareText(text: string, prepareOptions: TransferPrepareOptions): Promise<boolean> {
+  return runPrepare('text', () => window.api.transfer.prepareText(text, prepareOptions), true)
 }
 
 /**
@@ -345,7 +363,7 @@ export function useTransfer(): {
   sendingCount: ComputedRef<number>
   resumeMissing: ComputedRef<number[] | null>
   prepare: (path: string, options: TransferPrepareOptions, reuse?: boolean) => Promise<void>
-  prepareText: (text: string, options: TransferPrepareOptions) => Promise<void>
+  prepareText: (text: string, options: TransferPrepareOptions) => Promise<boolean>
   pickAndPrepare: (options: TransferPrepareOptions) => Promise<void>
   cancelPrepare: () => Promise<void>
   refreshPlan: () => Promise<void>

@@ -1,8 +1,14 @@
+import type { Ref } from 'vue'
+import { ElMessage } from 'element-plus/es'
+import { TEXT_INPUT_LIMIT } from '@shared/text/import'
 import { formatBytes } from '@shared/transfer/transfer'
 
 /**
- * 把接收脚本放进内容区的交互（模块级单例）：取全文 → 视内容区情况确认覆盖 → 整体替换。
- * 取脚本与错误日志交给 useTransfer，这里只负责确认与替换这类界面行为。
+ * 把接收脚本放进内容区的交互（模块级单例）：取全文 → 交给 `useTyping.replaceText`
+ * 执行覆盖确认与写入 → 成功提示。
+ *
+ * 覆盖确认只写在 `replaceText` 一处：拖入文件、导入文件、插入脚本都走同一条规则，
+ * 这里不再自己判断内容区是否为空。
  */
 const loading = ref(false)
 
@@ -19,23 +25,24 @@ async function insert(): Promise<boolean> {
       ElMessage.error('读取接收脚本失败，详情见运行日志')
       return false
     }
-    const typing = useTyping()
-    if (typing.text.value.trim().length > 0) {
-      try {
-        await ElMessageBox.confirm(
-          '内容区已有内容，插入接收脚本会覆盖它。是否继续？',
-          '插入接收脚本',
-          {
-            type: 'warning',
-            confirmButtonText: '覆盖内容区',
-            cancelButtonText: '取消'
-          }
-        )
-      } catch {
-        return false
-      }
+    // 内容区有硬上限：脚本一旦超限就会被静默截断，而越断的脚本根本跑不起来
+    if (script.text.length > TEXT_INPUT_LIMIT) {
+      const message =
+        `接收脚本 ${script.text.length.toLocaleString()} 字符，超过内容区上限 ` +
+        `${TEXT_INPUT_LIMIT.toLocaleString()}：请改用「以文件方式发送脚本」`
+      useTyping().log('warn', message)
+      ElMessage.warning(message)
+      return false
     }
-    typing.text.value = script.text
+    const typing = useTyping()
+    // 写入内容区的确认逻辑只有一处：这里只需给出“插入脚本”的文案
+    const replaced = await typing.replaceText(script.text, {
+      title: '插入接收脚本',
+      confirmText: '覆盖内容区',
+      describe: (current) => `内容区已有 ${current.toLocaleString()} 字符，插入接收脚本会覆盖它。`
+    })
+    if (!replaced) return false
+
     // 脚本里含中文注释，按字符数报尺寸会偏小，这里按 UTF-8 字节数报
     const bytes = new TextEncoder().encode(script.text).length
     ElMessage.success(`已插入接收脚本（${formatBytes(bytes)}），可直接开始输入`)

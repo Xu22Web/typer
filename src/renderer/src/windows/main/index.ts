@@ -1,5 +1,8 @@
 import '../styles'
 import 'element-plus/theme-chalk/dark/css-vars.css'
+// 命令式 API 在 .ts 里是显式导入的，自动导入不会再顺带注入组件样式，这里统一补上
+import 'element-plus/es/components/message/style/css'
+import 'element-plus/es/components/message-box/style/css'
 
 import { createApp, vaporInteropPlugin } from 'vue'
 import { createPinia } from 'pinia'

@@ -1,4 +1,6 @@
 <script setup lang="ts" vapor>
+import { TEXT_INPUT_LIMIT } from '@shared/text/import'
+
 /**
  * 输入页：只承载"准备内容 → 开始输入"这一条主线，日志在「日志」页、节奏与隐私在「设置」页。
  */
@@ -25,11 +27,17 @@ const detected = computed(() => typing.targetWindow.value !== '未检测')
 /** 最新一条日志，用于在输入页提示"刚刚发生了什么" */
 const latestLog = computed(() => typing.logs.value.at(-1) ?? null)
 
-/** 页头说明：两种模式各一句话（窄窗口会被省略号截断，鼠标悬停看全文） */
+/** 页头说明：主句说做什么，重点（限制/备选通道）单独成段，便于一眼看到 */
 const pageDesc = computed(() =>
   mode.value === 'text'
-    ? '将待输入内容粘贴到内容区，点开始后在倒计时内切换到目标窗口。可打印 ASCII 与需要 Shift 的符号均可输入；无法用键盘敲出的字符可用「转文件发送」完整送达。'
-    : '选择一个文件（或直接拖入），按“每片一行”的帧逐片输入；接收端逐片校验、支持断点续传，合并后再校验整文件哈希。'
+    ? {
+        text: '粘贴内容后点开始，倒计时内切到目标窗口',
+        tip: '键盘打不出来的字符用「转文件发送」完整送达'
+      }
+    : {
+        text: '选择或拖入文件，按“每片一行”逐片输入',
+        tip: '接收端逐片校验，合并后再校验整文件哈希'
+      }
 )
 
 /** 开始按钮文案：文件模式显示要发多少片，倒计时非 0 时补上"几秒后" */
@@ -77,8 +85,17 @@ async function convertToFile(): Promise<void> {
   if (typing.isRunning.value || typing.busy.value || transfer.preparing.value) return
   const text = typing.text.value
   if (text.length === 0) return
+  // 主进程同样会拦这个上限；内容区已被编辑器和 replaceText 兜住，这里只是防御
+  if (text.length > TEXT_INPUT_LIMIT) {
+    ElMessage.warning(`内容超过 ${TEXT_INPUT_LIMIT.toLocaleString()} 字符上限`)
+    return
+  }
+  // 准备成功才切页：失败时留在文本页，内容与光标位置都还在
+  if (!(await transfer.prepareText(text, transfer.options.value))) {
+    ElMessage.error(transfer.error.value || '转文件失败：详见「日志」页')
+    return
+  }
   mode.value = 'file'
-  await transfer.prepareText(text, transfer.options.value)
 }
 </script>
 
@@ -116,7 +133,9 @@ async function convertToFile(): Promise<void> {
         <!-- 窄窗口：目标窗口降级成胶囊（宽窗口在右侧卡片里显示完整信息） -->
         <TargetChip class="compact-only" />
       </div>
-      <p class="page-desc" :title="pageDesc">{{ pageDesc }}</p>
+      <p class="page-desc" :title="`${pageDesc.text}；${pageDesc.tip}`">
+        {{ pageDesc.text }}；<span class="em">{{ pageDesc.tip }}</span>
+      </p>
     </header>
 
     <ElAlert
@@ -195,7 +214,8 @@ async function convertToFile(): Promise<void> {
       <div class="secondary">
         <ElButton
           v-if="mode === 'text'"
-          :disabled="typing.isRunning.value"
+          :disabled="typing.isRunning.value || typing.importing.value"
+          :loading="typing.importing.value"
           @click="typing.importFile()"
         >
           <span class="i-mdi-file-import-outline" /><span>导入文本</span>

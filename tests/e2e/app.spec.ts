@@ -35,6 +35,35 @@ import { parseRecordedEvents, replayAsText } from './helpers/replay'
 const TEXT_SAMPLE = 'Hello, Typer! 0123456789 abc XYZ ~#@'
 
 /**
+ * @description 生成「把文本写进内容区」的页面脚本。
+ *
+ * 内容区是 CodeMirror（contenteditable），不是 textarea：旧版对
+ * `HTMLTextAreaElement.prototype.value` 的 setter 在这里会直接抛 Illegal invocation。
+ * 官方文档明确不要直接改 contenteditable 的 DOM，要让编辑器自己处理输入，
+ * 所以这里走「全选 + 派发 paste 事件」，与用户 Ctrl+V 完全同一条路径。
+ * @param text 要写入的文本；空串表示清空
+ * @returns 可交给 cdp.evaluate 的脚本
+ */
+function setEditorTextScript(text: string): string {
+  const apply =
+    text.length === 0
+      ? "document.execCommand('delete')"
+      : `{
+          const dt = new DataTransfer()
+          dt.setData('text/plain', ${JSON.stringify(text)})
+          host.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }))
+        }`
+  return `(() => {
+    const host = document.querySelector('#tour-text-input .cm-content')
+    if (!host) throw new Error('找不到内容区编辑器')
+    host.focus()
+    document.execCommand('selectAll')
+    ${apply}
+    return host.textContent.length
+  })()`
+}
+
+/**
  * @description 从接收端的 `#DONE <size> <sha256> <path>` 行里取出它**实测**的字节数与摘要
  * @param stdout 接收端标准输出
  * @returns 实测的字节数与 SHA-256；没有 #DONE 行时返回 null
@@ -86,14 +115,9 @@ describe.skipIf(process.platform !== 'win32')('端到端（真实应用 + dry-ru
 
       await app.cdp.evaluate(`(() => {
         window.__e2eProgress.length = 0
-        const field = document.querySelector('#tour-text-input')
-        if (!field) throw new Error('找不到文本输入框')
-        // Vue 的 v-model 监听 input 事件：直接改 value 不触发，必须走原型上的 setter 再派发事件
-        const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set
-        setter.call(field, ${JSON.stringify(TEXT_SAMPLE)})
-        field.dispatchEvent(new Event('input', { bubbles: true }))
-        return field.value.length
+        return true
       })()`)
+      await app.cdp.evaluate(setEditorTextScript(TEXT_SAMPLE))
 
       // 内容非空后「开始」才可点（canStart 依赖统计结果）
       await waitFor(
@@ -437,13 +461,7 @@ describe.skipIf(process.platform !== 'win32')('端到端（真实应用 + dry-ru
         { timeoutMs: 30_000, intervalMs: 200, label: '切到文本模式' }
       )
 
-      await app.cdp.evaluate(`(() => {
-        const field = document.querySelector('#tour-text-input')
-        const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set
-        setter.call(field, ${JSON.stringify(text)})
-        field.dispatchEvent(new Event('input', { bubbles: true }))
-        return field.value.length
-      })()`)
+      await app.cdp.evaluate(setEditorTextScript(text))
 
       // 走界面上的「转文件发送」：文本会被写成临时 .txt，再按文件模式准备分片
       await waitFor(
@@ -558,13 +576,7 @@ describe.skipIf(process.platform !== 'win32')('端到端（真实应用 + dry-ru
         () => app.cdp.evaluate<boolean>("Boolean(document.querySelector('#tour-text-input'))"),
         { timeoutMs: 30_000, intervalMs: 200, label: '回到文本模式' }
       )
-      await app.cdp.evaluate(`(() => {
-        const field = document.querySelector('#tour-text-input')
-        const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set
-        setter.call(field, '')
-        field.dispatchEvent(new Event('input', { bubbles: true }))
-        return field.value.length
-      })()`)
+      await app.cdp.evaluate(setEditorTextScript(''))
 
       // 走产品给出的入口：文件面板上的「插入接收脚本到文本输入」
       await app.cdp.evaluate(`(() => {
@@ -598,9 +610,12 @@ describe.skipIf(process.platform !== 'win32')('端到端（真实应用 + dry-ru
       // 内容区长度等于脚本长度：界面这一环拿到的确实是完整脚本（被截断的话这里就红了）
       await waitFor(
         async () => {
+          // 读计数 chip（内容区是虚拟化渲染，直接读 DOM 文本拿不到全量）
           const length = await app.cdp.evaluate<number>(`(() => {
-              const field = document.querySelector('#tour-text-input')
-              return field ? field.value.length : -1
+              const counter = document.querySelector('.chip.mono div')
+              if (!counter) return -1
+              const digits = (counter.textContent ?? '').split('/')[0].replace(/[^\\d]/g, '')
+              return Number(digits) || -1
             })()`)
           return length === toolScript.text.length ? length : null
         },

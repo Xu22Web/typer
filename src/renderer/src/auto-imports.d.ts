@@ -75,6 +75,7 @@ declare global {
   const useAttrs: typeof import('vue').useAttrs
   const useCssModule: typeof import('vue').useCssModule
   const useCssVars: typeof import('vue').useCssVars
+  const useFileDrop: typeof import('./composables/useFileDrop').useFileDrop
   const useId: typeof import('vue').useId
   const useLink: typeof import('vue-router').useLink
   const useModel: typeof import('vue').useModel
@@ -102,12 +103,15 @@ declare global {
   export type { Component, Slot, Slots, ComponentPublicInstance, ComputedRef, DirectiveBinding, ExtractDefaultPropTypes, ExtractPropTypes, ExtractPublicPropTypes, InjectionKey, PropType, Ref, ShallowRef, MaybeRef, MaybeRefOrGetter, VNode, WritableComputedRef } from 'vue'
   import('vue')
   // @ts-ignore
+  export type { FileDropMessages, FileDropOptions, FileDrop } from './composables/useFileDrop'
+  import('./composables/useFileDrop')
+  // @ts-ignore
   export type { SettingsActionResult } from './composables/useSettings'
   import('./composables/useSettings')
   // @ts-ignore
   export type { TransferPlan } from './composables/useTransfer'
   import('./composables/useTransfer')
   // @ts-ignore
-  export type { LogEntry } from './composables/useTyping'
+  export type { LogEntry, ReplaceTextOptions } from './composables/useTyping'
   import('./composables/useTyping')
 }

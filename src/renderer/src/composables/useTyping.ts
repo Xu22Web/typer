@@ -1,9 +1,12 @@
+import type { ComputedRef, Ref } from 'vue'
+import { ElMessage, ElMessageBox } from 'element-plus/es'
 import type { ProgressSnapshot } from '@main/typing/engine/progress'
 import type { EngineSnapshot, EngineState } from '@main/typing/engine/states'
 import { DEFAULT_LAYOUT_ID } from '@main/typing/planner/keymap'
 import { stripUnsupported } from '@main/typing/planner/plan'
 import { mapPunctuation } from '@main/typing/planner/punctuation'
 import { formatDuration } from '@shared/format/duration'
+import { TEXT_INPUT_LIMIT } from '@shared/text/import'
 
 /**
  * 引擎状态（模块级单例）：主进程推来的状态/进度/日志，加上开始·暂停·继续·停止等动作。
@@ -25,6 +28,8 @@ const progress = ref<ProgressSnapshot | null>(null)
 const logs = ref<LogEntry[]>([])
 /** 是否正在等待开始/停止请求返回，用于禁用重复操作 */
 const busy = ref(false)
+/** 是否正在读取导入的文件（阻止重复拖入 / 重复点导入） */
+const importing = ref(false)
 /** 目标窗口标题；取不到时退化为进程号或"未检测" */
 const targetWindow = ref<string>('未检测')
 /** 当前平台是否不受支持（本程序只支持 Windows） */
@@ -221,20 +226,107 @@ async function stop(): Promise<void> {
   }
 }
 
-/** @description 弹系统文件选择框并把选中的文本文件读进内容区 */
-async function importFile(): Promise<void> {
+/** 写入内容区时的确认配置（提示文案随来源不同，规则只有一条） */
+export interface ReplaceTextOptions {
+  /** 确认框标题 */
+  title: string
+  /** 确认按钮文案 */
+  confirmText: string
+  /** 内容区非空时的说明，参数是当前字符数 */
+  describe: (currentChars: number) => string
+}
+
+/**
+ * @description 把外来文本写进内容区（拖入、导入文件、插入接收脚本的唯一入口）。
+ *
+ * 替换是整段覆盖，误操作一次就把原文弄丢了，所以内容区非空时必须先确认；
+ * 文案由调用方给，"要不要确认"这条规则只写在这里。
+ * @param next 待写入的文本
+ * @param options 确认框标题、确认按钮与说明文案
+ * @returns 是否写入（用户取消时为 false）
+ */
+async function replaceText(next: string, options: ReplaceTextOptions): Promise<boolean> {
+  if (text.value.length > 0) {
+    try {
+      await ElMessageBox.confirm(options.describe(text.value.length), options.title, {
+        type: 'warning',
+        confirmButtonText: options.confirmText,
+        cancelButtonText: '取消'
+      })
+    } catch {
+      return false
+    }
+  }
+  // 编辑器的 maxlength 只挡用户输入，拖入 / 导入 / 插入脚本都是程序赋值，必须在这里截
+  text.value = next.length > TEXT_INPUT_LIMIT ? next.slice(0, TEXT_INPUT_LIMIT) : next
+  return true
+}
+
+/**
+ * @description 读取指定路径的文本文件并填进内容区（拖入与「导入文本」按钮共用）
+ * @param path 文件路径
+ * @returns 是否真的替换了内容区（读取失败或用户取消时为 false）
+ */
+async function importText(path: string): Promise<boolean> {
+  if (importing.value) return false
+  importing.value = true
   try {
-    const path = await window.api.files.pick()
-    if (!path) return
-    const result = await window.api.files.import(path)
-    text.value = result.text
+    // 编码跟随设置：auto 交给主进程探测，指定编码则强制按该编码解
+    const charset = useSettings().settings.value?.files.importCharset ?? 'auto'
+    let loaded: Awaited<ReturnType<typeof window.api.files.import>>
+    try {
+      loaded = await window.api.files.import(path, charset)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      pushLog('error', message)
+      ElMessage.error(message)
+      return false
+    }
+
+    if (loaded.text.length === 0) {
+      pushLog('warn', `导入忽略：「${loaded.fileName}」是空文件`)
+      ElMessage.warning(`「${loaded.fileName}」是空文件，已忽略`)
+      return false
+    }
+
+    // 硬上限必须在写入前处理：文件本身已受 200 KB 体积限制，超出字符上限就截断并告知截了多少
+    const clipped = loaded.text.length > TEXT_INPUT_LIMIT
+    const content = clipped ? loaded.text.slice(0, TEXT_INPUT_LIMIT) : loaded.text
+
+    const replaced = await replaceText(content, {
+      title: '替换内容区？',
+      confirmText: '替换',
+      describe: (current) =>
+        `内容区已有 ${current.toLocaleString()} 字符，导入「${loaded.fileName}」` +
+        `（${loaded.text.length.toLocaleString()} 字符）会覆盖当前内容。`
+    })
+    if (!replaced) return false
+
+    if (clipped) {
+      const message =
+        `「${loaded.fileName}」共 ${loaded.text.length.toLocaleString()} 字符，` +
+        `已截断到 ${TEXT_INPUT_LIMIT.toLocaleString()} 字符（文本模式上限）：` +
+        '完整内容请用「文件」模式发送'
+      pushLog('warn', message)
+      ElMessage.warning(message)
+    } else {
+      ElMessage.success(`已导入 ${loaded.fileName}`)
+    }
     pushLog(
       'info',
-      `已导入 ${result.fileName}（${result.charset}，${result.bytes} 字节，${result.text.length} 字符）`
+      `已导入 ${loaded.fileName}（${loaded.charset}，${loaded.bytes} 字节，${content.length} 字符）`
     )
-  } catch (err) {
-    pushLog('error', err instanceof Error ? err.message : String(err))
+    return true
+  } finally {
+    importing.value = false
   }
+}
+
+/** @description 弹系统文件选择框并把选中的文本文件读进内容区 */
+async function importFile(): Promise<void> {
+  const path = await window.api.files.pick()
+  if (!path) return
+  await importText(path)
 }
 
 /**
@@ -247,6 +339,7 @@ export function useTyping(): {
   progress: Ref<ProgressSnapshot | null>
   logs: Ref<LogEntry[]>
   busy: Ref<boolean>
+  importing: Ref<boolean>
   targetWindow: Ref<string>
   unsupported: Ref<boolean>
   lastSummary: Ref<string>
@@ -260,6 +353,8 @@ export function useTyping(): {
   resume: () => Promise<void>
   stop: () => Promise<void>
   importFile: () => Promise<void>
+  importText: (path: string) => Promise<boolean>
+  replaceText: (next: string, options: ReplaceTextOptions) => Promise<boolean>
   refreshForeground: () => Promise<void>
   /** 往运行日志里写一条（供文件传输等其它流程复用同一份日志） */
   log: (level: LogEntry['level'], message: string) => void
@@ -271,6 +366,7 @@ export function useTyping(): {
     progress,
     logs,
     busy,
+    importing,
     targetWindow,
     unsupported,
     lastSummary,
@@ -284,6 +380,8 @@ export function useTyping(): {
     resume,
     stop,
     importFile,
+    importText,
+    replaceText,
     refreshForeground,
     log: pushLog,
     clearLogs: () => {

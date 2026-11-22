@@ -3,6 +3,7 @@ import {
   CHUNK_PRESETS,
   FRAME_HEAD_REDUNDANCY,
   TRANSFER_ALPHABET_OPTIONS,
+  TRANSFER_FILE_MAX_BYTES,
   TRANSFER_MODE_OPTIONS,
   durationTone,
   formatBytes,
@@ -201,56 +202,27 @@ async function pick(): Promise<void> {
   await transfer.pickAndPrepare(options.value)
 }
 
-/** 拖拽进入的层数：dragenter / dragleave 会在子元素之间反复触发，用计数避免覆盖层闪烁 */
-const dragDepth = ref(0)
-
-/** 是否接受拖入：运行中或正在准备时不让新文件打断当前任务 */
-const canAcceptDrop = computed(() => !typing.isRunning.value && !preparing.value)
-
 /**
- * @description 有文件拖进面板：只在确实带文件时计数（拖选文字也会触发 dragenter）
- * @param event 拖拽事件
+ * 拖入发送：拖拽规则与文本页共用，但两边的链路不同——
+ * 发送文件不覆盖内容区，多选时取第一个即可（导入文本则是拒绝）。
  */
-function onDragEnter(event: DragEvent): void {
-  if (!canAcceptDrop.value) return
-  if (!event.dataTransfer?.types.includes('Files')) return
-  event.preventDefault()
-  dragDepth.value += 1
-}
-
-/**
- * @description 停在面板上：必须阻止默认行为，否则浏览器不会派发 drop
- * @param event 拖拽事件
- */
-function onDragOver(event: DragEvent): void {
-  if (!canAcceptDrop.value) return
-  event.preventDefault()
-  if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy'
-}
-
-/** @description 离开面板：层数归零时才隐藏覆盖层 */
-function onDragLeave(): void {
-  dragDepth.value = Math.max(0, dragDepth.value - 1)
-}
-
-/**
- * @description 松手：取第一个文件的绝对路径并准备分片（不做扩展名过滤，任意文件都能传）
- * @param event 拖拽事件
- */
-async function onDrop(event: DragEvent): Promise<void> {
-  dragDepth.value = 0
-  if (!canAcceptDrop.value) return
-  event.preventDefault()
-  const files = event.dataTransfer?.files
-  if (!files || files.length === 0) return
-  if (files.length > 1) ElMessage.info('一次只能发送一个文件，已使用第一个')
-  const path = window.api.files.pathOf(files[0] as File)
-  if (path.length === 0) {
-    ElMessage.warning('无法读取拖入文件的位置，请改用「选择文件」')
-    return
-  }
-  await transfer.prepare(path, options.value)
-}
+const { dragDepth, onDragEnter, onDragOver, onDragLeave, onDrop } = useFileDrop({
+  canAccept: () => !typing.isRunning.value && !preparing.value,
+  messages: {
+    reject: '正在输入或准备文件，请先停止当前任务再拖入',
+    multiple: '一次只能发送一个文件，已使用第一个',
+    noPath: '无法读取拖入文件的位置，请改用「选择文件」'
+  },
+  multiple: 'first',
+  // 超过硬上限的直接拒绝：拖入阶段就能拿到 File.size，不必等读盘
+  checkFile: (file) =>
+    file.size > TRANSFER_FILE_MAX_BYTES
+      ? `「${file.name}」有 ${formatBytes(file.size)}，超过文件模式上限 ${formatBytes(
+          TRANSFER_FILE_MAX_BYTES
+        )}：请拆分成多个文件后再发送`
+      : null,
+  onFile: (path) => transfer.prepare(path, options.value)
+})
 
 /**
  * @description 切换符号表并立即按新档重新准备（沿用同一文件）
@@ -458,7 +430,8 @@ const previewRows = computed(() => summary.value?.preview ?? [])
         <div class="empty-icon i-mdi-tray-arrow-down" />
         <p class="empty-title">把文件拖到这里，或选择一个文件</p>
         <p class="empty-desc">
-          文件会被切成每片一行的纯文本帧，逐片校验、支持断点续传，接收端合并后再校验整文件哈希。
+          文件会被切成每片一行的纯文本帧，逐片校验、支持断点续传，合并后再校验整文件哈希。单文件上限
+          <span class="em">4 MB</span>，超过 <span class="em">1 MB</span> 会提示耗时。
         </p>
         <ElButton type="primary" :loading="preparing" @click="pick">
           <span class="i-mdi-file-search-outline" /><span>选择文件</span>
@@ -638,7 +611,7 @@ const previewRows = computed(() => summary.value?.preview ?? [])
             <div class="plan-line">
               <div class="i-mdi-information-outline text-icon" />
               <div class="plan-text">
-                本次将发送 <strong>{{ transfer.plan.value?.ranges ?? '全部' }}</strong> 共
+                本次将发送 <span class="em">{{ transfer.plan.value?.ranges ?? '全部' }}</span> 共
                 {{ transfer.sendingCount.value }} 片<template v-if="transfer.plan.value?.sendBegin"
                   >，先发开始帧</template
                 ><template v-if="transfer.plan.value?.sendEnd">，发完通知接收端合并校验</template
@@ -653,8 +626,7 @@ const previewRows = computed(() => summary.value?.preview ?? [])
           <div class="notice-text">
             <template v-if="tone === 'danger'">
               预计需要 {{ formatDuration(estimatedMs) }}。提速手段按效果排序：先确认字符档（5 位档零
-              Shift，6 位档字符更少但需要
-              Shift）、开启压缩、换更大的片（减少帧头）、把节奏换成「极速」。
+              Shift，6 位档字符更少但需要 Shift）、开启压缩、换更大的片（减少帧头）。
               文件本身几乎不可压缩时，键入方式达不到 1 小时，只能拆分发送或改用其它通道。
             </template>
             <template v-else>
