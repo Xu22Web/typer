@@ -265,6 +265,9 @@ const IDLE_GUARD_INTERVAL_MS = 2_000
 /** 合并完成后等待按键的上限（毫秒）：人不回来就自动退出，不占着终端 */
 const CONTINUE_WAIT_MS = 60_000
 
+/** 所有帧标记共有的前缀：用来区分“发送端还在发的帧”与“用户按键” */
+const FRAME_TAIL_PREFIX = '@T2'
+
 /** 控制台能力（由 prepareConsole 在 run() 里填；未初始化时按“纯文本输出”处理） */
 let setup: ConsoleSetup = {
   caps: { tty: false, vt: false, columns: 80, color: false },
@@ -1599,13 +1602,36 @@ async function run(): Promise<number> {
     process.stdin.resume()
     const answer = await new Promise<string>((resolveKey) => {
       let timer: ReturnType<typeof setTimeout> | null = null
+      let text = ''
       const finish = (value: string): void => {
         if (timer !== null) clearTimeout(timer)
         process.stdin.off('data', onData)
         resolveKey(value)
       }
+      /**
+       * 合并完成时发送端往往还在发结束帧的重复副本，这些字符不是按键：
+       * 以 `@T2` 开头的整行一律丢弃，行尾之后的第一个真实按键才算回答。
+       *
+       * 不重置超时：尾部帧不该把“等待按键”的时间拉长。
+       */
       const onData = (chunk: string | Buffer): void => {
-        finish(typeof chunk === 'string' ? chunk : chunk.toString('utf8'))
+        text += typeof chunk === 'string' ? chunk : chunk.toString('utf8')
+        for (;;) {
+          const newline = text.search(/[\r\n]/)
+          if (newline === -1) {
+            // 没有行尾：像帧说明这一行还没发完，继续等；否则就是一个按键
+            if (text.length === 0 || text.startsWith(FRAME_TAIL_PREFIX)) return
+            finish(text)
+            return
+          }
+          const line = text.slice(0, newline)
+          text = text.slice(newline + 1)
+          if (line.startsWith(FRAME_TAIL_PREFIX)) continue
+          if (line.trim().length > 0) {
+            finish(line)
+            return
+          }
+        }
       }
       timer = setTimeout(() => finish(''), CONTINUE_WAIT_MS)
       timer.unref?.()
