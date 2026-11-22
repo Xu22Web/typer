@@ -1,5 +1,6 @@
 import { dirname } from 'node:path'
 import * as nodeFs from 'node:fs'
+import { collectDeprecatedSettingHints } from './deprecatedSettings'
 import { DEFAULT_SETTINGS, mergeSettings, normalizeSettings, type Settings } from './schema'
 
 /** 只用到的最小文件系统接口，便于测试注入内存实现。 */
@@ -128,6 +129,10 @@ export class SettingsStore {
 
     try {
       const parsed = JSON.parse(raw) as unknown
+      // 已移除的设置项提醒一次即可：具体规则见 `deprecatedSettings`（过渡机制，按版本删除）
+      for (const hint of collectDeprecatedSettingHints(parsed)) {
+        this.logger('warn', hint)
+      }
       this.current = normalizeSettings(parsed)
     } catch (error) {
       this.logger(

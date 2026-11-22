@@ -98,7 +98,7 @@ export interface Settings {
     quality: number
     /** 目标端：终端 / 编辑器 / 单行输入框（决定换行方式） */
     mode: TransferTargetMode
-    /** 节奏档：safe 逐字 1ms；fast 逐字无停顿；turbo 攒批 + 零延迟 + 压力阀自适应 */
+    /** 节奏档：safe 逐字 1ms + 片间按设置停顿；fast 逐字 1ms + 片间不停 */
     paceMode: TransferPace
     /** 每片线上字节数 */
     chunkBytes: number

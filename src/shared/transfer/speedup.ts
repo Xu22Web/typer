@@ -40,7 +40,7 @@ export interface SpeedUpOptions {
 
 /** 一条提速建议 */
 export interface SpeedUpSuggestion {
-  /** 一句话标题，例如 `节奏换成「极速」` */
+  /** 一句话标题，例如 `节奏换成「快速」` */
   title: string
   /** 建议改哪几项 */
   kinds: Array<'chunk' | 'pace'>
@@ -57,13 +57,12 @@ export interface SpeedUpSuggestion {
 }
 
 /** 档位顺序：从最稳到最快，标题里按这个顺序拼 */
-const PACES: readonly TransferPace[] = ['safe', 'fast', 'turbo']
+const PACES: readonly TransferPace[] = ['safe', 'fast']
 
 /** 档位的中文名（与设置页一致） */
 export const PACE_LABELS: Readonly<Record<TransferPace, string>> = {
   safe: '稳健',
-  fast: '快速',
-  turbo: '极速'
+  fast: '快速'
 }
 
 /**

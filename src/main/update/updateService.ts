@@ -35,6 +35,8 @@ export interface UpdateServiceOptions {
   quitApp?: () => void
   onState?: (state: UpdateStatePayload) => void
   onProgress?: (progress: UpdateProgress) => void
+  /** 关键节点的文字日志（检查 / 下载 / 校验），供主进程日志留痕 */
+  onLog?: (level: 'info' | 'warn' | 'error', message: string) => void
   /** 检查超时（毫秒） */
   timeoutMs?: number
 }
@@ -180,6 +182,7 @@ export function createUpdateService(options: UpdateServiceOptions): UpdateServic
     const destination = join(options.downloadDir, asset.name)
 
     controller = new AbortController()
+    options.onLog?.('info', `开始下载安装包：${asset.name}（${asset.size} 字节）`)
     publish({
       status: 'downloading',
       progress: { received: 0, total: asset.size, percent: 0, bytesPerSecond: 0 },
@@ -254,6 +257,7 @@ export function createUpdateService(options: UpdateServiceOptions): UpdateServic
         verifiedBy: expected.source,
         error: null
       })
+      options.onLog?.('info', `安装包校验通过（来源：${expected.source}）：${actual.slice(0, 12)}…`)
       return state
     } catch (error) {
       const message =

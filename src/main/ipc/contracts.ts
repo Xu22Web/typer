@@ -1,4 +1,5 @@
 import type { ImportCharset } from '../settings/types'
+import { TEXT_INPUT_LIMIT } from '@shared/text/import'
 import {
   TRANSFER_ALPHABETS,
   TRANSFER_COMPRESSIONS,
@@ -18,8 +19,8 @@ export class IpcValidationError extends Error {
   }
 }
 
-/** 单次输入文本的长度上限（约 200 万字符），防止超大文本把内存打满。 */
-export const MAX_TEXT_LENGTH = 2_000_000
+/** 单次输入文本的长度上限（与内容区的字数上限同口径），防止超大文本把内存打满。 */
+export const MAX_TEXT_LENGTH = TEXT_INPUT_LIMIT
 
 export interface StartRequest {
   text: string
@@ -40,7 +41,7 @@ export function parseStartRequest(payload: unknown): StartRequest {
   }
   if (text.length > MAX_TEXT_LENGTH) {
     throw new IpcValidationError(
-      `文本过长（${text.length} 字符），单次最多 ${MAX_TEXT_LENGTH} 字符`
+      `文本过长（${text.length.toLocaleString()} 字符），上限 ${MAX_TEXT_LENGTH.toLocaleString()} 字符`
     )
   }
   return { text }
@@ -181,7 +182,7 @@ export function parseTransferTextRequest(payload: unknown): TransferTextRequest 
   }
   if (text.length > MAX_TEXT_LENGTH) {
     throw new IpcValidationError(
-      `文本过长（${text.length} 字符），单次最多 ${MAX_TEXT_LENGTH} 字符`
+      `文本过长（${text.length.toLocaleString()} 字符），上限 ${MAX_TEXT_LENGTH.toLocaleString()} 字符`
     )
   }
   return { text, options: parseTransferOptions(record.options) }

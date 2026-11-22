@@ -66,7 +66,8 @@ describe('normalizeSettings', () => {
     expect(normalizeSettings({ injection: { profile: 'warp' } }).injection.profile).toBe('normal')
     expect(normalizeSettings({ transfer: { paceMode: 'warp' } }).transfer.paceMode).toBe('safe')
     expect(normalizeSettings({ transfer: { paceMode: 'fast' } }).transfer.paceMode).toBe('fast')
-    expect(normalizeSettings({ transfer: { paceMode: 'turbo' } }).transfer.paceMode).toBe('turbo')
+    // 「极速」档已移除：旧配置静默降级为「稳健」，不能变成非法设置
+    expect(normalizeSettings({ transfer: { paceMode: 'turbo' } }).transfer.paceMode).toBe('safe')
   })
 
   it('极速档放开字符/秒与每批动作数的上限', () => {

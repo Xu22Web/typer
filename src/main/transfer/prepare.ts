@@ -27,7 +27,9 @@ import {
 import { isValidUtf8 } from '@main/util/textFile'
 import {
   HEX_PREVIEW_ROWS,
+  TRANSFER_FILE_MAX_BYTES,
   TRANSFER_LIMITS,
+  formatBytes,
   type HexPreviewRow,
   type TransferJobSummary,
   type TransferPrepareOptions,
@@ -346,8 +348,15 @@ export async function prepareTransfer(input: PrepareTransferInput): Promise<Prep
   if (!info) throw new TransferError('not-found', `无法读取文件：${path}`)
   if (!info.isFile()) throw new TransferError('not-file', `不是普通文件：${path}`)
   const size = info.size
-
   const name = options.name?.trim() || basename(path)
+  if (size > TRANSFER_FILE_MAX_BYTES) {
+    throw new TransferError(
+      'too-large',
+      `「${name}」有 ${formatBytes(size)}，超过文件模式上限 ` +
+        `${formatBytes(TRANSFER_FILE_MAX_BYTES)}：请拆分成多个文件后再发送`
+    )
+  }
+
   const job = randomJobId()
 
   // 质量自动升级：默认 q9 之外，小文件直接上 q11——多花的准备时间（几秒）远小于它省下的键入时间，

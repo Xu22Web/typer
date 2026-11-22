@@ -147,6 +147,12 @@ export const TRANSFER_LIMITS = {
   quality: [1, 11]
 } as const satisfies Record<string, readonly [number, number]>
 
+/** 文件通道的提示阈值：超过就提醒耗时可能很长，但仍允许发送。 */
+export const TRANSFER_FILE_WARN_BYTES = 1024 * 1024
+
+/** 文件通道的硬上限：超过直接拒绝（拖入与选择文件同一口径）。 */
+export const TRANSFER_FILE_MAX_BYTES = 4 * 1024 * 1024
+
 /** Hex 预览的行数（每行 16 字节）。 */
 export const HEX_PREVIEW_ROWS = 16
 

@@ -50,6 +50,14 @@ export type TypingRequest =
       total: number
       /** 本次要发送的片号（升序；可以是全量、缺失片或指定片） */
       indexes: number[]
+      /**
+       * 续传基线：接收端在本次发送前已完成的片数与对应字符数。
+       *
+       * 进度必须按**整个任务**算：只算本次发送的话，续传补几片就会从 0 冲到 100%，
+       * 而接收端还在显示 12/25，两个屏幕永远对不上。
+       */
+      doneChunks?: number
+      baseChars?: number
       /** 载荷符号表：真实按键模式无法输入 CJK 符号，用于启动前的快速校验 */
       alphabet?: TransferAlphabet
       /** 渲染某一帧（返回不含换行的单行文本） */
@@ -277,7 +285,8 @@ export class TypingEngine {
     this.abortReason = ''
     this.paused = false
     this.resumeWaiters = []
-    this.typedCount = 0
+    // 续传时把已完成部分算进基线：进度、平均速度与剩余时间都按整个任务计
+    this.typedCount = task.kind === 'frames' ? Math.max(0, task.baseChars ?? 0) : 0
     this.totalCount = 0
     this.countdownRemainingMs = 0
     this.pressureWarned = false
@@ -287,7 +296,12 @@ export class TypingEngine {
     this.idleMs = 0
     this.frames =
       task.kind === 'frames'
-        ? { done: 0, total: task.indexes.length, lastIndex: -1, failed: 0 }
+        ? {
+            done: Math.max(0, task.doneChunks ?? 0),
+            total: Math.max(0, task.total),
+            lastIndex: -1,
+            failed: 0
+          }
         : null
     this.baseIntervalMs = Math.max(1, baseIntervalMsFor(settings.timing))
     this.running = true
@@ -550,8 +564,9 @@ export class TypingEngine {
     const beginText = task.begin?.()
     const endText = task.end?.()
 
-    // 总量：开始帧×重复数 + 每片（帧字符 + 行尾）+ 结束帧×重复数，全部由 charsOf 提供，无需读文件
-    let total = 0
+    // 总量：开始帧×重复数 + 每片（帧字符 + 行尾）+ 结束帧×重复数，全部由 charsOf 提供，无需读文件。
+    // 续传时再加上「接收端已完成那部分」的字符数，百分比才是整任务口径。
+    let total = Math.max(0, task.baseChars ?? 0)
     if (beginText) total += (beginText.length + 1) * FRAME_HEAD_REDUNDANCY
     for (const index of task.indexes) total += Math.max(0, task.charsOf(index)) + 1
     if (endText) total += (endText.length + 1) * FRAME_HEAD_REDUNDANCY

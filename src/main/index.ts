@@ -1,6 +1,6 @@
 import { app, BrowserWindow, dialog, globalShortcut, ipcMain, Menu, net, shell } from 'electron'
 import { spawn } from 'node:child_process'
-import { readFile } from 'node:fs/promises'
+import { readFile, stat } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { basename, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -30,11 +30,10 @@ import { realNow, realSleep } from './util/clock'
 import { createLogger } from './util/logger'
 import { settingsFilePath, updateDownloadDir } from './util/paths'
 import { decodeText } from './util/textFile'
+import { TEXT_IMPORT_EXTENSIONS, TEXT_IMPORT_MAX_BYTES } from '@shared/text/import'
+import { formatBytes } from '@shared/transfer/transfer'
 import { createFloatingWindow, type FloatingWindowController } from './window/floatingWindow'
 import type { FloatPlacement } from './window/floatDock'
-
-/** 导入文件的体积上限；更大的内容请自行裁剪后再粘贴。 */
-const MAX_IMPORT_BYTES = 20 * 1024 * 1024
 
 /** 更新来源（GitHub Releases），与 package.json 的 repository 保持一致。 */
 const UPDATE_REPOSITORY = { owner: 'Xu22Web', repo: 'typer' } as const
@@ -274,16 +273,28 @@ async function importTextFile(
   filePath: string,
   charset: ImportCharset = 'auto'
 ): Promise<ImportResult> {
-  const buffer = await readFile(filePath)
-  if (buffer.byteLength > MAX_IMPORT_BYTES) {
+  // 先看体积再读盘：拖个几十 MB 的文件进来只为了截断到内容区上限没有任何意义
+  const info = await stat(filePath).catch(() => null)
+  if (!info || !info.isFile()) {
+    throw new Error(`无法读取文件：${basename(filePath)}`)
+  }
+  if (info.size > TEXT_IMPORT_MAX_BYTES) {
     throw new Error(
-      `文件过大（${(buffer.byteLength / 1024 / 1024).toFixed(1)}MB），上限 ${
-        MAX_IMPORT_BYTES / 1024 / 1024
-      }MB`
+      `「${basename(filePath)}」有 ${formatBytes(info.size)}，超过文本模式可导入的上限 ` +
+        `${formatBytes(TEXT_IMPORT_MAX_BYTES)}：请改用「文件」模式发送`
     )
   }
 
+  const buffer = await readFile(filePath)
+
   const decoded = decodeText(buffer, charset)
+  // 拖入 / 误选二进制文件是最常见的操作失误：解出来的 NUL 说明它不是文本，直接拒绝而不是
+  // 把一堆乱码塞进内容区（真要传这些字节请用「文件」模式）
+  if (decoded.text.includes('\u0000')) {
+    throw new Error(
+      `「${basename(filePath)}」看起来是二进制文件（含空字节），不能按文本导入：请改用「文件」模式发送`
+    )
+  }
   return {
     path: filePath,
     fileName: basename(filePath),
@@ -415,6 +426,7 @@ async function bootstrap(): Promise<void> {
     userAgent: `Typer/${app.getVersion()} (Windows)`,
     onState: updateBridge.onState,
     onProgress: updateBridge.onProgress,
+    onLog: (level, message) => logger[level](`更新：${message}`),
     launchInstaller: (filePath) => {
       // 用 detached 启动：安装向导要活到本进程退出之后
       const child = spawn(filePath, [], { detached: true, stdio: 'ignore', windowsHide: false })
@@ -440,7 +452,7 @@ async function bootstrap(): Promise<void> {
         title: '选择要导入的文本文件',
         properties: ['openFile' as const],
         filters: [
-          { name: '文本文件', extensions: ['txt', 'md', 'csv', 'log', 'json', 'srt', 'tsv'] },
+          { name: '文本与源码文件', extensions: [...TEXT_IMPORT_EXTENSIONS] },
           { name: '所有文件', extensions: ['*'] }
         ]
       }

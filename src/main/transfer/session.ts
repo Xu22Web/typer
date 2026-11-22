@@ -56,6 +56,10 @@ export interface FramePlan {
   ranges: string
   sendBegin: boolean
   sendEnd: boolean
+  /** 续传基线：接收端已完成的片数（全新传输为 0） */
+  doneChunks: number
+  /** 续传基线：已完成片对应的字符数（含每片行尾），用于整任务口径的进度 */
+  baseChars: number
 }
 
 /**
@@ -205,9 +209,22 @@ export class TransferSession {
     const sent = new Set(indexes)
     const coversMissing = hasResume && missing.every((index) => sent.has(index))
 
+    // 续传基线：缺失片之外的都视为接收端已校验通过。字符数按引擎同一口径（帧字符 + 行尾）算，
+    // 这样浮窗的百分比与接收端的「已收片 / 总片」一致。
+    const missingSet = new Set(missing ?? [])
+    let baseChars = 0
+    if (missing) {
+      for (let index = 0; index < total; index++) {
+        if (missingSet.has(index)) continue
+        baseChars += Math.max(0, job.frameChars(index)) + 1
+      }
+    }
+
     return {
       indexes,
       ranges: describeIndexes(indexes, total),
+      doneChunks: missing ? total - missingSet.size : 0,
+      baseChars,
       // 没有续传信息时一律带开始帧：接收端可能没有 meta.json，缺了它就只能报错
       sendBegin: options.sendBegin ?? (!hasResume || indexes.length === total),
       // 只有"这次发完接收端就齐了"才发结束帧（全量，或恰好补齐缺失片）
@@ -236,6 +253,8 @@ export class TransferSession {
         total: job.summary.total,
         alphabet: job.summary.alphabet,
         indexes: plan.indexes,
+        doneChunks: plan.doneChunks,
+        baseChars: plan.baseChars,
         render: (index) => job.renderFrame(index),
         charsOf: (index) => job.frameChars(index),
         begin: plan.sendBegin ? () => job.beginFrame() : undefined,

@@ -156,7 +156,14 @@ function createFakeTransfer(toolScript: TransferControls['toolScript']): Transfe
     createRequest: () => {
       throw new Error('测试未实现 createRequest')
     },
-    plan: () => ({ indexes: [], ranges: '', sendBegin: false, sendEnd: false }),
+    plan: () => ({
+      indexes: [],
+      ranges: '',
+      sendBegin: false,
+      sendEnd: false,
+      doneChunks: 0,
+      baseChars: 0
+    }),
     exportTools: async () => null,
     revealTools: async () => false,
     toolScript

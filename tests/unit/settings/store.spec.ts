@@ -70,6 +70,16 @@ describe('SettingsStore 读取', () => {
     const { store } = createStore(fs)
     expect(store.load().chunkSize).toBe(16)
   })
+
+  it('配置里留着已移除的取值时按默认值运行，并给出一条提示', () => {
+    const fs = createMemoryFs({ [FILE]: JSON.stringify({ transfer: { paceMode: 'turbo' } }) })
+    const { store, logs } = createStore(fs)
+
+    expect(store.load().transfer.paceMode).toBe('safe')
+    expect(logs.filter((line) => line.includes('极速'))).toHaveLength(1)
+    // 只提示，不改磁盘：用户下次保存才会把旧值写掉
+    expect(JSON.parse(fs.files.get(FILE) as string).transfer.paceMode).toBe('turbo')
+  })
 })
 
 describe('SettingsStore 保存', () => {

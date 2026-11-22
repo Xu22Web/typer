@@ -156,7 +156,7 @@ function chars(lines: string[]): number {
 }
 
 describe('引擎 · 文件传输模式', () => {
-  it('逐帧发送：开始帧 → 各数据帧 → 结束帧，每帧的字符完整且顺序正确', async () => {
+  it('逐帧发送：开始帧 → 各数据帧 → 结束帧，每行完整且以 Enter 结尾', async () => {
     const { engine, driver } = createHarness()
     const result = await engine.start(frameJob(), engineSettings())
 
@@ -170,15 +170,27 @@ describe('引擎 · 文件传输模式', () => {
     expect(Math.max(...driver.batches.map((batch) => batch.length))).toBeLessThanOrEqual(64)
   })
 
-  it('每帧都完整下发且以 Enter 结尾（不会被切成半行）', async () => {
-    const { engine, driver } = createHarness()
-    await engine.start(frameJob(), engineSettings())
-
-    expect(itemsToText(driver.items)).toBe(
-      [...Array(3).fill(BEGIN), ...FRAMES, ...Array(3).fill(END)]
-        .map((line) => `${line}\n`)
-        .join('')
+  it('续传：进度从已完成部分起算，片数与总量都按整任务口径', async () => {
+    const { engine, progress } = createHarness()
+    const doneChars = (FRAMES[0] as string).length + 1
+    const result = await engine.start(
+      frameJob({
+        indexes: [1, 2],
+        begin: undefined,
+        end: undefined,
+        doneChunks: 1,
+        baseChars: doneChars
+      }),
+      engineSettings()
     )
+
+    expect(result.state).toBe('completed')
+    // 只发了 2 片，但片进度是 3/3（接收端此时也是 25/25 这类整任务数字）
+    expect(result.typed).toBe(result.total)
+    const last = progress.at(-1) as ProgressSnapshot
+    expect(last.frames).toMatchObject({ done: 3, total: 3 })
+    expect(last.total).toBe(doneChars + chars([FRAMES[1] as string, FRAMES[2] as string]))
+    expect(last.percent).toBe(1)
   })
 
   it('帧内间隔攒批下发：一整帧只产生少量断批点，且总间隔与逐字符一致', async () => {
@@ -209,7 +221,7 @@ describe('引擎 · 文件传输模式', () => {
     expect(delays.slice(0, 4)).toEqual([16, 0, 0, 0])
   })
 
-  it('极速节奏：帧内仍逐字符留间隔（数据不能丢），只是不等片间停顿', async () => {
+  it('快速节奏：帧内仍逐字符留间隔（数据不能丢），只是不等片间停顿', async () => {
     const { engine, driver } = createHarness()
     const longFrame = 'a'.repeat(600)
     const result = await engine.start(
@@ -316,35 +328,7 @@ describe('引擎 · 文件传输模式', () => {
     ])
   })
 
-  it('极速档：逐动作投递、零延迟，速度交给压力阀', async () => {
-    const { engine, driver } = createHarness()
-    const longFrame = 'a'.repeat(1200)
-
-    const result = await engine.start(
-      frameJob({
-        total: 1,
-        indexes: [0],
-        render: () => longFrame,
-        charsOf: () => longFrame.length,
-        begin: undefined,
-        end: undefined
-      }),
-      engineSettings({ transferPace: 'turbo', interFrameDelayMs: 25 })
-    )
-
-    expect(result.state).toBe('completed')
-    // 零延迟：不许出现 plan 出来的正延迟
-    const delays = driver.items.map((item) => (item.t === 'wait' ? item.ms : item.delay))
-    expect(delays.every((ms) => ms === 0)).toBe(true)
-    // 数据帧必须逐动作投递：攒批直投实测会静默丢字符（真实 cmd 接收端一次丢几十到几百个）
-    expect(driver.sendOptions.every((options) => options.perItem === true)).toBe(true)
-    // 每批上限 256 个动作：1201 个字符 → 5 批
-    const sizes = driver.batches.map((batch) => batch.length)
-    expect(sizes).toEqual([256, 256, 256, 256, 177])
-    expect(itemsToText(driver.items)).toBe(`${longFrame}\n`)
-  })
-
-  it('极速节奏档忽略片间停顿：连设置的 25ms 也不再等待', async () => {
+  it('快速节奏档忽略片间停顿：连设置的 25ms 也不再等待', async () => {
     const { engine, clock } = createHarness()
     await engine.start(frameJob(), engineSettings({ transferPace: 'fast', interFrameDelayMs: 25 }))
 

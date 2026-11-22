@@ -7,8 +7,13 @@
  */
 export type InjectionProfile = 'normal' | 'turbo'
 
-/** 文件传输的节奏档：三档都逐动作投递（数据丢一个字符整片就废），差别只在间隔与攒批窗口。 */
-export type TransferPace = 'safe' | 'fast' | 'turbo'
+/**
+ * 文件传输的节奏档：两档都逐动作投递（数据丢一个字符整片就废），差别只在片间是否停顿。
+ *
+ * 曾经的「极速」档（字符 0ms + 整帧攒批）已移除：目标端输入队列被灌满后 `SendInput` 会阻塞，
+ * 中途停止要等队列排空才恢复，表现为"程序卡死很久"；收益也只体现在目标端消化能力上。
+ */
+export type TransferPace = 'safe' | 'fast'
 
 export interface ProfileLimits {
   /** 字符/秒的可选区间（UI 量程，不是节流器） */
@@ -30,7 +35,7 @@ export interface TransferPaceLimits {
   batchActions: number
   /**
    * 片间停顿：`null` 表示用「设置 → 文件传输」里的值；
-   * 数字表示该档位下的固定值（极速档不需要留出落盘时间，固定 0）。
+   * 数字表示该档位下的固定值（快速档明确不留停顿，固定 0）。
    */
   frameGapMs: number | null
   /**
@@ -51,15 +56,12 @@ export const PROFILE_LIMITS: Record<InjectionProfile, ProfileLimits> = {
 export const TRANSFER_PACE_LIMITS: Record<TransferPace, TransferPaceLimits> = {
   // 帧内间隔 1ms/字符：实测真实终端在逐字符投递 + 1ms 间隔下零丢失。
   safe: { minDelayMs: 1, batchWindowMs: 16, batchActions: 64, frameGapMs: null, perItem: true },
-  fast: { minDelayMs: 1, batchWindowMs: 16, batchActions: 128, frameGapMs: 0, perItem: true },
-  // 极速档：逐动作投递（数据帧必须如此，攒批直投实测会静默丢字符），但取消 1ms 间隔，
-  // 由宿主压力阀按目标端消化能力自适应。速度上限由目标端决定，不由我们决定。
-  turbo: { minDelayMs: 0, batchWindowMs: 0, batchActions: 256, frameGapMs: 0, perItem: true }
+  fast: { minDelayMs: 1, batchWindowMs: 16, batchActions: 128, frameGapMs: 0, perItem: true }
 }
 
 /** 档位取值（供设置层做白名单校验） */
 export const INJECTION_PROFILES: readonly InjectionProfile[] = ['normal', 'turbo']
-export const TRANSFER_PACES: readonly TransferPace[] = ['safe', 'fast', 'turbo']
+export const TRANSFER_PACES: readonly TransferPace[] = ['safe', 'fast']
 
 /**
  * @description 文本路径的攒批窗口：间隔越短，攒批越划算；接近人速时不攒批以免打乱节奏

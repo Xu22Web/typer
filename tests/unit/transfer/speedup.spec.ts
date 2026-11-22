@@ -50,8 +50,8 @@ function makeSummary(overrides: Partial<TransferJobSummary> = {}): TransferJobSu
 }
 
 /** 与界面同口径的档位表现（这里写死，便于断言具体数字） */
-function profile(pace: 'safe' | 'fast' | 'turbo'): PaceProfile {
-  return { charsPerSecond: pace === 'turbo' ? 700 : 446, gapMs: pace === 'turbo' ? 0 : 120 }
+function profile(pace: 'safe' | 'fast'): PaceProfile {
+  return { charsPerSecond: 446, gapMs: pace === 'fast' ? 0 : 120 }
 }
 
 describe('withChunk', () => {
@@ -83,17 +83,18 @@ describe('withChunk', () => {
 
 describe('suggestSpeedUp', () => {
   it('节奏档太保守时建议换档，并给出能省多少', () => {
-    const suggestion = suggestSpeedUp(makeSummary(), {
+    // 4 MB / 16 KB = 256 片，“稳健”每片等 120ms，累计就是半分钟以上
+    const suggestion = suggestSpeedUp(makeSummary({ wireBytes: 4 * 1024 * 1024 }), {
       current: { paceMode: 'safe', chunkBytes: 16_384, maxFrameChars: 65_536 },
       profileFor: profile
     })
 
     expect(suggestion).not.toBeNull()
-    expect(suggestion?.next.paceMode).toBe('turbo')
+    expect(suggestion?.next.paceMode).toBe('fast')
     expect(suggestion?.kinds).toContain('pace')
-    expect(suggestion?.title).toContain(PACE_LABELS.turbo)
+    expect(suggestion?.title).toContain(PACE_LABELS.fast)
     expect(suggestion?.savedMs).toBeGreaterThan(0)
-    expect(suggestion?.savedRatio).toBeGreaterThan(0.2)
+    expect(suggestion?.savedRatio).toBeGreaterThan(0)
     expect(suggestion?.nextMs).toBeLessThan(suggestion?.currentMs ?? 0)
   })
 
@@ -101,7 +102,7 @@ describe('suggestSpeedUp', () => {
     // 40 MB / 16 KB = 2560 片，帧头开销约 15 万字符；换成 64 KB 只剩 640 片
     const big = makeSummary({ wireBytes: 40 * 1024 * 1024 })
     const suggestion = suggestSpeedUp(big, {
-      current: { paceMode: 'turbo', chunkBytes: 16_384, maxFrameChars: 65_536 },
+      current: { paceMode: 'fast', chunkBytes: 16_384, maxFrameChars: 65_536 },
       profileFor: profile
     })
 
@@ -111,10 +112,10 @@ describe('suggestSpeedUp', () => {
   })
 
   it('片数不多时换大片收益太小，不打扰（省不到 20 秒不提）', () => {
-    // 4 MB / 16 KB = 256 片，帧头只有约 1.5 万字符，省不到阈值
-    const small = makeSummary({ wireBytes: 4 * 1024 * 1024 })
+    // 2 MB / 16 KB = 128 片，帧头只省几千字符，到不了 20 秒阈值
+    const small = makeSummary({ wireBytes: 2 * 1024 * 1024 })
     const suggestion = suggestSpeedUp(small, {
-      current: { paceMode: 'turbo', chunkBytes: 16_384, maxFrameChars: 65_536 },
+      current: { paceMode: 'fast', chunkBytes: 16_384, maxFrameChars: 65_536 },
       profileFor: profile
     })
     expect(suggestion).toBeNull()
@@ -123,7 +124,7 @@ describe('suggestSpeedUp', () => {
   it('已经是最优组合时不给建议（界面显示“已是推荐配置”）', () => {
     const big = makeSummary({ wireBytes: 4 * 1024 * 1024 })
     const suggestion = suggestSpeedUp(big, {
-      current: { paceMode: 'turbo', chunkBytes: 65_536, maxFrameChars: 262_144 },
+      current: { paceMode: 'fast', chunkBytes: 65_536, maxFrameChars: 262_144 },
       profileFor: profile
     })
     expect(suggestion).toBeNull()

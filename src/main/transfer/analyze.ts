@@ -5,7 +5,8 @@
 // 并给出一个可解释的结论（界面直接展示 reason）。
 
 import { open } from 'node:fs/promises'
-import { brotliCompressSync, constants as zlibConstants, deflateRawSync } from 'node:zlib'
+import { brotliCompress, constants as zlibConstants, deflateRaw } from 'node:zlib'
+import type { BrotliOptions, ZlibOptions } from 'node:zlib'
 
 /** 采样上限：最多读这么多字节用于试压（小文件就是全量）。 */
 const SAMPLE_BUDGET_BYTES = 3 * 1024 * 1024
@@ -171,6 +172,36 @@ async function sampleFile(path: string, size: number): Promise<Buffer> {
 }
 
 /**
+ * @description 异步 Brotli 压缩（采样探测用）
+ * @param input 待压缩数据
+ * @param options 压缩选项
+ * @returns 压缩结果
+ */
+function brotliAsync(input: Buffer, options: BrotliOptions): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    brotliCompress(input, options, (error, result) => {
+      if (error) reject(error)
+      else resolve(result)
+    })
+  })
+}
+
+/**
+ * @description 异步 deflate 压缩（采样探测用；只拿来对比压缩率）
+ * @param input 待压缩数据
+ * @param options 压缩选项
+ * @returns 压缩结果
+ */
+function deflateRawAsync(input: Buffer, options: ZlibOptions): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    deflateRaw(input, options, (error, result) => {
+      if (error) reject(error)
+      else resolve(result)
+    })
+  })
+}
+
+/**
  * @description 分析文件，决定是否值得压缩
  * @param path 文件路径
  * @param size 文件大小
@@ -195,13 +226,15 @@ export async function analyzeFile(path: string, size: number): Promise<FileProfi
   let brotliRatio = 1
   let deflateRatio = 1
   if (sample.length > 0) {
-    const brotli = brotliCompressSync(sample, {
+    // 采样最大 3 MB：同步压缩会把主进程事件循环卡住几百毫秒（准备阶段的进度条会停住），
+    // 这里改用异步版本，让出事件循环
+    const brotli = await brotliAsync(sample, {
       params: {
         [zlibConstants.BROTLI_PARAM_QUALITY]: PROBE_QUALITY,
         [zlibConstants.BROTLI_PARAM_SIZE_HINT]: sample.length
       }
     })
-    const deflate = deflateRawSync(sample, { level: 6 })
+    const deflate = await deflateRawAsync(sample, { level: 6 })
     brotliRatio = brotli.length / sample.length
     deflateRatio = deflate.length / sample.length
   }

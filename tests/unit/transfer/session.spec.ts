@@ -105,9 +105,16 @@ describe('TransferSession · 准备与复用', () => {
     expect(summary.sha256).toBe(createHash('sha256').update(makeSource(4096, 99)).digest('hex'))
   })
 
+  it('超过 4 MB 直接拒绝，不进入哈希', async () => {
+    const tooBig = join(work, 'too-big.bin')
+    writeFileSync(tooBig, makeSource(4 * 1024 * 1024 + 1))
+
+    await expect(session.prepare(tooBig, OPTIONS)).rejects.toThrow(/超过文件模式上限/)
+  })
+
   it('准备中的取消会中止哈希', async () => {
     const big = join(work, 'big.bin')
-    writeFileSync(big, makeSource(8 * 1024 * 1024))
+    writeFileSync(big, makeSource(3 * 1024 * 1024))
     const tracked = new TransferSession({
       onPrepareProgress: (progress) => {
         if (progress.phase === 'hash' && progress.done > 0) tracked.cancelPrepare()
@@ -146,6 +153,16 @@ describe('TransferSession · 发送计划', () => {
   it('续传仍未补齐：不发结束帧（否则接收端立刻报 #MISS）', () => {
     const plan = session.plan({ only: '1', resumeMissing: [1, 3] })
     expect(plan.sendEnd).toBe(false)
+  })
+
+  it('续传时带上基线：已完成片数与对应字符数（进度按整任务算）', () => {
+    const plan = session.plan({ only: '1', resumeMissing: [1, 3] })
+    expect(plan.doneChunks).toBe(2)
+    expect(plan.baseChars).toBeGreaterThan(0)
+    // 只有一半的片已完成，基线字符数必然小于整任务的帧字符总数
+    expect(plan.baseChars).toBeLessThan(session.summary?.frameChars ?? 0)
+    // 全新传输没有基线
+    expect(session.plan()).toMatchObject({ doneChunks: 0, baseChars: 0 })
   })
 
   it('从某片开始（部分发送，不发结束帧）', () => {

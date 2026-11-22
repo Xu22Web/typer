@@ -92,8 +92,8 @@ export const DEFAULT_SETTINGS: Settings = {
     compression: 'auto',
     quality: 9,
     mode: 'term',
-    // 默认稳健：控制台输入队列很小，攒批直投偶尔会丢一个字符（帧头 CRC / 片 CRC 能抓到并重传，
-    // 但重传本身要花时间）。要更快就显式切到「极速」，用 --stats 观察实际丢片率。
+    // 默认稳健：控制台输入队列很小，攒批直投偶尔会丢一个字符（片 CRC 能抓到并重传，
+    // 但重传本身要花时间）。想省掉片间停顿就切到「快速」，节奏本身不变。
     paceMode: 'safe',
     chunkBytes: 16384,
     maxFrameChars: 65536,
