@@ -8,8 +8,8 @@
 import { formatClock, formatPercent, formatRate, formatSize } from './format'
 import { renderBar, spinnerFrame, type Segment, clipSegments, displayWidth } from './text'
 
-/** 三个阶段：等待开始帧 / 收片中 / 合并校验 */
-export type Stage = 'waiting' | 'receiving' | 'merging'
+/** 四个阶段：等待开始帧 / 收片中 / 等待补片 / 合并校验 */
+export type Stage = 'waiting' | 'receiving' | 'awaiting' | 'merging'
 
 /** 采集到的原始状态（由接收端在每次刷新时喂进来） */
 export interface ViewInput {
@@ -37,6 +37,14 @@ export interface ViewInput {
   idleWarnMs: number
   /** 是否整文件压缩（合并阶段要给"解压中"而不是"校验中"） */
   compressed: boolean
+  /** 续传：开始时目录里已有的片数（> 0 表示本轮是补发） */
+  resumedChunks?: number
+  /** 本轮新收下并通过校验的片数（与 `doneCount` 相减就是本次进度） */
+  sessionDone?: number
+  /** 已收到结束帧但还缺片：正在等补发，不能合并 */
+  awaitingResume?: boolean
+  /** 缺失片号的紧凑文本（已截断，等待补片时显示） */
+  missingText?: string
 }
 
 /** 排版的输入：所有字段都已经折算好，布局函数不再做算术 */
@@ -65,6 +73,15 @@ export interface ProgressView {
   allReceived: boolean
   /** 合并阶段是否在解压 */
   compressed: boolean
+  /** 续传模式：进度条字符与前缀都要区分，一眼能看出这是补发 */
+  resumeMode: boolean
+  /** 本轮已收片数 / 本轮目标片数（整任务减去已有片） */
+  sessionDone: number
+  sessionTotal: number
+  /** 缺失片号文本（没有缺失时为空串） */
+  missingText: string
+  /** 正在等待补发（收到结束帧但缺片） */
+  awaiting: boolean
 }
 
 /**
@@ -76,6 +93,14 @@ export function buildView(input: ViewInput): ProgressView {
   const elapsedMs = Math.max(0, input.now - input.startedAt)
   const idleMs = Math.max(0, input.now - Math.max(input.lastInputAt, input.startedAt))
   const stalled = idleMs >= input.idleWarnMs
+
+  // 续传：目录里已有的片算「之前就完成了」，本轮只关心剩下的
+  const resumedChunks = Math.max(0, input.resumedChunks ?? 0)
+  const resumeMode = resumedChunks > 0
+  const sessionDone = Math.max(0, input.sessionDone ?? 0)
+  const sessionTotal = Math.max(sessionDone, (input.total ?? 0) - resumedChunks)
+  const missingText = input.missingText ?? ''
+  const awaiting = input.awaitingResume === true && !input.merge
 
   if (input.merge) {
     const mergeTotal = Math.max(0, input.merge.total)
@@ -98,7 +123,12 @@ export function buildView(input: ViewInput): ProgressView {
       failures: input.failures,
       stalled: false,
       allReceived: true,
-      compressed: input.compressed
+      compressed: input.compressed,
+      resumeMode,
+      sessionDone,
+      sessionTotal,
+      missingText,
+      awaiting: false
     }
   }
 
@@ -119,7 +149,12 @@ export function buildView(input: ViewInput): ProgressView {
       failures: 0,
       stalled,
       allReceived: false,
-      compressed: input.compressed
+      compressed: input.compressed,
+      resumeMode: false,
+      sessionDone: 0,
+      sessionTotal: 0,
+      missingText: '',
+      awaiting: false
     }
   }
 
@@ -135,11 +170,12 @@ export function buildView(input: ViewInput): ProgressView {
   const bytesTotal = input.size ?? 0
   const bytesDone = Math.round(bytesTotal * overall)
   const remainingBytes = Math.max(0, bytesTotal - bytesDone)
-  const rate = input.rate > 0 ? input.rate : 0
+  // 断流后旧的速率样本必须失效：否则「剩余时间」会定格在一个不再变化的数字上
+  const rate = stalled ? 0 : input.rate > 0 ? input.rate : 0
   const etaMs = rate > 0 && remainingBytes > 0 ? (remainingBytes / rate) * 1000 : null
 
   return {
-    stage: 'receiving',
+    stage: awaiting ? 'awaiting' : 'receiving',
     overall,
     shardsDone: doneCount,
     shardsTotal: total,
@@ -154,7 +190,12 @@ export function buildView(input: ViewInput): ProgressView {
     failures: input.failures,
     stalled,
     allReceived: doneCount >= total,
-    compressed: input.compressed
+    compressed: input.compressed,
+    resumeMode,
+    sessionDone,
+    sessionTotal,
+    missingText,
+    awaiting
   }
 }
 
@@ -178,8 +219,6 @@ export type LayoutKind = 'wide' | 'medium' | 'compact' | 'plain'
 export interface LayoutOptions {
   /** 终端列数（未知时用 80） */
   columns: number
-  /** 能否使用方块字符与盲文转圈 */
-  unicode: boolean
   /** 最多几行（不支持光标上移的终端只能一行） */
   maxRows: 1 | 2
   /** 动画帧序号 */
@@ -213,8 +252,7 @@ export function layoutProgress(view: ProgressView, options: LayoutOptions): Segm
   const rows = buildRows(view, options, kind)
   if (kind === 'plain') return rows
   const limit = Math.max(16, options.columns - 1)
-  const ellipsis = options.unicode ? '\u2026' : '~'
-  return rows.map((row) => clipSegments(row, limit, ellipsis))
+  return rows.map((row) => clipSegments(row, limit))
 }
 
 /**
@@ -229,9 +267,16 @@ function buildRows(view: ProgressView, options: LayoutOptions, kind: LayoutKind)
   if (view.stage === 'waiting') return waitingRows(view, options, kind)
 
   const prefix = statusSegments(view, options)
-  const bar = renderBar(view.overall, barWidth, options.unicode)
+  // 进度条固定用方块字符；续传的区分交给前缀文字与「本次/整体」字段
+  const bar = renderBar(view.overall, barWidth)
   const percent = formatPercent(view.overall, kind === 'compact' ? 0 : 1)
   const size = `${formatSize(view.bytesDone)}/${formatSize(view.bytesTotal)}`
+  // 片数：续传时同时给出「本轮」与「整体」，两头的数字因此都能对上
+  const shardsText = view.resumeMode
+    ? `本次 ${view.sessionDone}/${view.sessionTotal} 片 · 整体 ${view.shardsDone}/${view.shardsTotal} 片`
+    : `${view.shardsDone}/${view.shardsTotal} 片`
+
+  if (view.stage === 'awaiting') return awaitingRows(view, kind, prefix)
 
   if (view.stage === 'merging') {
     const tail: Segment = {
@@ -287,14 +332,16 @@ function buildRows(view: ProgressView, options: LayoutOptions, kind: LayoutKind)
       ? { text: `剩余 ${formatClock(view.etaMs)}` }
       : view.allReceived
         ? { text: '已收齐，准备合并', style: 'dim' }
-        : view.shardsDone === 0 && view.shardOrdinal === null
-          ? { text: '等待首片', style: 'dim' }
-          : null
+        : view.stalled
+          ? { text: '剩余 —', style: 'dim' }
+          : view.shardsDone === 0 && view.shardOrdinal === null
+            ? { text: '等待首片', style: 'dim' }
+            : null
   const rate: Segment | null = view.rate > 0 ? { text: formatRate(view.rate) } : null
   const failed: Segment | null =
     view.failures > 0 ? { text: `失败 ${view.failures} 片`, style: 'err' } : null
   const progressFields: Segment[] = [
-    { text: `${view.shardsDone}/${view.shardsTotal} 片` },
+    { text: shardsText },
     ...(current ? [current] : []),
     ...(rate ? [rate] : []),
     ...(eta ? [eta] : []),
@@ -304,7 +351,7 @@ function buildRows(view: ProgressView, options: LayoutOptions, kind: LayoutKind)
   if (kind === 'compact') {
     // 窄终端只有一行：用一个字表示状态——断流时直接把转圈换成感叹号，比什么都显眼
     const spin: Segment = {
-      text: view.stalled ? '! ' : `${spinnerFrame(options.spinnerIndex, options.unicode)} `,
+      text: view.stalled ? '! ' : `${spinnerFrame(options.spinnerIndex)} `,
       style: view.stalled ? 'warn' : 'accent'
     }
     return [
@@ -324,7 +371,7 @@ function buildRows(view: ProgressView, options: LayoutOptions, kind: LayoutKind)
         ...prefix,
         { text: `  [${bar}]  ` },
         { text: percent, style: 'bold' },
-        { text: `${SEP}${view.shardsDone}/${view.shardsTotal} 片` },
+        { text: `${SEP}${shardsText}` },
         ...(current ? [{ text: `${SEP}${current.text}`, style: 'dim' as const }] : []),
         { text: `${SEP}${currentSize}` },
         ...(rate ? [{ text: `${SEP}${rate.text}` }] : []),
@@ -339,7 +386,7 @@ function buildRows(view: ProgressView, options: LayoutOptions, kind: LayoutKind)
     return [
       [
         ...prefix,
-        { text: `${SEP}${view.shardsDone}/${view.shardsTotal} 片` },
+        { text: `${SEP}${shardsText}` },
         ...(current ? [{ text: ` · ${current.text}`, style: 'dim' as const }] : [])
       ],
       [
@@ -356,7 +403,7 @@ function buildRows(view: ProgressView, options: LayoutOptions, kind: LayoutKind)
   return [
     [
       ...prefix,
-      { text: `${SEP}${view.shardsDone}/${view.shardsTotal} 片` },
+      { text: `${SEP}${shardsText}` },
       ...(current ? [{ text: ` · ${current.text}`, style: 'dim' as const }] : []),
       { text: ` · 已用 ${formatClock(view.elapsedMs)}`, style: 'dim' },
       ...(failed ? [{ text: ` · ${failed.text}`, style: 'err' as const }] : [])
@@ -404,6 +451,43 @@ function waitingRows(view: ProgressView, options: LayoutOptions, kind: LayoutKin
 }
 
 /**
+ * @description 等待补片的排版：此处不画进度条（没有新数据在动），而是把「缺多少、缺哪几片、
+ * 已经等了多久」放在一行里——用户不用回头翻日志就知道现在卡在哪。
+ * @param view 排版视图
+ * @param kind 档位
+ * @param prefix 状态前缀（已含断流提示）
+ * @returns 每行片段
+ */
+function awaitingRows(view: ProgressView, kind: LayoutKind, prefix: Segment[]): Segment[][] {
+  const missing = view.missingText.length > 0 ? `缺 ${view.missingText}` : '缺片'
+  const shardsText = view.resumeMode
+    ? `本次 ${view.sessionDone}/${view.sessionTotal} 片 · 整体 ${view.shardsDone}/${view.shardsTotal} 片`
+    : `${view.shardsDone}/${view.shardsTotal} 片`
+  if (kind === 'compact') {
+    return [[...prefix, { text: ` ${shardsText} · ${missing}` }]]
+  }
+  if (kind === 'plain') {
+    return [
+      [
+        ...prefix,
+        { text: `${SEP}${shardsText}` },
+        { text: `${SEP}${missing}` },
+        { text: `${SEP}等待补发，收齐后自动合并`, style: 'dim' }
+      ]
+    ]
+  }
+  return [
+    [...prefix, { text: `${SEP}${shardsText}` }, { text: ` · ${missing}`, style: 'warn' }],
+    [
+      {
+        text: '在 Typer 里粘贴 @T2R 令牌只补缺失片；收齐后会自动合并校验',
+        style: 'dim'
+      }
+    ]
+  ]
+}
+
+/**
  * @description 状态前缀：转圈 + 阶段名（断流时整段变黄，并在后面写明没有输入多久）
  * @param view 排版视图
  * @param options 排版选项
@@ -411,13 +495,18 @@ function waitingRows(view: ProgressView, options: LayoutOptions, kind: LayoutKin
  */
 function statusSegments(view: ProgressView, options: LayoutOptions): Segment[] {
   const label =
-    view.stage === 'waiting' ? '等待开始帧' : view.stage === 'merging' ? '合并校验' : '接收中'
+    view.stage === 'waiting'
+      ? '等待开始帧'
+      : view.stage === 'merging'
+        ? '合并校验'
+        : view.stage === 'awaiting'
+          ? '等待补片'
+          : view.resumeMode
+            ? '续传中'
+            : '接收中'
   const style = view.stalled ? 'warn' : 'accent'
   // 写日志（重定向到文件 / 管道）时不画转圈：它会变成一行一个的垃圾字符
-  const head =
-    options.mode === 'plain'
-      ? label
-      : `${spinnerFrame(options.spinnerIndex, options.unicode)} ${label}`
+  const head = options.mode === 'plain' ? label : `${spinnerFrame(options.spinnerIndex)} ${label}`
   const out: Segment[] = [{ text: head, style }]
   if (view.stalled) out.push({ text: `（无输入 ${formatClock(view.idleMs)}）`, style: 'warn' })
   return out

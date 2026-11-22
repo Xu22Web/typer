@@ -66,6 +66,47 @@ async function runTool(args: string[], cwd: string): Promise<ToolResult> {
 }
 
 /**
+ * @description 启动接收端并把 stdin 保持打开一段时间：用来验证“长时间没有输入就自动退出”
+ * @param args 脚本参数
+ * @param cwd 工作目录
+ * @param input 先写进去的帧文本
+ * @param holdMs 保持 stdin 打开的时长（到点才结束输入）
+ * @returns 退出码、输出与用时
+ */
+function runToolKeepingStdin(
+  args: string[],
+  cwd: string,
+  input: string,
+  holdMs: number
+): Promise<ToolResult & { elapsedMs: number }> {
+  return new Promise((resolvePromise) => {
+    const startedAt = Date.now()
+    const child = spawn(process.execPath, [RECV, ...args], {
+      cwd,
+      stdio: ['pipe', 'pipe', 'pipe']
+    })
+    let stdout = ''
+    let stderr = ''
+    child.stdout.on('data', (chunk: Buffer) => {
+      stdout += String(chunk)
+    })
+    child.stderr.on('data', (chunk: Buffer) => {
+      stderr += String(chunk)
+    })
+    child.stdin.write(input)
+    const hold = setTimeout(() => child.stdin.end(), holdMs)
+    child.on('close', (code) => {
+      clearTimeout(hold)
+      resolvePromise({ code: code ?? -1, stdout, stderr, elapsedMs: Date.now() - startedAt })
+    })
+    child.on('error', () => {
+      clearTimeout(hold)
+      resolvePromise({ code: -1, stdout, stderr, elapsedMs: Date.now() - startedAt })
+    })
+  })
+}
+
+/**
  * @description 通过 cmd 运行 tools/run.bat：验证"目标机双击这个文件"真的能启动接收端。
  * 用 spawn 显式把 stdin 设成 ignore —— 接收端在没给 `--in` 时会一直等标准输入，测试里必须立刻给它 EOF
  * @param args 传给 run.bat 的参数
@@ -189,7 +230,7 @@ describe('typer-recv.mjs：端到端接收与完整性校验', () => {
     expect(shown.code).toBe(0)
     // 规模一行 + 至少一行进度（状态 / 进度条 / 百分比 / 片数）
     expect(shown.stdout).toContain('接收开始')
-    expect(shown.stdout).toMatch(/接收中\s+\[[#-]+\]\s+\d+\.\d%\s+\d+\/\d+ 片/)
+    expect(shown.stdout).toMatch(/接收中\s+\[[\u2588\u2591]+\]\s+\d+\.\d%\s+\d+\/\d+ 片/)
     // 非 TTY 不该出现颜色转义与回车重绘（否则重定向到日志会一团污）
     // eslint-disable-next-line no-control-regex -- 就是要断言输出里没有 ESC 序列
     expect(shown.stdout).not.toMatch(/\u001b\[/)
@@ -396,6 +437,26 @@ describe('typer-recv.mjs：坏数据与断点续传', () => {
     expect(readFileSync(join(work, 'out.bin')).equals(source)).toBe(true)
   }, 60_000)
 
+  it('结束帧提前到达但缺片时不退出：继续等补发，补上后自动合并', async () => {
+    const source = makeSource(24_000)
+    writeFileSync(join(work, 'src.bin'), source)
+    const { job, lines } = await appFrames('src.bin')
+    const data = lines.slice(1, -1)
+    const end = lines.at(-1) as string
+
+    // 只发第 1 片就发结束帧（模拟"分批补发"），随后在同一输入流里补齐其余片
+    writeFrames('mixed.txt', [lines[0] as string, data[0] as string, end, ...data.slice(1), end])
+
+    const result = await runTool(['--in', 'mixed.txt', '-o', 'out.bin', '-d', 'work'], work)
+    // 第一轮结束帧缺片：打印令牌但不停机；补发齐了才合并
+    expect(result.stdout).toContain('#MISS')
+    expect(result.stdout).toContain('数据不全')
+    expect(result.code).toBe(0)
+    expect(result.stdout).toContain('#DONE')
+    expect(readFileSync(join(work, 'out.bin')).equals(source)).toBe(true)
+    expect(job.summary.total).toBeGreaterThan(1)
+  }, 60_000)
+
   it('幂等：重复收同一批帧不会破坏结果（已通过的分片会被跳过）', async () => {
     const source = makeSource(8000)
     writeFileSync(join(work, 'src.bin'), source)
@@ -485,6 +546,28 @@ describe('typer-recv.mjs：坏数据与断点续传', () => {
     expect(result.stdout).toContain('#FAIL 0')
     expect(existsSync(join(work, 'nowhere'))).toBe(false)
   })
+})
+
+describe('typer-recv.mjs：待机超时', () => {
+  it('长时间没有任何输入时自动退出，并先给出续传令牌', async () => {
+    const source = makeSource(8000)
+    writeFileSync(join(work, 'src.bin'), source)
+    const { lines } = await appFrames('src.bin')
+
+    // 只喂开始帧与第一片，之后保持 stdin 打开、不再输入
+    const result = await runToolKeepingStdin(
+      ['-d', 'idle-work', '--idle-timeout', '1'],
+      work,
+      `${lines[0]}\n${lines[1]}\n`,
+      8000
+    )
+
+    expect(result.code).toBe(2)
+    expect(result.stdout).toContain('#MISS')
+    expect(result.stdout).toContain('自动退出')
+    // 在 stdin 关闭之前就自己退了（1 秒超时 + 2 秒检查间隔）
+    expect(result.elapsedMs).toBeLessThan(6000)
+  }, 60_000)
 })
 
 describe('typer-recv.mjs：真实链路噪声的容忍', () => {

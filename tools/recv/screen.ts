@@ -25,8 +25,6 @@ export interface ScreenCaps {
   vt: boolean
   /** 终端列数 */
   columns: number
-  /** 是否可用方块字符 / 盲文转圈 */
-  unicode: boolean
   /** 是否上色 */
   color: boolean
 }

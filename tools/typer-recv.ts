@@ -88,6 +88,7 @@ const HELP = `Typer 文件接收端 v2（逐片校验 + 断点续传 + 整文件
       --stats             结束时打印字符数/字节数与耗时
       --progress <mode>   进度回显：auto（终端下自动，默认）/ on / plain（逐行，写日志用）/ off
       --ime <mode>        启动时切英文直输、退出时还原：auto（默认，交互式终端才切）/ on / off
+      --idle-timeout <秒> 多久没有输入就自动退出（默认 600；0 关闭）
   -q, --quiet             不打印提示（仅保留 #FAIL / #MISS / #DONE / #BAD）
   -v, --verbose           打印逐片处理信息（很吵，仅排障用）
       --selftest          自检编解码、CRC、帧解析
@@ -114,6 +115,8 @@ interface Options {
    * （中文输入法会把打进来的帧吃成候选上屏），退出时会把状态还原
    */
   ime: 'auto' | 'on' | 'off'
+  /** 多久没有任何输入就自动退出（秒）；0 表示不等 */
+  idleTimeout: number
   quiet: boolean
   verbose: boolean
 }
@@ -137,6 +140,7 @@ function parseArgs(argv: string[]): Options {
     stats: false,
     progress: 'auto',
     ime: 'auto',
+    idleTimeout: 600,
     quiet: false,
     verbose: false
   }
@@ -171,6 +175,12 @@ function parseArgs(argv: string[]): Options {
         throw new Error(`--ime 只接受 auto / on / off（收到 ${value}）`)
       }
       options.ime = value
+    } else if (arg === '--idle-timeout') {
+      const value = Number(next())
+      if (!Number.isInteger(value) || value < 0) {
+        throw new Error(`--idle-timeout 只接受非负整数秒（收到 ${value}）`)
+      }
+      options.idleTimeout = value
     } else if (arg === '-q' || arg === '--quiet') options.quiet = true
     else if (arg === '-v' || arg === '--verbose') options.verbose = true
     else if (arg === '-h' || arg === '--help') {
@@ -198,7 +208,7 @@ try {
 
 const quiet = options.quiet
 const verbose = options.verbose
-const startedAt = Date.now()
+let startedAt = Date.now()
 
 // ---------------------------------------------------------------------------
 // 终端与进度回显
@@ -248,9 +258,15 @@ const IDLE_WARN_REPEAT_MS = 20_000
 /** 速率按最近这段时间的增量算（毫秒）：用“从开始到现在的平均值”会把卡顿与恢复都抹平 */
 const RATE_WINDOW_MS = 8_000
 
+/** 待机守卫的检查间隔（毫秒）：只做“是否已经太久没输入”的判定 */
+const IDLE_GUARD_INTERVAL_MS = 2_000
+
+/** 合并完成后等待按键的上限（毫秒）：人不回来就自动退出，不占着终端 */
+const CONTINUE_WAIT_MS = 60_000
+
 /** 控制台能力（由 prepareConsole 在 run() 里填；未初始化时按“纯文本输出”处理） */
 let setup: ConsoleSetup = {
-  caps: { tty: false, vt: false, columns: 80, unicode: false, color: false },
+  caps: { tty: false, vt: false, columns: 80, color: false },
   probed: false,
   note: null,
   ime: null
@@ -285,14 +301,13 @@ function style(text: string, kind: Style): string {
 }
 
 /**
- * @description 状态标记：终端支持 Unicode 时用符号，否则退回 ASCII（老控制台不认 `✔`）
+ * @description 状态标记
  * @param kind 类型
  * @returns 标记文本
  */
 function mark(kind: 'ok' | 'err' | 'warn'): string {
-  const unicode = setup.caps.unicode
-  if (kind === 'ok') return unicode ? '✔' : 'OK'
-  if (kind === 'err') return unicode ? '✖' : '!!'
+  if (kind === 'ok') return '✔'
+  if (kind === 'err') return '✖'
   return '!'
 }
 
@@ -365,11 +380,38 @@ function compactIndexList(text: string, limit = 160): string {
 }
 
 /**
+ * @description 已收到的线上字节（含正在收的半帧）
+ * @returns 字节数
+ */
+function receivedWireBytes(): number {
+  const task = meta
+  if (!task) return 0
+  let bytes = 0
+  for (const seq of done) bytes += expectedBytes(seq)
+  const inflight = frameInFlight()
+  if (inflight && !done.has(inflight.order)) {
+    bytes += expectedBytes(inflight.order) * inflight.fraction
+  }
+  return Math.min(task.wire, bytes)
+}
+
+/**
+ * @description 折算成原文件字节：速率与「已收/总量」都和界面同一口径
+ * @returns 已收文件字节数
+ */
+function currentReceivedBytes(): number {
+  const task = meta
+  if (!task || task.wire <= 0) return 0
+  return Math.round((receivedWireBytes() / task.wire) * task.size)
+}
+
+/**
  * @description 把当前状态折算成排版字段
  * @returns 排版视图输入
  */
 function viewInput(): ViewInput {
   const task = meta
+  const missingList = task ? missingIndexes(task.total, [...done]) : []
   return {
     now: Date.now(),
     startedAt,
@@ -382,7 +424,14 @@ function viewInput(): ViewInput {
     rate: currentRate(),
     lastInputAt,
     idleWarnMs: IDLE_WARN_MS,
-    compressed: task ? task.compression === 'br' : false
+    compressed: task ? task.compression === 'br' : false,
+    resumedChunks: resumedParts,
+    sessionDone: doneInSession.size,
+    awaitingResume,
+    missingText:
+      awaitingResume && task && missingList.length > 0
+        ? compactIndexList(formatIndexList(missingList, task.total), 40)
+        : ''
   }
 }
 
@@ -395,12 +444,43 @@ function drawProgress(force = false): void {
   const mode = progressMode()
   const rows = layoutProgress(buildView(viewInput()), {
     columns: setup.caps.columns,
-    unicode: setup.caps.unicode,
     maxRows: mode === 'block' ? 2 : 1,
     spinnerIndex,
     mode: mode === 'plain' ? 'plain' : 'inline'
   })
   screen.draw(rows, force)
+}
+
+/**
+ * @description 启动待机守卫：长时间没有任何输入就自动退出（先给出续传令牌）。
+ *
+ * / 退出是为了不把终端、单实例锁和英文输入法状态一直占着；分片与 meta.json 都在磁盘上，
+ * 重跑并粘回令牌即可接着收。合并/解压期间不计时（那段时间本来就没有新输入）。
+ */
+function startIdleGuard(): void {
+  if (options.idleTimeout <= 0) return
+  // 从文件读帧（--in）是一趟性的：流结束就退出，不需要这个守卫
+  if (options.input !== null) return
+  const timeoutMs = options.idleTimeout * 1000
+  const timer = setInterval(() => {
+    if (idleTimedOut || mergeDone >= 0) return
+    const idleMs = Date.now() - Math.max(lastInputAt, startedAt)
+    if (idleMs < timeoutMs) return
+    idleTimedOut = true
+    clearInterval(timer)
+
+    const task = meta
+    const remaining = task ? missingIndexes(task.total, [...done]) : []
+    if (task && remaining.length > 0) reportMissing(remaining)
+    info(
+      style(`已 ${formatSpan(idleMs)}没有任何输入，自动退出`, 'warn') +
+        (task ? '；重跑后粘上续传令牌即可继续' : '')
+    )
+    restoreConsoleIme()
+    releaseLock()
+    process.exit(task ? EXIT.INCOMPLETE : EXIT.USAGE)
+  }, IDLE_GUARD_INTERVAL_MS)
+  timer.unref?.()
 }
 
 /** @description 收到任何输入（哪怕只是半帧）：记下“上游还活着”，用于区分卡住与正在收 */
@@ -414,11 +494,7 @@ function noteInput(): void {
  */
 function noteProgress(force = false): void {
   lastInputAt = Date.now()
-  const task = meta
-  if (task) {
-    const ratio = task.total === 0 ? 1 : done.size / task.total
-    recordRateSample(Math.round(task.size * ratio))
-  }
+  recordRateSample(currentReceivedBytes())
   drawProgress(force)
 }
 
@@ -438,13 +514,20 @@ function startProgressLoop(): void {
     const finished = merging || (meta !== null && done.size >= meta.total)
     const idleMs = now - Math.max(lastInputAt, startedAt)
 
+    // 就地采样：长片（一帧要打几十秒）期间速率与剩余时间也会继续跟新，不再定格
+    if (!merging) recordRateSample(currentReceivedBytes())
+
     if (!finished && idleMs >= IDLE_WARN_MS && now - lastIdleWarnAt >= IDLE_WARN_REPEAT_MS) {
       lastIdleWarnAt = now
       const where = meta ? `（已完成 ${done.size}/${meta.total} 片）` : '（还没收到开始帧）'
-      info(
-        style(`${mark('warn')} 已 ${formatSpan(idleMs)}没有任何输入${where}`, 'warn') +
-          '：上游可能停了、链路卡住，或目标窗口里弹出的模态框挡住了输入'
-      )
+      // 能原地重绘时，断流状态已经写在进度块里，再打一行只会把界面刷掉；
+      // 写日志（重定向 / 管道）时才需要单独一行
+      if (progressMode() === 'plain') {
+        info(
+          style(`${mark('warn')} 已 ${formatSpan(idleMs)}没有任何输入${where}`, 'warn') +
+            '：上游可能停了、链路卡住，或目标窗口里的模态框搞住了输入'
+        )
+      }
     }
     drawProgress()
   }, 300)
@@ -570,7 +653,6 @@ function runSelfTest(): number {
     for (const columns of [40, 60, 72, 92, 120, 160]) {
       const rows = layoutProgress(view, {
         columns,
-        unicode: true,
         maxRows: 2,
         spinnerIndex: 1,
         mode: 'inline'
@@ -583,7 +665,6 @@ function runSelfTest(): number {
     }
     const asciiRows = layoutProgress(view, {
       columns: 60,
-      unicode: false,
       maxRows: 1,
       spinnerIndex: 3,
       mode: 'plain'
@@ -631,6 +712,18 @@ let pendingEnd: ParsedEndFrame | null = null
 let noiseLines = 0
 let receivedChunks = 0
 let receivedWire = 0
+/** 本轮可以合并了：全部片已到齐（结束帧可选，收齐就是完成） */
+let mergeRequested = false
+/** 本轮开始时目录里已有的片数（> 0 表示这是续传补发） */
+let resumedParts = 0
+/** 本轮新收下并通过逐片校验的片号（用于「本次 x/y 片」） */
+const doneInSession = new Set<number>()
+/** 已收到结束帧但仍缺片：继续等补发，不退出也不合并 */
+let awaitingResume = false
+/** 最近一次打印过的缺片文本（同一份缺失不重复刷屏） */
+let lastMissSignature = ''
+/** 是否已因待机超时退出（避免重复触发） */
+let idleTimedOut = false
 
 /**
  * @description 某片的分片文件路径（文件名带 CRC，续传时可确认是不是同一份数据）
@@ -915,11 +1008,19 @@ function handleBegin(frame: ParsedBeginFrame): void {
     name: frame.name
   })
   const found = scanExistingParts()
+  // 重复的开始帧是幂等的：只有本轮还没收过片时，已有片才算续传基数
+  if (doneInSession.size === 0) resumedParts = found
+  const remaining = missingIndexes(frame.total, [...done])
   info(
-    `${style(`${mark('ok')} 接收开始`, 'ok')}  ${frame.total} 片 · 文件 ${formatSize(frame.size)}` +
+    `${style(`${mark('ok')} ${found > 0 ? '续传开始' : '接收开始'}`, 'ok')}  ${frame.total} 片 · 文件 ${formatSize(frame.size)}` +
       `（线上 ${formatSize(frame.wire)}，每片 ${formatSize(frame.chunk)}）· ` +
       `${frame.alphabet} / ${frame.compression} / ${frame.mode}` +
-      (found > 0 ? ` · ${style(`续传已有 ${found} 片`, 'warn')}` : '')
+      (found > 0
+        ? ` · 已有 ${found} 片，还缺 ${remaining.length} 片` +
+          (remaining.length > 0
+            ? `（${compactIndexList(formatIndexList(remaining, frame.total))}）`
+            : '')
+        : '')
   )
   info(
     `${style('  输出', 'dim')} ${options.out ?? frame.name ?? `job-${frame.job}.bin`}` +
@@ -953,36 +1054,91 @@ function handleData(frame: ParsedDataFrame): void {
 
   const wire = decodeSymbols(frame.payload, task.alphabet, frame.bytes)
   verifyDataFrame(frame, wire)
-  receivedChunks += 1
-  receivedWire += wire.length
-  done.add(frame.seq)
-  missing.delete(frame.seq)
+  // 补发已经开始：状态从「等待补片」回到「续传中」（再停住时会显示无输入时长）
+  awaitingResume = false
 
   if (options.probe) {
+    receivedChunks += 1
+    receivedWire += wire.length
+    done.add(frame.seq)
+    missing.delete(frame.seq)
+    doneInSession.add(frame.seq)
     noteProgress()
+    if (done.size >= task.total) mergeRequested = true
     return
   }
 
   const target = partPath(frame.seq, frame.crc32)
   // 同名分片已存在（同片同 CRC）→ 跳过，整批重放也不会重复写盘
-  if (existsSync(target)) {
-    noteProgress()
-    return
-  }
-
-  // 同片不同 CRC（上次那版是坏的）：先删掉旧文件，避免续传时被误认为已完成
-  for (const entry of readdirSync(dir)) {
-    if (entry.startsWith(`p${frame.seq}-`) && entry.endsWith('.bin')) {
-      try {
-        unlinkSync(join(dir, entry))
-      } catch {
-        // 删不掉也不影响：新文件用新 CRC 命名
+  if (!existsSync(target)) {
+    // 同片不同 CRC（上次那版是坏的）：先删掉旧文件，避免续传时被误认为已完成
+    for (const entry of readdirSync(dir)) {
+      if (entry.startsWith(`p${frame.seq}-`) && entry.endsWith('.bin')) {
+        try {
+          unlinkSync(join(dir, entry))
+        } catch {
+          // 删不掉也不影响：新文件用新 CRC 命名
+        }
       }
     }
+    writeFileSync(target, wire)
   }
-  writeFileSync(target, wire)
+
+  // 写盘成功之后才计入完成：先计数后落盘的话，磁盘满之类的情况会让缺片统计变假
+  receivedChunks += 1
+  receivedWire += wire.length
+  done.add(frame.seq)
+  missing.delete(frame.seq)
+  doneInSession.add(frame.seq)
   if (verbose && receivedChunks % 32 === 0) info(`已收 ${receivedChunks}/${task.total} 片`)
   noteProgress()
+  // 全片到齐就是完成：结束帧可能丢，但数据齐了没必要再等
+  if (done.size >= task.total) mergeRequested = true
+}
+
+/**
+ * @description 处理结束帧：片齐就请求合并；缺片则打印续传令牌后继续等待补发
+ * @param frame 结束帧
+ */
+function handleEndFrame(frame: ParsedEndFrame): void {
+  const task = meta
+  if (!task) {
+    pendingEnd = frame
+    mergeRequested = true
+    return
+  }
+  const remaining = missingIndexes(task.total, [...done])
+  if (frame.job === task.job && remaining.length > 0) {
+    // 缺片绝不能合并：打印一次令牌，然后停在「等待补片」继续听，补发到了自动合并
+    pendingEnd = null
+    awaitingResume = true
+    reportMissing(remaining)
+    drawProgress(true)
+    return
+  }
+  pendingEnd = frame
+  mergeRequested = true
+}
+
+/**
+ * @description 把缺片说清楚：`#MISS` + `@T2R` 令牌 + 一行人话。同一份缺失只打一次
+ * @param missingList 缺失片号
+ * @param force 即使与上次相同也重新打印
+ */
+function reportMissing(missingList: number[], force = false): void {
+  const task = meta
+  if (!task || missingList.length === 0) return
+  const listText = formatIndexList(missingList, task.total)
+  if (!force && listText === lastMissSignature) return
+  lastMissSignature = listText
+  ack(`#MISS ${listText}`)
+  ack(buildResumeToken({ job: task.job, total: task.total, missing: missingList }))
+  writeReport(true)
+  info(
+    `${style(`${mark('err')} 数据不全`, 'err')}：还缺 ${missingList.length}/${task.total} 片` +
+      `（${compactIndexList(listText)}）\n` +
+      '  → 在 Typer 里粘贴上面的 @T2R 令牌，只补这些片即可；已收到的分片全部保留，收齐后自动合并'
+  )
 }
 
 /**
@@ -1142,13 +1298,17 @@ async function mergeAndVerify(): Promise<number> {
   if (!quiet) {
     const elapsedMs = Math.max(1, Date.now() - startedAt)
     const average = (task.size / elapsedMs) * 1000
+    const title = resumedParts > 0 ? '续传完成' : '传输完成'
+    const retried = resumedParts > 0 ? ` · 本次补发 ${doneInSession.size} 片` : ''
     info(
-      `${style(`${mark('ok')} 传输完成`, 'ok')}  ${formatSize(task.size)} · ${task.total} 片 · ` +
-        `用时 ${elapsedMs < 1000 ? '不到 1 秒' : formatSpan(elapsedMs)} · ` +
+      `${style(`${mark('ok')} ${title}`, 'ok')}  ${formatSize(task.size)} · ${task.total} 片` +
+        `${retried} · 用时 ${elapsedMs < 1000 ? '不到 1 秒' : formatSpan(elapsedMs)} · ` +
         `平均 ${formatSize(average)}/s · SHA-256 已校验`
     )
     info(`  ${style('输出', 'dim')} ${outputPath}`)
-    info(`  ${style('提示', 'dim')} 关闭本窗口（或按 Ctrl+C）即可退出`)
+    const canStay =
+      options.input === null && process.stdin.isTTY === true && options.progress !== 'off'
+    if (!canStay) info(`  ${style('提示', 'dim')} 关闭本窗口（或按 Ctrl+C）即可退出`)
   }
   return EXIT.OK
 }
@@ -1270,12 +1430,10 @@ function onResize(): void {
 }
 
 /**
- * @description 主循环：先挂监听再读输入、分发帧，最后合并校验
+ * @description 主循环：读输入 → 收片 → 合并校验 →（交互式终端下）询问是否继续
  * @returns 退出码
  */
 async function run(): Promise<number> {
-  const splitter = createStreamSplitter()
-
   // 终端能力与输入法：Windows 下用一次**隐藏的** PowerShell 一起搞定
   // （UTF-8 代码页 + 开 ANSI + 必要时切英文直输），退出时再还原
   const wantIme =
@@ -1299,27 +1457,35 @@ async function run(): Promise<number> {
         return EXIT.USAGE
       }
       const found = scanExistingParts()
+      resumedParts = found
       if (found > 0 && !quiet) {
-        info(style(`续传：目录里已有 ${found}/${loaded.total} 片`, 'warn'))
+        const remaining = missingIndexes(loaded.total, [...done])
+        info(
+          style(`续传：目录里已有 ${found}/${loaded.total} 片`, 'warn') +
+            (remaining.length > 0
+              ? `，还缺 ${remaining.length} 片（${compactIndexList(
+                  formatIndexList(remaining, loaded.total)
+                )}）`
+              : '，已收齐，可让它直接合并')
+        )
       }
     }
   }
 
   /**
-   * @description 逐条处理，并判断是否已收到结束帧
+   * @description 逐条处理已切出的帧，并判断本轮是否可以收工
    * @param lines 待处理的行
-   * @returns 是否应停止读取
+   * @returns 是否应停止本轮读取
    */
   const consume = (lines: string[]): boolean => {
     for (const line of lines) {
       if (lockBlocked) return true
       handleLine(line)
-      if (pendingEnd) return true
+      if (mergeRequested) return true
     }
     return false
   }
 
-  let ended = false
   const source = options.input ? createReadStream(resolve(options.input), 'utf8') : process.stdin
 
   if (!options.input) {
@@ -1331,77 +1497,183 @@ async function run(): Promise<number> {
   }
 
   /**
-   * @description 输入流回调：处理 Ctrl+C / Ctrl+D 与普通数据
-   * @param chunk 输入数据块
+   * @description 读一轮输入：直到「全部片已到齐」或输入结束（EOF / Ctrl+C / Ctrl+D）
+   *
+   * 与旧实现的关键差别：收到结束帧但缺片时**不退出**，而是打一次令牌后继续等补发，
+   * 等待状态直接显示在进度块里（不另起一行刷屏）。
+   * @returns 结束方式
    */
-  const onData = (chunk: string | Buffer): void => {
-    if (lockBlocked) return
-    const text = typeof chunk === 'string' ? chunk : chunk.toString('utf8')
-    // 任何字节都算“上游还活着”：帧要整行才算收到，但靠这个才不会把“正在收长片”误报成断流
-    noteInput()
-    if (text.includes('\u0003')) {
-      ended = true
-      source.destroy()
-      return
-    }
-    if (text.includes('\u0004')) {
-      if (consume(splitter.push(text.slice(0, text.indexOf('\u0004'))))) ended = true
-      source.destroy()
-      return
-    }
-    if (consume(splitter.push(text))) {
-      ended = true
-      // 交互式输入流（TTY）不会自己 EOF：结束帧就是"传输完成"的信号，收到就收工
-      if (process.stdin.isTTY && !options.input) source.destroy()
-    }
-  }
+  const receivePass = (): Promise<'complete' | 'closed'> => {
+    const splitter = createStreamSplitter()
+    return new Promise((resolvePass) => {
+      let settled = false
+      const settle = (kind: 'complete' | 'closed'): void => {
+        if (settled) return
+        settled = true
+        source.off('data', onData)
+        source.off('end', onEnd)
+        source.off('close', onEnd)
+        source.off('error', onError)
+        source.pause()
+        resolvePass(kind)
+      }
 
-  source.on('data', onData)
-  source.resume()
-  startProgressLoop()
+      /**
+       * @description 输入流回调：处理 Ctrl+C / Ctrl+D 与普通数据
+       * @param chunk 输入数据块
+       */
+      const onData = (chunk: string | Buffer): void => {
+        if (lockBlocked) {
+          settle('closed')
+          return
+        }
+        const text = typeof chunk === 'string' ? chunk : chunk.toString('utf8')
+        // 任何字节都算“上游还活着”：帧要整行才算收到，但靠这个才不会把“正在收长片”误报成断流
+        noteInput()
+        if (text.includes('\u0003')) {
+          settle('closed')
+          return
+        }
+        if (text.includes('\u0004')) {
+          consume(splitter.push(text.slice(0, text.indexOf('\u0004'))))
+          settle('closed')
+          return
+        }
+        if (consume(splitter.push(text))) settle('complete')
+      }
 
-  await new Promise<void>((resolvePromise) => {
-    const finish = (): void => resolvePromise()
-    source.on('end', finish)
-    source.on('close', finish)
-    source.on('error', (error) => {
-      info(`读取输入失败：${error.message}`)
-      finish()
+      const onEnd = (): void => {
+        consume(splitter.flush())
+        settle('closed')
+      }
+      const onError = (error: Error): void => {
+        info(`读取输入失败：${error.message}`)
+        settle('closed')
+      }
+
+      source.on('data', onData)
+      source.once('end', onEnd)
+      source.once('close', onEnd)
+      source.on('error', onError)
+      source.resume()
     })
-  })
+  }
 
-  if (!ended) consume(splitter.flush())
-  if (lockBlocked) return EXIT.USAGE
+  /** 交互式终端里合并完成后才询问“继续还是退出”；脚本 / 管道场景直接退出 */
+  const canPromptContinue = (): boolean =>
+    options.input === null && process.stdin.isTTY === true && !quiet && options.progress !== 'off'
 
-  if (options.probe) {
-    ack(
-      `#PROBE chunks=${receivedChunks} wire=${receivedWire} noise=${noiseLines} alpha=${
-        meta ? meta.alphabet : '-'
-      }`
+  /**
+   * @description 合并完成后读一个键：R 继续接收下一个任务，其它键退出
+   * @returns 是否继续
+   */
+  const askContinue = async (): Promise<boolean> => {
+    info(
+      `  ${style('R', 'accent')} 继续接收下一个任务  ·  其它键退出` +
+        `（${CONTINUE_WAIT_MS / 1000} 秒后自动退出）`
     )
-    return receivedChunks > 0 ? EXIT.OK : EXIT.INCOMPLETE
-  }
-
-  if (!meta) {
-    info('没有收到任何有效帧。请确认输入流里是 Typer 生成的 v2 帧（帧头以 @T2 开头）。')
-    return noiseLines > 0 ? EXIT.INCOMPLETE : EXIT.USAGE
-  }
-
-  if (pendingEnd) {
-    if (pendingEnd.job !== meta.job) {
-      ack('#FAIL - job')
-      info(`结束帧属于任务 ${pendingEnd.job}，当前任务是 ${meta.job}。`)
-    } else if (pendingEnd.sha256 !== meta.sha256 || pendingEnd.size !== meta.size) {
-      ack('#FAIL - field')
-      info('结束帧的整文件哈希/大小与开始帧不一致：可能混入了另一次任务的数据。')
+    process.stdin.setRawMode?.(true)
+    process.stdin.resume()
+    const answer = await new Promise<string>((resolveKey) => {
+      let timer: ReturnType<typeof setTimeout> | null = null
+      const finish = (value: string): void => {
+        if (timer !== null) clearTimeout(timer)
+        process.stdin.off('data', onData)
+        resolveKey(value)
+      }
+      const onData = (chunk: string | Buffer): void => {
+        finish(typeof chunk === 'string' ? chunk : chunk.toString('utf8'))
+      }
+      timer = setTimeout(() => finish(''), CONTINUE_WAIT_MS)
+      timer.unref?.()
+      process.stdin.on('data', onData)
+    })
+    process.stdin.pause()
+    const key = answer.replace(/\s/g, '').charAt(0).toLowerCase()
+    if (key.length === 0) {
+      info(style(`已 ${CONTINUE_WAIT_MS / 1000} 秒没有操作，自动退出`, 'warn'))
+      return false
     }
+    return key === 'r'
   }
 
-  if (missingIndexes(meta.total, [...done]).length > 0) return mergeAndVerify()
-  if (!pendingEnd) {
-    info('未收到结束帧，但所有分片都已通过逐片校验，继续按开始帧的哈希合并校验。')
+  /** @description 合并成功后清空任务状态，准备接收下一个任务（分片目录由新的开始帧决定） */
+  const prepareNextRound = (): void => {
+    releaseLock()
+    meta = null
+    dir = ''
+    done.clear()
+    missing.clear()
+    failures.clear()
+    doneInSession.clear()
+    pendingEnd = null
+    awaitingResume = false
+    lastMissSignature = ''
+    mergeRequested = false
+    receivedChunks = 0
+    receivedWire = 0
+    noiseLines = 0
+    resumedParts = 0
+    mergeDone = -1
+    mergeTotal = 0
+    rateSamples.length = 0
+    lastInputAt = Date.now()
+    startedAt = Date.now()
+    reportPath = options.report && options.report !== '-' ? resolve(options.report) : null
+    screen.forget()
+    drawProgress(true)
   }
-  return mergeAndVerify()
+
+  startProgressLoop()
+  startIdleGuard()
+
+  for (;;) {
+    // 预载的分片已经齐了（--dir 续传）：不必再等输入，直接合并
+    const pass: 'complete' | 'closed' = mergeRequested ? 'complete' : await receivePass()
+    if (lockBlocked) return EXIT.USAGE
+
+    if (options.probe) {
+      ack(
+        `#PROBE chunks=${receivedChunks} wire=${receivedWire} noise=${noiseLines} alpha=${
+          meta ? meta.alphabet : '-'
+        }`
+      )
+      return receivedChunks > 0 ? EXIT.OK : EXIT.INCOMPLETE
+    }
+
+    if (pass === 'closed' && !meta) {
+      info('没有收到任何有效帧。请确认输入流里是 Typer 生成的 v2 帧（帧头以 @T2 开头）。')
+      return noiseLines > 0 ? EXIT.INCOMPLETE : EXIT.USAGE
+    }
+    if (!meta) return EXIT.USAGE
+
+    if (pendingEnd) {
+      if (pendingEnd.job !== meta.job) {
+        ack('#FAIL - job')
+        info(`结束帧属于任务 ${pendingEnd.job}，当前任务是 ${meta.job}。`)
+      } else if (pendingEnd.sha256 !== meta.sha256 || pendingEnd.size !== meta.size) {
+        ack('#FAIL - field')
+        info('结束帧的整文件哈希/大小与开始帧不一致：可能混入了另一次任务的数据。')
+      }
+    }
+
+    const remaining = missingIndexes(meta.total, [...done])
+    if (remaining.length > 0) {
+      // 输入已经结束（EOF / Ctrl+C）但还缺片：给出令牌，本次以「数据不全」退出
+      reportMissing(remaining)
+      return EXIT.INCOMPLETE
+    }
+
+    if (!pendingEnd) {
+      info('未收到结束帧，但所有分片都已通过逐片校验，继续按开始帧的哈希合并校验。')
+    }
+    const code = await mergeAndVerify()
+    if (code !== EXIT.OK) return code
+
+    if (!canPromptContinue()) return EXIT.OK
+    if (!(await askContinue())) return EXIT.OK
+    prepareNextRound()
+  }
 }
 
 /**
@@ -1435,7 +1707,7 @@ function handleLine(rawLine: string): void {
   try {
     if (frame.kind === 'begin') handleBegin(frame)
     else if (frame.kind === 'data') handleData(frame)
-    else if (frame.kind === 'end') pendingEnd = frame
+    else if (frame.kind === 'end') handleEndFrame(frame)
     else info(`提示：这是一条续传令（缺 ${formatIndexList(frame.missing, frame.total)}）。`)
   } catch (error) {
     if (error instanceof LockBusyError) {
@@ -1465,6 +1737,11 @@ process.on('exit', () => {
   releaseLock()
 })
 process.once('SIGINT', () => {
+  // 中止前先把续传令牌打出来：用户按 Ctrl+C 之后通常还要拿这段回去补发
+  if (meta) {
+    const remaining = missingIndexes(meta.total, [...done])
+    if (remaining.length > 0) reportMissing(remaining)
+  }
   restoreConsoleIme()
   screen.clear()
   releaseLock()

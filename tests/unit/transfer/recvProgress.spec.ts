@@ -51,7 +51,6 @@ const base: ViewInput = {
 function options(overrides: Partial<LayoutOptions> = {}): LayoutOptions {
   return {
     columns: 100,
-    unicode: true,
     maxRows: 2,
     spinnerIndex: 1,
     mode: 'inline',
@@ -74,17 +73,17 @@ describe('接收端排版 · 文本宽度', () => {
     }
   })
 
-  it('进度条按比例填充，且总宽不变', () => {
-    expect(renderBar(0, 10, false)).toBe('----------')
-    expect(renderBar(1, 10, false)).toBe('##########')
-    expect(renderBar(0.5, 10, true)).toBe('█████░░░░░')
-    expect(displayWidth(renderBar(0.37, 20, true))).toBe(20)
+  it('进度条按比例填充，且总宽不变（固定方块字符，不做 ASCII 降级）', () => {
+    expect(renderBar(0, 10)).toBe('░░░░░░░░░░')
+    expect(renderBar(1, 10)).toBe('██████████')
+    expect(renderBar(0.5, 10)).toBe('█████░░░░░')
+    expect(displayWidth(renderBar(0.37, 20))).toBe(20)
   })
 
   it('转圈帧循环且永不越界', () => {
-    expect(spinnerFrame(0, false)).toBe('|')
-    expect(spinnerFrame(4, false)).toBe('|')
-    expect(spinnerFrame(-1, true)).toBeTruthy()
+    expect(spinnerFrame(0)).toBe('\u280b')
+    expect(spinnerFrame(8)).toBe('\u280b')
+    expect(spinnerFrame(-1)).toBeTruthy()
   })
 })
 
@@ -136,6 +135,62 @@ describe('接收端排版 · 视图折算', () => {
     expect(view.overall).toBe(0)
     expect(view.etaMs).toBeNull()
     expect(view.elapsedMs).toBe(42_000)
+  })
+
+  it('续传：同行给出「本次 / 整体」两套片数（进度条字符不变，靠文字区分）', () => {
+    const view = buildView({
+      ...base,
+      resumedChunks: 5,
+      sessionDone: 2,
+      doneCount: 7,
+      inFlight: null
+    })
+    expect(view.resumeMode).toBe(true)
+    expect(view.sessionTotal).toBe(3)
+    const text = layoutProgress(view, options())
+      .map((row) => plainText(row))
+      .join('\n')
+    expect(text).toContain('续传中')
+    expect(text).toContain('本次 2/3 片')
+    expect(text).toContain('整体 7/8 片')
+    expect(text).toContain('\u2588')
+    // 不再用 ▉ 作为续传标识
+    expect(text).not.toContain('\u2589')
+  })
+
+  it('等待补片：报缺片与已等时长，且不再画进度条', () => {
+    const view = buildView({
+      ...base,
+      inFlight: null,
+      awaitingResume: true,
+      missingText: '5-7',
+      lastInputAt: 30_000,
+      now: 42_000
+    })
+    expect(view.stage).toBe('awaiting')
+    const text = layoutProgress(view, options())
+      .map((row) => plainText(row))
+      .join('\n')
+    expect(text).toContain('等待补片')
+    expect(text).toContain('缺 5-7')
+    expect(text).toContain('无输入 00:12')
+  })
+
+  it('断流后速率归零、剩余时间不再显示旧值', () => {
+    const view = buildView({
+      ...base,
+      inFlight: { order: 5, fraction: 0.1 },
+      rate: 14_500,
+      lastInputAt: 20_000,
+      now: 42_000
+    })
+    expect(view.stalled).toBe(true)
+    expect(view.rate).toBe(0)
+    expect(view.etaMs).toBeNull()
+    const text = layoutProgress(view, options())
+      .map((row) => plainText(row))
+      .join('\n')
+    expect(text).toContain('剩余 —')
   })
 
   it('合并阶段按片数报进度，并保留“已收齐”的状态', () => {

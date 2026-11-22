@@ -175,23 +175,20 @@ export function plainText(segments: readonly Segment[]): string {
 }
 
 /**
- * @description 进度条
+ * @description 进度条（固定用方块字符）
  * @param ratio 0~1
  * @param width 宽度（格数）
- * @param unicode 是否可用方块字符（否则退回 ASCII）
- * @returns 形如 `████░░░░` / `####----`
+ * @returns 形如 `████░░░░`
  */
-export function renderBar(ratio: number, width: number, unicode: boolean): string {
+export function renderBar(ratio: number, width: number): string {
   const clamped = Number.isFinite(ratio) ? Math.max(0, Math.min(1, ratio)) : 0
   const cells = Math.max(1, Math.floor(width))
   const filled = Math.round(clamped * cells)
-  const full = unicode ? '\u2588' : '#'
-  const empty = unicode ? '\u2591' : '-'
-  return full.repeat(filled) + empty.repeat(cells - filled)
+  return '\u2588'.repeat(filled) + '\u2591'.repeat(cells - filled)
 }
 
-/** 转圈动画帧（`unicode` 为 false 时用 `|/-\`，任何控制台都能显示） */
-const SPINNER_UNICODE = [
+/** 转圈动画帧（盲文点阵，一行内旋转不跳列宽） */
+const SPINNER_FRAMES = [
   '\u280b',
   '\u2819',
   '\u2839',
@@ -201,17 +198,13 @@ const SPINNER_UNICODE = [
   '\u2826',
   '\u2827'
 ]
-const SPINNER_ASCII = ['|', '/', '-', '\\']
 
 /**
  * @description 取一帧动画
  * @param index 帧序号（自增即可，函数自己取模）
- * @param unicode 是否可用盲文点阵
  * @returns 一个字符
  */
-export function spinnerFrame(index: number, unicode: boolean): string {
-  const frames = unicode ? SPINNER_UNICODE : SPINNER_ASCII
-  const safe = frames.length === 0 ? 1 : frames.length
-  const at = ((index % safe) + safe) % safe
-  return frames[at] as string
+export function spinnerFrame(index: number): string {
+  const at = ((index % SPINNER_FRAMES.length) + SPINNER_FRAMES.length) % SPINNER_FRAMES.length
+  return SPINNER_FRAMES[at] as string
 }

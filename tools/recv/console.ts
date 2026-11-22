@@ -159,14 +159,14 @@ function runPowerShell(script: string): Reply | null {
 export function prepareConsole(options: { ensureIme: boolean }): ConsoleSetup {
   const tty = process.stdout.isTTY === true
   const columns = Number(process.stdout.columns ?? 0) || 80
-  const base: ScreenCaps = { tty, vt: false, columns, unicode: false, color: false }
+  const base: ScreenCaps = { tty, vt: false, columns, color: false }
   if (!tty) return { caps: base, probed: false, note: null, ime: null }
 
   if (process.platform !== 'win32') {
     // 非 Windows 的控制台本来就是 ANSI 终端，不需要任何辅助进程
     const vt = Boolean(process.env['TERM']) && process.env['TERM'] !== 'dumb'
     return {
-      caps: { ...base, vt, unicode: vt, color: vt && colorWanted() },
+      caps: { ...base, vt, color: vt && colorWanted() },
       probed: vt,
       note: null,
       ime: null
@@ -184,7 +184,6 @@ export function prepareConsole(options: { ensureIme: boolean }): ConsoleSetup {
   }
 
   const vt = reply['vt'] === '1'
-  const codePage = Number(reply['cp'] ?? 0) || 0
   const saved = parseSaved(reply['s'])
   pendingRestore = saved
   restored = false
@@ -193,8 +192,7 @@ export function prepareConsole(options: { ensureIme: boolean }): ConsoleSetup {
     caps: {
       ...base,
       vt,
-      // 65001 才敢用方块字符与中文提示：代码页不对时汉字会变成乱码
-      unicode: vt && codePage === 65001,
+      // 颜色只在 ANSI 可用时开；方块与符号固定使用，不再做 ASCII 降级
       color: vt && colorWanted()
     },
     probed: reply['console'] === '1' || reply['ok'] === '1',
