@@ -1,3 +1,5 @@
+import type { ComputedRef } from 'vue'
+
 /**
  * @description 把主题写到根元素上，供 CSS 变量与 Element Plus 深色变量选择
  * @param dark 是否深色
