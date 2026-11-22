@@ -710,6 +710,10 @@ const missing = new Set<number>()
 const failures = new Map<number, string>()
 let pendingEnd: ParsedEndFrame | null = null
 let noiseLines = 0
+/** 噪声行汇总是否已打印：逐条提示止于前 3 条，大量回显时反而完全静默，收尾要补一行总账 */
+let noiseReported = false
+/** 失败片数到这个值就提示链路问题：单片的建议看不出“已连续坏了好几片”这个趋势 */
+const FAILURE_TREND = 3
 let receivedChunks = 0
 let receivedWire = 0
 /** 本轮可以合并了：全部片已到齐（结束帧可选，收齐就是完成） */
@@ -1139,6 +1143,22 @@ function reportMissing(missingList: number[], force = false): void {
       `（${compactIndexList(listText)}）\n` +
       '  → 在 Typer 里粘贴上面的 @T2R 令牌，只补这些片即可；已收到的分片全部保留，收齐后自动合并'
   )
+  reportNoise()
+}
+
+/**
+ * @description 把忽略掉的非帧行汇总成一行
+ *
+ * 逐条提示止于前 3 条（避免刷屏），但几百行回显混进来时就会完全静默；
+ * 收尾补一行总账，让“流里混了别的东西”这件事至少露面一次。
+ */
+function reportNoise(): void {
+  if (noiseReported || noiseLines === 0) return
+  noiseReported = true
+  info(
+    style(`! 忽略 ${noiseLines} 行非帧内容`, 'warn') +
+      '：通常是终端回显或提示符；分片都齐就不影响结果'
+  )
 }
 
 /**
@@ -1208,6 +1228,7 @@ async function mergeAndVerify(): Promise<number> {
         `（${compactIndexList(formatIndexList(missingList, task.total))}）\n` +
         '  → 在 Typer 里粘贴上面的 @T2R 令牌，只补这些片即可；已收到的分片全部保留。'
     )
+    reportNoise()
     return EXIT.INCOMPLETE
   }
 
@@ -1310,6 +1331,7 @@ async function mergeAndVerify(): Promise<number> {
       options.input === null && process.stdin.isTTY === true && options.progress !== 'off'
     if (!canStay) info(`  ${style('提示', 'dim')} 关闭本窗口（或按 Ctrl+C）即可退出`)
   }
+  reportNoise()
   return EXIT.OK
 }
 
@@ -1613,6 +1635,7 @@ async function run(): Promise<number> {
     receivedChunks = 0
     receivedWire = 0
     noiseLines = 0
+    noiseReported = false
     resumedParts = 0
     mergeDone = -1
     mergeTotal = 0
@@ -1643,6 +1666,7 @@ async function run(): Promise<number> {
 
     if (pass === 'closed' && !meta) {
       info('没有收到任何有效帧。请确认输入流里是 Typer 生成的 v2 帧（帧头以 @T2 开头）。')
+      reportNoise()
       return noiseLines > 0 ? EXIT.INCOMPLETE : EXIT.USAGE
     }
     if (!meta) return EXIT.USAGE
@@ -1721,6 +1745,13 @@ function handleLine(rawLine: string): void {
       failures.set(Number(seq), code)
       missing.add(Number(seq))
       done.delete(Number(seq))
+      // 单片的建议看不出趋势；坏到这个数量说明链路在系统性地丢字符或被截断
+      if (failures.size === FAILURE_TREND) {
+        info(
+          style(`! 已有 ${FAILURE_TREND} 片失败：链路在丢字符或被截断`, 'warn') +
+            '\n  → 建议改用「小片（2 KiB）」、关闭压缩、节奏选「稳健」后重发缺失片'
+        )
+      }
     }
     info(
       `${style(`${mark('err')} 第 ${Number(seq) + 1} 片失败（${code}）`, 'err')}：` +
