@@ -26,6 +26,9 @@ files:
 extraResources:
   - from: scripts/typing-host.ps1
     to: scripts/typing-host.ps1
+  # 第三方许可声明随安装包分发：MIT / Apache-2.0 都要求把声明随副本一起提供
+  - from: THIRD-PARTY-NOTICES.md
+    to: THIRD-PARTY-NOTICES.md
   - from: tools
     to: tools
     filter:

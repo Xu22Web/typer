@@ -228,3 +228,15 @@ node scripts/bench-transfer.mjs <文件> --emit frames.txt --verify  # 文件传
 ## 许可
 
 [MIT](LICENSE)
+
+## 第三方许可
+
+Typer 自身以 MIT 发布。随程序分发的第三方组件均为宽松许可，无 copyleft 传染：
+
+- 内容区编辑器：[CodeMirror 6](https://codemirror.net/) 与 [Lezer](https://lezer.codemirror.net/)（MIT）
+- 发布说明预览：[markdown-it](https://github.com/markdown-it/markdown-it) 系（MIT）、`entities`（BSD-2-Clause）、[DOMPurify](https://github.com/cure53/DOMPurify)（MPL-2.0 或 Apache-2.0，本项目按 Apache-2.0 使用）
+- 界面框架：Vue 3 / Vue Router / Pinia / Element Plus（MIT）
+- 界面图标：[Material Design Icons](https://github.com/Templarian/MaterialDesign)（Apache-2.0，© Pictogrammers）
+- 运行时宿主：Electron / Chromium（安装包内附 `LICENSE.electron.txt` 与 `LICENSES.chromium.html`）
+
+完整清单与许可全文见 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)，该文件也随安装包分发到安装目录的 `resources` 下；应用内可在「关于 → 第三方许可」查看摘要。

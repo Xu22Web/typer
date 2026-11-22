@@ -8,6 +8,9 @@ const info = ref<{ name: string; version: string; platform: string; supported: b
   null
 )
 
+/** 完整的第三方许可清单（仓库文件，也随安装包分发到 resources 下） */
+const noticesUrl = 'https://github.com/Xu22Web/typer/blob/master/THIRD-PARTY-NOTICES.md'
+
 /** 对外链接入口 */
 const links = [
   { icon: 'i-mdi-github', label: 'GitHub 仓库', url: 'https://github.com/Xu22Web/typer' },
@@ -25,6 +28,11 @@ const links = [
     icon: 'i-mdi-license',
     label: 'MIT 许可证',
     url: 'https://github.com/Xu22Web/typer/blob/master/LICENSE'
+  },
+  {
+    icon: 'i-mdi-scale-balance',
+    label: '第三方许可',
+    url: noticesUrl
   }
 ]
 
@@ -61,6 +69,17 @@ const limitations = [
   '键盘布局必须与目标窗口一致；布局里没有的字符会被判定为无法输入',
   '远程桌面只转发真实键盘事件：中文、emoji 等没有物理键位的字符无法输入（不会静默丢字：全角标点映射成英文标点，其余先提示数量、确认后才开始）',
   '内容区上限 8 万字符、单个文件上限 4 MB：更长的内容请拆分成多个文件分别发送'
+]
+
+/** 随包分发的第三方组件（完整清单与许可全文见 THIRD-PARTY-NOTICES.md） */
+const thirdParty = [
+  { name: 'CodeMirror 6 / Lezer', license: 'MIT' },
+  { name: 'markdown-it / linkify-it / mdurl / uc.micro', license: 'MIT' },
+  { name: 'entities', license: 'BSD-2-Clause' },
+  { name: 'DOMPurify', license: 'Apache-2.0' },
+  { name: 'Vue / Vue Router / Pinia / Element Plus', license: 'MIT' },
+  { name: 'Material Design Icons（界面图标）', license: 'Apache-2.0' },
+  { name: 'Electron / Chromium', license: 'MIT / BSD' }
 ]
 
 /** @description 读取应用身份信息（失败时页面上显示占位符） */
@@ -189,6 +208,31 @@ async function open(url: string): Promise<void> {
             使用前请自行确认合规性。
           </p>
           <p>以 MIT 许可证分发，可自由使用、修改与再分发。</p>
+        </div>
+      </ElCollapseItem>
+
+      <ElCollapseItem name="third-party">
+        <template #title>
+          <div class="collapse-title">
+            <div class="i-mdi-scale-balance" />
+            <div>第三方许可（{{ thirdParty.length }} 项）</div>
+          </div>
+        </template>
+        <div class="license">
+          <ul class="limits">
+            <li v-for="item in thirdParty" :key="item.name">
+              <span class="em">{{ item.name }}</span> — {{ item.license }}
+            </li>
+          </ul>
+          <p>
+            完整清单与许可全文见 <code>THIRD-PARTY-NOTICES.md</code>，安装目录的
+            <code>resources</code> 下随包提供同名文件。
+          </p>
+          <div>
+            <ElButton size="small" @click="open(noticesUrl)">
+              <span class="i-mdi-open-in-new" /><span>查看完整清单</span>
+            </ElButton>
+          </div>
         </div>
       </ElCollapseItem>
     </ElCollapse>
