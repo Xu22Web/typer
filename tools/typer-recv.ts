@@ -39,6 +39,7 @@ import { pipeline } from 'node:stream/promises'
 import { createBrotliDecompress } from 'node:zlib'
 
 import {
+  CodecError,
   ERROR_HINTS,
   FrameError,
   MARKERS,
@@ -1157,7 +1158,7 @@ function reportNoise(): void {
   noiseReported = true
   info(
     style(`! 忽略 ${noiseLines} 行非帧内容`, 'warn') +
-      '：通常是终端回显或提示符；分片都齐就不影响结果'
+      '：通常是终端回显、提示符，或帧被截断（终端行宽 / 粘贴上限）；分片都齐就不影响结果'
   )
 }
 
@@ -1722,7 +1723,7 @@ function handleLine(rawLine: string): void {
       const detail = error instanceof Error && error.message ? `：${error.message}` : ''
       info(
         style(`! 忽略无法解析的行（${code}）`, 'warn') +
-          `${detail}。若持续出现，请检查是否混入了终端回显或提示符。`
+          `${detail}。若持续出现，请检查是否混入了终端回显/提示符，或帧被截断（终端行宽、粘贴上限）。`
       )
     }
     return
@@ -1738,7 +1739,9 @@ function handleLine(rawLine: string): void {
       reportLockBusy(error.message)
       return
     }
-    const code = error instanceof FrameError ? error.code : 'field'
+    // 解码失败（载荷长度不符 / 表外字符）语义上就是 enc，别退化成默认的 field
+    const code =
+      error instanceof FrameError ? error.code : error instanceof CodecError ? 'enc' : 'field'
     const seq = frame.kind === 'data' ? frame.seq : '-'
     ack(`#FAIL ${seq} ${code}`)
     if (seq !== '-') {

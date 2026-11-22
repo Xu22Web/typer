@@ -81,7 +81,8 @@ export class FrameError extends Error {
 
 /** 错误码 → 可操作建议（脚本与界面共用）。 */
 export const ERROR_HINTS: Readonly<Record<string, string>> = {
-  marker: '该行不是 Typer 帧，可能被终端回显、提示符或其它输出混入；确认输入流里只有帧',
+  marker:
+    '该行不是完整的 Typer 帧，可能被终端回显、提示符或其它输出混入，也可能被行宽/粘贴上限截断；确认输入流里只有完整帧',
   field: '帧字段数量或格式不对，通常是传输过程中被截断或插入字符；请重传该片',
   crc: '片校验失败（数据与校验和不一致），该片需重传',
   len: '片长度与声明不一致，通常是被截断；请减小片大小或降低输入速率后重传该片',
