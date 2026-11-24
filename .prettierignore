@@ -10,3 +10,5 @@ src/renderer/src/auto-imports.d.ts
 src/renderer/src/components.d.ts
 # 构建产物，由 pnpm build:tools 生成
 tools/*.mjs
+# 发布说明按固定大纲保持紧凑行数（小节之间不留空行），不交给 prettier 重排
+docs/release-notes
