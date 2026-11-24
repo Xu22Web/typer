@@ -26,11 +26,9 @@ import {
 } from '@main/util/frame'
 import { isValidUtf8 } from '@main/util/textFile'
 import {
-  HEX_PREVIEW_ROWS,
   TRANSFER_FILE_MAX_BYTES,
   TRANSFER_LIMITS,
   formatBytes,
-  type HexPreviewRow,
   type TransferJobSummary,
   type TransferPrepareOptions,
   type TransferPrepareProgress,
@@ -144,30 +142,6 @@ async function readHead(path: string, length: number): Promise<Buffer> {
   } finally {
     await handle.close()
   }
-}
-
-/**
- * @description 生成前若干行的 Hex 预览（偏移 + hex + ASCII）
- * @param bytes 文件头部字节
- * @returns 预览行（最多 HEX_PREVIEW_ROWS 行）
- */
-function buildPreview(bytes: Buffer): HexPreviewRow[] {
-  const rows: HexPreviewRow[] = []
-  for (let offset = 0; offset < bytes.length; offset += 16) {
-    const slice = bytes.subarray(offset, Math.min(offset + 16, bytes.length))
-    rows.push({
-      offset,
-      hex: [...slice]
-        .map((byte) => byte.toString(16).padStart(2, '0').toUpperCase())
-        .join(' ')
-        .padEnd(16 * 3 - 1, ' '),
-      ascii: [...slice]
-        .map((byte) => (byte >= 0x20 && byte < 0x7f ? String.fromCharCode(byte) : '.'))
-        .join('')
-    })
-    if (rows.length >= HEX_PREVIEW_ROWS) break
-  }
-  return rows
 }
 
 /**
@@ -400,9 +374,8 @@ export async function prepareTransfer(input: PrepareTransferInput): Promise<Prep
   }
   if (canceled(deps)) throw new TransferError('canceled', '已取消')
 
-  // 3) 预览与 UTF-8 提示（只看开头：仅用于界面提示）
+  // 3) UTF-8 提示（只看开头：仅用于界面提示）
   const head = await readHead(path, Math.max(3, Math.min(size, UTF8_HINT_BYTES)))
-  const preview = buildPreview(head)
   const hasBom = head.length >= 3 && head[0] === 0xef && head[1] === 0xbb && head[2] === 0xbf
   const looksUtf8 = !hasBom && isValidUtf8(head)
 
@@ -470,7 +443,6 @@ export async function prepareTransfer(input: PrepareTransferInput): Promise<Prep
     peakFrameChars,
     frameChars,
     typedActions: frameChars,
-    preview,
     looksUtf8,
     compressionNote:
       actualCompression === 'br'

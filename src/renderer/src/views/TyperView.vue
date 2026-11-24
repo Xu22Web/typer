@@ -22,12 +22,6 @@ onMounted(async () => {
   await typing.init()
 })
 
-/** 是否已识别到前台窗口（用于决定要不要提示"切到目标窗口"） */
-const detected = computed(() => typing.targetWindow.value !== '未检测')
-
-/** 最新一条日志，用于在输入页提示"刚刚发生了什么" */
-const latestLog = computed(() => typing.logs.value.at(-1) ?? null)
-
 /** 页头说明：主句说做什么，重点（限制/备选通道）单独成段，便于一眼看到 */
 const pageDesc = computed(() =>
   mode.value === 'text'
@@ -131,8 +125,8 @@ async function convertToFile(): Promise<void> {
         </div>
 
         <div class="spacer" />
-        <!-- 窄窗口：目标窗口降级成胶囊（宽窗口在右侧卡片里显示完整信息） -->
-        <TargetChip class="compact-only" />
+        <!-- 目标窗口：所有窗口尺寸统一用页头胶囊 -->
+        <TargetChip />
       </div>
       <p class="page-desc" :title="`${pageDesc.text}；${pageDesc.tip}`">
         {{ pageDesc.text }}；<span class="em">{{ pageDesc.tip }}</span>
@@ -157,58 +151,9 @@ async function convertToFile(): Promise<void> {
         <FilePanel v-if="mode === 'file'" @insert-script="insertToolScriptFromFile" />
         <TextPanel v-else />
       </KeepAlive>
-
-      <!-- 次要信息：目标窗口 + 运行状态 + 提示（窄窗口收进页头的胶囊与状态条） -->
-      <aside class="side-column">
-        <section class="card target">
-          <div class="card-head">
-            <h2 class="card-title"><span class="icon i-mdi-target" /><span>目标窗口</span></h2>
-            <div class="spacer" />
-            <button
-              id="tour-target-refresh-wide"
-              class="icon-btn ghost"
-              type="button"
-              title="重新检测目标窗口"
-              aria-label="重新检测目标窗口"
-              @click="typing.refreshForeground(true)"
-            >
-              <span class="i-mdi-refresh" />
-            </button>
-          </div>
-
-          <div class="target-name">
-            <div class="dot" :class="{ ok: detected }" />
-            <div class="ellipsis" :title="typing.targetWindow.value">
-              {{ typing.targetWindow.value }}
-            </div>
-          </div>
-          <p class="card-desc">开始前先在目标程序中点击输入位置；按键发送到该窗口。</p>
-        </section>
-
-        <RunStatusPanel />
-
-        <section class="card hint-card">
-          <div class="notice-head">
-            <div class="icon i-mdi-lightbulb-on-outline" />
-            <div>开始后请勿移动鼠标或切换窗口</div>
-          </div>
-          <p class="card-desc">
-            <span
-              >随时可按
-              <code>{{ settings?.hotkeys.stop ?? 'Ctrl+Alt+X' }}</code> 紧急停止；内容区里按
-              <code>Ctrl+Enter</code>
-              也可开始。目标窗口若启用了中文输入法，请先切到英文，否则按键会被输入法截获。</span
-            >
-          </p>
-          <div v-if="latestLog" class="latest-log mono">
-            <div class="i-mdi-history" />
-            <div>{{ new Date(latestLog.at).toLocaleTimeString() }} · {{ latestLog.message }}</div>
-          </div>
-        </section>
-      </aside>
     </div>
 
-    <RunStatusStrip class="compact-only" />
+    <RunStatusStrip />
 
     <!-- 主操作条：常驻页面底部（只有主面板内部滚动），开始是唯一的主按钮 -->
     <section class="card action-bar">
@@ -299,31 +244,6 @@ async function convertToFile(): Promise<void> {
   gap: 12px;
 }
 
-/* 窄窗口不显示右列与页头胶囊，改由状态条承担同样的信息 */
-.compact-only {
-  display: none;
-}
-
-.side-column {
-  display: flex;
-  flex-direction: column;
-  width: 300px;
-  flex: none;
-  min-height: 0;
-  gap: 12px;
-  overflow-y: auto;
-}
-
-@media (max-width: 1239px) {
-  .side-column {
-    display: none;
-  }
-
-  .compact-only {
-    display: flex;
-  }
-}
-
 /* 矮窗口：说明文字让位给内容与操作条 */
 @media (max-height: 700px) {
   .page-desc {
@@ -383,14 +303,6 @@ async function convertToFile(): Promise<void> {
     font-weight: 600;
     box-shadow: var(--shadow-card);
   }
-}
-
-.target-name {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 14px;
-  font-weight: 600;
 }
 
 .action-bar {
@@ -456,33 +368,6 @@ async function convertToFile(): Promise<void> {
     background: var(--ctrl-fill);
     border-color: var(--stroke);
     text-decoration: none;
-  }
-}
-
-.hint-card {
-  gap: 8px;
-
-  .notice-head {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    font-size: 13px;
-    font-weight: 600;
-
-    .icon {
-      color: var(--accent);
-      font-size: 16px;
-    }
-  }
-
-  .latest-log {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    margin-top: 2px;
-    font-size: 12px;
-    color: var(--text-3);
-    word-break: break-all;
   }
 }
 </style>

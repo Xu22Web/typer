@@ -59,6 +59,7 @@
 - 面向用户的文案客观、简短，不出现内部实现术语。
 - 渲染外部内容必须先消毒（不可信输入不进 `v-html`），外链交给系统浏览器。
 - 独立 `.ts`（composable / store / util）不依赖自动导入：`ElMessage` / `ElMessageBox` 等命令式 API 与 `Ref` / `ComputedRef` 等类型都显式 import；它们所需的组件样式在 `windows/main/index.ts` 统一引入。
+- `src/renderer/src/auto-imports.d.ts` 与 `components.d.ts` 由 unplugin 在 dev / build 时生成：不手工编辑、不靠它判断组件是否还存在；增删组件或 API 后以重新生成的结果为准（生成物可能有短暂的过期条目）。
 - 界面强调只有一套：`.em`（重点）与 `.risk`（风险），定义在 `assets/main.css`；不要再引入 `<strong>`、行内 `style` 等第二套机制。
 - 内容区是 CodeMirror 6（`components/TextEditor.vue`）：编辑行为通过扩展实现，不退回 Element Plus 的 `textarea`（长文本会整块重排、明显掉帧）。
 - 容量类限制（内容区字符数、导入体积、单文件上限）只在 `src/shared` 定义常量，渲染层与主进程引用同一份，不在文案或逻辑里写死数字。
@@ -66,3 +67,8 @@
 ## 8. 代码检索
 
 优先用 Serena 的符号检索（`find_symbol` / `get_symbols_overview` / `find_referencing_symbols`），而不是整文件通读；只在需要上下文时读片段。
+
+## 9. 发布
+
+- 版本只改 `package.json` 的 `version`，关于页与更新检查都读它。
+- 发布说明按 `docs/release.md` 的大纲与篇幅写，正文放 `docs/release-notes/v<版本>.md`；发布后用 `gh release edit v<版本> --notes-file` 覆盖工作流自动生成的说明。

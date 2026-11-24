@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { formatDuration, formatDurationShort } from '@shared/format/duration'
+import { formatDuration, formatDurationCompact, formatDurationShort } from '@shared/format/duration'
 
 describe('formatDuration', () => {
   it('不足一分钟只显示秒', () => {
@@ -55,5 +55,26 @@ describe('formatDurationShort', () => {
   it('非法输入返回破折号', () => {
     expect(formatDurationShort(Number.NaN)).toBe('—')
     expect(formatDurationShort(Number.POSITIVE_INFINITY)).toBe('—')
+  })
+})
+
+describe('formatDurationCompact', () => {
+  it('超过 1 小时只保留时与分，卡片主数值不会折行', () => {
+    expect(formatDurationCompact(3 * 3_600_000 + 39 * 60_000 + 49_000)).toBe('3小时39分')
+    expect(formatDurationCompact(7_200_000)).toBe('2小时')
+  })
+
+  it('1 分钟到 1 小时保留分与秒，秒为 0 时只剩分', () => {
+    expect(formatDurationCompact(39 * 60_000 + 49_000)).toBe('39分49秒')
+    expect(formatDurationCompact(600_000)).toBe('10分')
+  })
+
+  it('不足 1 分钟回到秒级，不足 1 秒给毫秒', () => {
+    expect(formatDurationCompact(59_000)).toBe('59秒')
+    expect(formatDurationCompact(880)).toBe('880毫秒')
+  })
+
+  it('非法输入返回破折号', () => {
+    expect(formatDurationCompact(Number.NaN)).toBe('—')
   })
 })

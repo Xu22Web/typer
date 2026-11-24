@@ -37,7 +37,6 @@ function summary(
     peakFrameChars: 8700,
     frameChars,
     typedActions: frameChars,
-    preview: [],
     looksUtf8: false,
     compressionNote: '',
     kind: 'binary',

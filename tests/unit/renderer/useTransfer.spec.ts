@@ -27,7 +27,6 @@ const jobStub: TransferJobSummary = {
   peakFrameChars: 40,
   frameChars: 40,
   typedActions: 40,
-  preview: [],
   looksUtf8: true,
   compressionNote: '',
   kind: 'text',

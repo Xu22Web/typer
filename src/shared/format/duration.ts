@@ -38,3 +38,25 @@ export function formatDurationShort(ms: number): string {
   const value = Math.max(0, Math.round(ms))
   return value < 1000 ? `${value}毫秒` : formatDuration(value)
 }
+
+/**
+ * @description 卡片主数值用的紧凑时长：最多两级单位，保证窄卡片内单行可容纳
+ * @param ms 毫秒数
+ * @returns 形如 `880毫秒`、`39分49秒`、`3小时39分` 的文本（非法输入返回破折号）
+ */
+export function formatDurationCompact(ms: number): string {
+  if (!Number.isFinite(ms)) return '—'
+
+  const value = Math.max(0, Math.round(ms))
+  if (value < 1000) return `${value}毫秒`
+
+  const totalSeconds = Math.round(value / 1000)
+  if (totalSeconds < MINUTE_SECONDS) return `${totalSeconds}秒`
+
+  const hours = Math.floor(totalSeconds / HOUR_SECONDS)
+  const minutes = Math.floor((totalSeconds % HOUR_SECONDS) / MINUTE_SECONDS)
+  if (hours > 0) return minutes > 0 ? `${hours}小时${minutes}分` : `${hours}小时`
+
+  const seconds = totalSeconds % MINUTE_SECONDS
+  return seconds > 0 ? `${minutes}分${seconds}秒` : `${minutes}分`
+}

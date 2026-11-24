@@ -96,7 +96,7 @@ describe('parseResumeState', () => {
     expect(() => parseResumeState('   ')).toThrow(/为空/)
     expect(() => parseResumeState('{ 不是 json')).toThrow(/JSON/)
     expect(() => parseResumeState('{"total":3}')).toThrow(/job/)
-    expect(() => parseResumeState('abc-def')).toThrow(/无法识别/)
+    expect(() => parseResumeState('abc-def')).toThrow(/无法解析片号/)
     expect(() => parseResumeState(buildResumeToken({ job: 'a', total: 1, missing: [] }))).toThrow()
   })
 

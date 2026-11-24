@@ -78,8 +78,13 @@ function wire(): void {
   })
 }
 
-/** 接收端还缺哪些片；null 表示"全新传输" */
-const resumeMissing = computed<number[] | null>(() => resume.value?.missing ?? null)
+/**
+ * 接收端还缺哪些片；null 表示"全新传输"。
+ * 必须复制成普通数组：Ref 内的数组是响应式 Proxy，跨 IPC 会被结构化克隆拒绝。
+ */
+const resumeMissing = computed<number[] | null>(() =>
+  resume.value === null ? null : [...resume.value.missing]
+)
 
 /** 是否已有准备好的文件 */
 const hasJob = computed(() => summary.value !== null)
@@ -227,7 +232,7 @@ async function applyResume(text: string): Promise<void> {
     const message = err instanceof Error ? err.message : String(err)
     // 只落到续传区自己的状态行：粘错一段文字时，全局错误红条会让人以为文件都准备失败了
     resumeError.value = message
-    useTyping().log('warn', message)
+    useTyping().log('warn', `续传状态无法解析：${message}`)
   }
 }
 

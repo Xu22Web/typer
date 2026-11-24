@@ -39,7 +39,7 @@ function makeSummary(overrides: Partial<TransferJobSummary> = {}): TransferJobSu
     peakFrameChars: headPerFrame + symbolsForBytes(chunkBytes, alphabet),
     frameChars: payload + headPerFrame * total + 600,
     typedActions: 0,
-    preview: [],
+
     looksUtf8: false,
     compressionNote: '',
     kind: 'bin',

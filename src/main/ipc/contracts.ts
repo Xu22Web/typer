@@ -1,6 +1,7 @@
 import type { ImportCharset } from '../settings/types'
 import { TEXT_INPUT_LIMIT } from '@shared/text/import'
 import {
+  RESUME_TEXT_LIMIT,
   TRANSFER_ALPHABETS,
   TRANSFER_COMPRESSIONS,
   TRANSFER_TARGET_MODES,
@@ -241,8 +242,11 @@ export function parseTransferResumeRequest(payload: unknown): string {
   if (typeof text !== 'string' || text.trim().length === 0) {
     throw new IpcValidationError('续传失败：请粘贴接收端输出的续传令牌或选择 resume.json')
   }
-  if (text.length > 1_000_000) {
-    throw new IpcValidationError('续传失败：续传内容过大（应是一份小报告或一行令牌）')
+  if (text.length > RESUME_TEXT_LIMIT) {
+    throw new IpcValidationError(
+      `续传失败：续传内容超过 ${RESUME_TEXT_LIMIT.toLocaleString('zh-CN')} 字符上限，` +
+        '只粘贴接收端输出的令牌、#MISS 行或 resume.json 即可'
+    )
   }
   return text
 }

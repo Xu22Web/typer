@@ -758,6 +758,16 @@ function findNonAscii(text: string): { char: string; code: number } | null {
 }
 
 /**
+ * @description 错误消息中回显的片号片段上限：整段粘贴可能上万字符，原样带入会使消息与日志不可读
+ * @param part 待回显的片段
+ * @returns 截断后的片段（过长时补上原长度）
+ */
+function tokenPreview(part: string): string {
+  const limit = 24
+  return part.length > limit ? `${part.slice(0, limit)}…（共 ${part.length} 字符）` : part
+}
+
+/**
  * @description 把片号集合文本解析成升序去重的数组
  * @param text 形如 `3,5,12-20` 的文本（片号数组会被转成同形文本）
  * @param total 片总数（给出时校验越界）
@@ -780,14 +790,16 @@ export function parseIndexList(text: string | number[], total?: number): number[
 
   for (const part of parts) {
     const match = /^(\d+)(?:-(\d+))?$/.exec(part)
-    if (!match) throw new FrameError('range', `无法解析片号：${part}`)
+    if (!match) throw new FrameError('range', `无法解析片号：${tokenPreview(part)}`)
     const start = Number(match[1])
     const end = match[2] === undefined ? start : Number(match[2])
-    if (start > end) throw new FrameError('range', `区间起点大于终点：${part}`)
+    if (start > end) throw new FrameError('range', `区间起点大于终点：${tokenPreview(part)}`)
     if (total !== undefined && end >= total) {
-      throw new FrameError('range', `片号超出总数：${part}（共 ${total} 片）`)
+      throw new FrameError('range', `片号超出总数：${tokenPreview(part)}（共 ${total} 片）`)
     }
-    if (end - start > MAX_FRAME_CHARS) throw new FrameError('range', `区间过大：${part}`)
+    if (end - start > MAX_FRAME_CHARS) {
+      throw new FrameError('range', `区间过大：${tokenPreview(part)}`)
+    }
     for (let index = start; index <= end; index++) indexes.add(index)
   }
 

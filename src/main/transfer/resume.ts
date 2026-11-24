@@ -177,10 +177,10 @@ function parseRanges(text: string): ResumeState {
       source: 'ranges'
     }
   } catch (error) {
+    // 结论与可粘贴的形式由界面承担，这里只保留具体原因
     throw new TransferError(
       'resume-format',
-      `无法识别续传状态（${error instanceof Error ? error.message : String(error)}）。` +
-        '可粘贴接收端输出的任一形式：@T2R 令牌、#MISS 行、resume.json，或直接给片号'
+      `${error instanceof Error ? error.message : String(error)}。`
     )
   }
 }

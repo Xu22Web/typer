@@ -116,8 +116,6 @@ describe('prepareTransfer · 不压缩（原字节）', () => {
     expect(job.summary.wireBytes).toBe(2500)
     expect(job.summary.sha256).toBe(createHash('sha256').update(source).digest('hex'))
     expect(job.summary.job).toMatch(/^[0-9a-f]{8}$/)
-    expect(job.summary.preview).toHaveLength(16)
-    expect(job.summary.preview[0]?.hex.split(' ')).toHaveLength(16)
     expect(job.summary.peakFrameChars).toBeLessThanOrEqual(job.summary.maxFrameChars)
   })
 

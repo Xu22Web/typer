@@ -153,8 +153,11 @@ export const TRANSFER_FILE_WARN_BYTES = 1024 * 1024
 /** 文件通道的硬上限：超过直接拒绝（拖入与选择文件同一口径）。 */
 export const TRANSFER_FILE_MAX_BYTES = 4 * 1024 * 1024
 
-/** Hex 预览的行数（每行 16 字节）。 */
-export const HEX_PREVIEW_ROWS = 16
+/**
+ * 续传文本（接收端输出的令牌 / #MISS 行 / resume.json）的字符上限。
+ * 文件上限 4 MB、片最小 1 KiB，最多 4096 片；逐个列出片号也不超过 2 万字符。
+ */
+export const RESUME_TEXT_LIMIT = 20_000
 
 /**
  * 开始帧 / 结束帧各发几遍。
@@ -166,12 +169,6 @@ export const HEX_PREVIEW_ROWS = 16
  * 引擎按它决定实际发送量，界面按同一个值估算耗时——两边必须同源，否则预估会偏小。
  */
 export const FRAME_HEAD_REDUNDANCY = 3
-
-export interface HexPreviewRow {
-  offset: number
-  hex: string
-  ascii: string
-}
 
 export interface TransferPrepareOptions {
   alphabet: TransferAlphabet
@@ -219,7 +216,6 @@ export interface TransferJobSummary {
   frameChars: number
   /** 预计产生的键盘动作数 */
   typedActions: number
-  preview: HexPreviewRow[]
   /** 文件字节是否完全等于 UTF-8 文本（仅用于提示） */
   looksUtf8: boolean
   /** 压缩决策的说明（为什么压 / 为什么不压） */
